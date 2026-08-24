@@ -1,0 +1,4 @@
+# NE 증설 테스트용 CSV
+# 헤더 라인은 주석(#)으로 시작
+ne_name,ne_type,ne_version,ip_addr,cfm,psm,board_type,clock_source,if_name,if_ip,if_prefix,connect_type,customer_ne_type,rack_id
+NVGNB_TEST_001,ns_gnb,26.B.0,172.16.150.200,CFMA0,PSMA0,lmd1-j1,gps-type,backhaul,172.16.150.200,24,backhaul,dran,0

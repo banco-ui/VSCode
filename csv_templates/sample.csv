@@ -1,0 +1,35 @@
+"@NVGNB"
+"NE ID","NE Type","NE Version","Release Version","Network","NE Name","Administrative State","gNB ID","gNB ID Length","gNB Name","Timezone","FW Auto Fusing","APTS Mode","NE Serial Number"
+"99999","ns_gnb","26.A.0","r-0100","STP_Center","NVGNB_99999","unlocked","99999","22","NVGNB_99999","","off","off",""
+
+"@SERVER_INFORMATION"
+"NE ID","CFM","PSM"
+"","",""
+
+"@ENDPOINT_NG_INFORMATION"
+"NE ID","Endpoint NG IP Address"
+"99999","192.168.1.100"
+
+"@MAIN_BOARD_INFORMATION"
+"NE ID","Unit Type","Unit ID","Board Type"
+"99999","fmp","0","gma1-a1"
+
+"@CLOCK_INFORMATION"
+"NE ID","Clock Source ID","Clock Source","Priority Level","Quality Level"
+"99999","0","gps-type","1","prc"
+
+"@PORT_INFORMATION"
+"NE ID","Port ID","VR ID","Port Administrative State","Connect Type","UDE Type","MTU","Speed Duplex","Fec Mode"
+"99999","0","0","unlocked","backhaul","ude-none","1500","","off"
+
+"@IP_INFORMATION"
+"NE ID","CPU ID","External Interface Name","IP Address","IP Prefix Length","IP Get Type","Management","X2 Control","X2 Bearer","S1 Bearer","NG Control","NG Bearer","XN Control","XN Bearer","IEEE1588"
+"99999","0","xe_0_0_0.849","100.254.13.199","24","static","true","true","true","true","true","true","true","true","false"
+
+"@VLAN_INFORMATION"
+"NE ID","CPU ID","VLAN Interface Name","VLAN ID","VR ID"
+"99999","0","xe_0_0_0","849","0"
+
+"@ROUTE_INFORMATION"
+"NE ID","CPU ID","VR ID","IP Prefix","IP Prefix Length","IP Gateway","Route Interface Name","MTU"
+"99999","0","0","0.0.0.0","0","100.254.13.1","-",""

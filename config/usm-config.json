@@ -1,0 +1,96 @@
+{
+  "description": "USM 서버 설정 (실제 개발 환경)",
+  "servers": [
+    {
+      "id": "usm-dev",
+      "name": "USM 개발 서버",
+      "url": "https://10.251.209.131:7443",
+      "mcmIp": "10.251.209.131",
+      "mcmSlbVip": "10.251.209.131",
+      "apiPort": 7443,
+      "environment": "development",
+      "timeout": 120000,
+      "enabled": true
+    },
+    {
+      "id": "usm-1786357315032",
+      "name": "VZW 우리 서버",
+      "url": "https://10.251.206.177:7443",
+      "mcmIp": "10.251.206.177",
+      "apiPort": 7443
+    }
+  ],
+  "api": {
+    "auth": {
+      "method": "Basic",
+      "username": "ossuser",
+      "password": "osspasswd"
+    },
+    "endpoints": {
+      "vnfcList": "/oss/vnfcList",
+      "neList": "/oss/neList",
+      "createNE": "/oss/ne",
+      "deleteNE": "/oss/ne/{NE Name}",
+      "createCell": "/oss/ne/{NE Name}/cells",
+      "deleteCell": "/oss/ne/{NE Name}/cells",
+      "netconf": "/oss/netconf/{NE_ID}",
+      "netconfStatus": "/oss/netconfStatus/{NE_ID}?wf-id={wf_id}"
+    },
+    "contentType": {
+      "rest": "application/json",
+      "netconf": "application/xml"
+    },
+    "tls": {
+      "version": "TLS 1.2",
+      "verifyCert": false
+    }
+  },
+  "provisioning": {
+    "selectors": {
+      "provisioningMenu": "a.menu-provisioning",
+      "templateDropdown": "select[name='template']",
+      "neTypeDropdown": "select[name='ne_type']",
+      "pkgField": "input[name='pkg']",
+      "startButton": "button.provisioning-start",
+      "confirmButton": "button.provisioning-confirm",
+      "successMessage": ".success-message, .provisioning-complete",
+      "loadingIndicator": ".loading-spinner, .progress-bar",
+      "errorDialog": "dialog.error, .alert-danger"
+    },
+    "timeouts": {
+      "loadingTimeout": 120000,
+      "elementWaitTimeout": 5000,
+      "retryAttempts": 3
+    }
+  },
+  "templates": [
+    {
+      "id": "lsm_basic",
+      "name": "LSM_기본증설",
+      "type": "gNB-LSM",
+      "fields": [
+        "cell_id",
+        "site_id",
+        "band"
+      ]
+    },
+    {
+      "id": "enodeb_basic",
+      "name": "eNodeB_기본증설",
+      "type": "eNodeB",
+      "fields": [
+        "enodeb_id",
+        "site_id",
+        "band"
+      ]
+    }
+  ],
+  "logging": {
+    "logDir": "logs",
+    "logLevel": "INFO",
+    "maxLogSize": 10485760,
+    "maxLogFiles": 10,
+    "saveScreenshots": true,
+    "screenshotDir": "output/screenshots"
+  }
+}

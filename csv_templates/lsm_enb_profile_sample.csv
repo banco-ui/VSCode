@@ -1,0 +1,4 @@
+@SysInfo##ID","Type","Version","ProfileName","Group","NeName","SerialNo","Location","RelVersion","SmartCell","BoardType","CcType","MCC","MNC","SchedulerIPOptimization","Latitude","Longitude","DuPrimaryFlag","SchedulerAutoConfig","MCEIPVersion","MCEIPAddress","InitialAutoPCIAllocation","InitialRACHOptimization","InitialNRTConfiguation","InitialSRSPOOLConfiguration","InitialSRSNBRConfiguration","UseParentPci","InterConnectionMode"
+"191751","macro_outdoor_dist","v23_A_0","eNB_191751","CI_AUTO","eNB_191751","","","r_01","0","LMD1_J5","GCB2_C5D","450","05","","N 000:00:00.000","E 000:00:00.000","1","","","","OFF","ON","OFF","OFF","OFF","OFF","1"
+@GPS##UserUpdateFlag","Latitude","Longitude","Height"
+"OFF","N 000:00:00.000","E 000:00:00.000","0000.00m"

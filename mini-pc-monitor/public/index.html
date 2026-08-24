@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>미니PC 상태 모니터</title><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header><div><p class="eyebrow">INTERNAL NETWORK</p><h1>미니PC 상태 모니터</h1><p id="meta">상태를 불러오는 중…</p></div><div class="actions"><button id="notify">브라우저 알림 켜기</button><button id="checkNow" class="primary">지금 검사</button></div></header>
+  <section class="summary"><article><span>전체</span><strong id="total">0</strong></article><article class="online"><span>정상</span><strong id="online">0</strong></article><article class="offline"><span>장애</span><strong id="offline">0</strong></article><article class="degraded"><span>확인 중</span><strong id="checking">0</strong></article></section>
+  <section id="alert" class="alert hidden" role="alert"></section>
+  <section class="panel"><div class="panel-head"><h2>장비 목록</h2><button id="addDevice">장비 추가</button></div><div id="deviceList" class="devices"></div></section>
+</main>
+<template id="deviceTemplate"><article class="device"><div class="device-main"><span class="dot"></span><div><h3></h3><p class="ip"></p></div></div><div class="status"></div><div class="details"></div><div class="device-actions"><button class="edit">수정</button><button class="delete danger">삭제</button></div></article></template>
+<dialog id="editor"><form method="dialog"><h2 id="dialogTitle">장비 추가</h2><label>표시 이름<input name="name" required maxlength="60" placeholder="예: 미니PC-01"></label><label>IP 주소 또는 호스트명<input name="ip" required maxlength="255" placeholder="예: 192.168.0.101"></label><label class="toggle"><input name="enabled" type="checkbox" checked> 모니터링 사용</label><menu><button value="cancel">취소</button><button id="save" class="primary" value="default">저장</button></menu></form></dialog>
+<script src="app.js"></script>
+</body></html>

@@ -1,0 +1,211 @@
+{
+  "description": "LSM 서버 설정 (LTE/eNodeB 관리)",
+  "servers": [
+    {
+      "id": "lsm-dev",
+      "name": "LSM 개발 서버",
+      "url": "https://10.251.175.31:7443",
+      "mcmIp": "10.251.175.31",
+      "apiPort": 7443,
+      "environment": "development",
+      "timeout": 120000,
+      "enabled": true
+    }
+  ],
+  "gui": {
+    "baseUrl": "https://10.251.175.31:7443/aceman/",
+    "auth": {
+      "method": "Basic",
+      "username": "qwerty",
+      "password": "1qaz@WSX"
+    }
+  },
+  "api": {
+    "auth": {
+      "method": "Basic",
+      "username": "",
+      "password": ""
+    },
+    "endpoints": {
+      "vnfcList": "/oss/vnfcList",
+      "neList": "/oss/neList",
+      "createNE": "/oss/ne",
+      "deleteNE": "/oss/ne/{NE Name}",
+      "createCell": "/oss/ne/{NE Name}/cells",
+      "deleteCell": "/oss/ne/{NE Name}/cells",
+      "netconf": "/oss/netconf/{NE_ID}",
+      "netconfStatus": "/oss/netconfStatus/{NE_ID}?wf-id={wf_id}"
+    },
+    "contentType": {
+      "rest": "application/json",
+      "netconf": "application/xml"
+    },
+    "tls": {
+      "version": "TLS 1.2",
+      "verifyCert": false
+    }
+  },
+  "neType": "eNB",
+  "neSubType": "macro_outdoor_dist",
+  "provisioning": {
+    "csvFormat": "LSM_ENB",
+    "description": "LSM은 USM과 CSV 템플릿 구조가 다름. NE와 Cell 정보가 하나의 profile에 포함. Profile Upload 단계가 추가됨",
+    "profileUpload": {
+      "description": "LSM 증설 전 XML profile을 서버에 업로드하는 단계 (USM과의 차이점)",
+      "serverPath": "/log/conf/profile/",
+      "method": "Configuration > Create eNB > Profile Import > Saved Template",
+      "exportMethod": "Configuration > Create eNB > NE Image Export (Option menu)"
+    },
+
+    "csvSections": {
+      "neTemplate": [
+        "@ENB",
+        "@SERVER_INFORMATION",
+        "@PLMN_INFORMATION",
+        "@SON_INFORMATION",
+        "@MAIN_BOARD_INFORMATION",
+        "@EXTERNAL_LINK_INFORMATION",
+        "@SYSTEM_SHARING_INFORMATION",
+        "@SYSTEM_LOCATION_INFORMATION",
+        "@INTER_CONNECTION_INFORMATION",
+        "@INTER_ENB_INFORMATION",
+        "@CLOCK_INFORMATION",
+        "@PTP_INFORMATION",
+        "@MME_INFORMATION",
+        "@EXTERNAL_INTERFACE_INFORMATION",
+        "@STATIC_ROUTE_INFORMATION",
+        "@VIRTUAL_ROUTING_INFORMATION",
+        "@VLAN_INFORMATION",
+        "@LAG_INFORMATION"
+      ],
+      "cellTemplate": [
+        "@CELL_INFORMATION",
+        "@NB_IOT_CELL_INFORMATION",
+        "@CHANNEL_BOARD_INFORMATION",
+        "@CPRI_PORT_INFORMATION",
+        "@RU_INFORMATION"
+      ]
+    },
+    "selectors": {
+      "provisioningMenu": "a.menu-provisioning",
+      "templateDropdown": "select[name='template']",
+      "neTypeDropdown": "select[name='ne_type']",
+      "pkgField": "input[name='pkg']",
+      "startButton": "button.provisioning-start",
+      "confirmButton": "button.provisioning-confirm",
+      "successMessage": ".success-message, .provisioning-complete",
+      "loadingIndicator": ".loading-spinner, .progress-bar",
+      "errorDialog": "dialog.error, .alert-danger"
+    },
+    "timeouts": {
+      "loadingTimeout": 120000,
+      "elementWaitTimeout": 5000,
+      "retryAttempts": 3
+    }
+  },
+  "templates": [
+    {
+      "id": "enb_lmd1",
+      "name": "eNB_LMD1_증설",
+      "type": "eNB",
+      "boardType": "lmd1-j5",
+      "description": "LMD1 보드 기반 eNB 증설 (enb_xxxx_lmd1.csv)",
+      "fields": [
+        "NE ID",
+        "NE Type",
+        "NE Version",
+        "Release Version",
+        "Network",
+        "SAP ID",
+        "Timezone",
+        "FW Auto Fusing",
+        "NE Serial Number",
+        "APTS Mode"
+      ]
+    },
+    {
+      "id": "enb_guc2",
+      "name": "eNB_GUC2_증설",
+      "type": "eNB",
+      "boardType": "guc2-d5",
+      "description": "GUC2 보드 기반 eNB 증설 (enb_xxxx_guc2.csv)",
+      "fields": [
+        "NE ID",
+        "NE Type",
+        "NE Version",
+        "Release Version",
+        "Network",
+        "SAP ID",
+        "Timezone",
+        "FW Auto Fusing",
+        "NE Serial Number",
+        "APTS Mode"
+      ]
+    },
+    {
+      "id": "enb_cell_rf90",
+      "name": "eNB_Cell_RF90_증설",
+      "type": "eNB_Cell",
+      "ruType": "rf90-050",
+      "description": "RF90 RU 기반 LTE Cell 증설 (cell_enb_xxxx_rf90_ph4.csv)",
+      "fields": [
+        "State",
+        "Cell Num",
+        "Cell Name",
+        "CC ID",
+        "DSP ID",
+        "Cell Index in DSP",
+        "RU Conf",
+        "RU Port ID",
+        "LSB",
+        "MSB",
+        "Frequency Band Indicator",
+        "Cell Band Carrier",
+        "Earfcn DL",
+        "Earfcn UL",
+        "Bandwidth",
+        "DL Antenna Count",
+        "UL Antenna Count",
+        "Path",
+        "Multi Carrier Type",
+        "DL Function Split",
+        "UL Function Split",
+        "CRS",
+        "PCI",
+        "TAC",
+        "Cell Size",
+        "EAID",
+        "HSF",
+        "ZCZC",
+        "RSI Auto Mode",
+        "RSI",
+        "PRACH Configuration Index",
+        "eMTC",
+        "Subframe Assignment",
+        "Special Subframe Patterns",
+        "Dynamic Spectrum Sharing Mode",
+        "DSS Target NR Cell Num",
+        "Slot Level Operation Mode",
+        "DSS PUCCH HARQ ACK for CA FDD",
+        "Auto GPS",
+        "Latitude",
+        "Longitude",
+        "Height",
+        "Cell Coverage",
+        "EMF Control Enable",
+        "EMF Power Density",
+        "EMF Compliance Boundary",
+        "Power",
+        "Bisector Option"
+      ]
+    }
+  ],
+  "logging": {
+    "logDir": "logs",
+    "logLevel": "INFO",
+    "maxLogSize": 10485760,
+    "maxLogFiles": 10,
+    "saveScreenshots": true,
+    "screenshotDir": "output/screenshots"
+  }
+}
