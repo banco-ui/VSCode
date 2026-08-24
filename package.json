@@ -1,0 +1,117 @@
+{
+  "name": "yaong-tools",
+  "version": "1.0.0",
+  "description": "Yaong Tools - 통합 자동화 허브",
+  "main": "electron/main.js",
+  "author": "Samsung Research",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:build": "npm run build && cross-env NODE_TLS_REJECT_UNAUTHORIZED=0 electron-builder --win --x64",
+    "electron:build:portable": "npm run build && cross-env NODE_TLS_REJECT_UNAUTHORIZED=0 electron-builder --win portable --x64",
+    "start": "node scripts/usm-ne-provisioning.js csv_templates/sample.csv",
+    "auto": "node scripts/usm-ne-provisioning.js csv_templates/sample.csv --auto",
+    "log": "type logs\\provisioning.log | more",
+    "monitor": "node mini-pc-monitor/server.js",
+    "backup": "node scripts/save-daily-chat.js",
+    "backup:register": "scripts\\register-scheduler.bat",
+    "backup:unregister": "schtasks /delete /tn \"ClineDailyChatBackup\" /f",
+    "backup:scheduler": "node scripts/start-backup-scheduler.js"
+  },
+  "dependencies": {
+    "axios": "^1.19.0",
+    "csv-parse": "^5.6.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "form-data": "^4.0.6",
+    "mammoth": "^1.12.1",
+    "multer": "^2.2.0",
+    "node-cron": "^3.0.3",
+    "officeparser": "^7.8.0",
+    "pdf-parse": "^2.4.5",
+    "playwright": "^1.62.1",
+    "puppeteer-core": "^25.7.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "sharp": "^0.35.3",
+    "ssh2": "^1.17.0",
+    "tesseract.js": "^7.0.0",
+    "ws": "^8.21.3",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "private": true,
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.5",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "nexe": "^5.0.0-beta.4",
+    "pkg": "^5.8.1",
+    "vite": "^8.2.1",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.samsung.yaong-tools",
+    "productName": "Yaong Tools",
+    "artifactName": "yaong-tools-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "scripts/**/*",
+      "mini-pc-monitor/**/*",
+      "config/**/*",
+      "csv_templates/**/*",
+      "node_modules/pdf-parse/**/*",
+      "node_modules/debug/**/*"
+    ],
+    "files": [
+      "dist-electron/**/*",
+      "electron/main.js",
+      "electron/preload.js",
+      "scripts/**/*",
+      "config/**/*",
+      "csv_templates/**/*",
+      "logs/**/*",
+      "output/**/*",
+      "mini-pc-monitor/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.svg"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Yaong Tools"
+    },
+    "portable": {
+      "artifactName": "yaong-tools-portable-${version}-${os}-${arch}.${ext}"
+    }
+  }
+}

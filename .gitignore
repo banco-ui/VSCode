@@ -1,0 +1,47 @@
+# 의존성
+node_modules/
+
+# 로그
+logs/*
+!logs/.gitkeep
+
+# 실행 결과
+output/screenshots/*
+output/reports/*
+!output/.gitkeep
+!output/screenshots/.gitkeep
+!output/reports/.gitkeep
+
+# 크리덴셜 (절대 커밋 금지)
+config/credentials.json
+*.env
+
+# 빌드 결과물
+dist/
+dist-electron/
+
+# 임시 파일
+*.bak
+~$*
+
+# 대용량 바이너리 파일 (GitHub 푸시 실패 방지)
+*.blob
+*.mht
+*.rtf
+mosaic_api_lines.txt
+mosaic_core.js
+mosaic_main.js
+Verizon USM-OSS Interface Specification_25A_v1.0.*
+KDDI gNB EMS-OSS Interface 사양서_v1.1__20230914.odt
+[CMS-OS0017]_KDDI_OSS_Integration_Support_NFVO_SW_Design.docx
+[KDDI]Curl message(OSS)를 이용한 Slice 자동화-v2-20260810_151345.docx
+10. LSM 설치 자동화-v8-20260811_144527.docx
+CN_KDDI_OSS_연동_NBI.docx
+KDDI gNB EMS-OSS Interface 사양서_v1.1__20230914.docx
+OSS(KDDI) 연동 API 테스트 결과.docx
+(CMS-OS0017)_KDDI_OSS_INTEGRATION_SUPPORT_NFVO_SW_DESIGN_BT.xlsx
+
+# OS 파일
+Thumbs.db
+Desktop.ini
+.DS_Store
