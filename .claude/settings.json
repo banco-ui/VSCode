@@ -1,0 +1,76 @@
+{
+  "description": "USM NE 증설 자동화 - devtools MCP 기반 AI 자동화",
+  "model": "claude-opus-5",
+  "fast_mode": false,
+  "permissions": {
+    "bash": {
+      "approve": [
+        "npm",
+        "node",
+        "python",
+        "git",
+        "cat",
+        "ls",
+        "curl",
+        "ping",
+        "powershell"
+      ],
+      "deny": [
+        "rm -rf",
+        "sudo",
+        "reboot"
+      ]
+    },
+    "read": {
+      "approve": [
+        "./**",
+        "config/**",
+        "csv_templates/**",
+        "scripts/**"
+      ]
+    },
+    "write": {
+      "approve": [
+        "logs/**",
+        "output/**",
+        "csv_templates/**",
+        "scripts/**"
+      ],
+      "deny": [
+        ".git/**"
+      ]
+    },
+    "mcp_tools": {
+      "approve": [
+        "mcp__chrome-devtools__new_page",
+        "mcp__chrome-devtools__navigate_page",
+        "mcp__chrome-devtools__type_text",
+        "mcp__chrome-devtools__click",
+        "mcp__chrome-devtools__fill",
+        "mcp__chrome-devtools__fill_form",
+        "mcp__chrome-devtools__wait_for",
+        "mcp__chrome-devtools__take_screenshot",
+        "mcp__chrome-devtools__get_console_message",
+        "mcp__chrome-devtools__list_console_messages",
+        "mcp__chrome-devtools__handle_dialog"
+      ]
+    }
+  },
+  "hooks": {
+    "before_script_run": {
+      "action": "log",
+      "message": "🚀 USM 자동화 시작... 로그는 logs/provisioning.log에 저장됩니다."
+    },
+    "after_script_run": {
+      "action": "log",
+      "message": "✅ USM 자동화 완료. 결과는 output/reports/에 저장됩니다."
+    }
+  },
+  "mcp_config": {
+    "chrome_devtools": {
+      "enabled": true,
+      "timeout": 120000,
+      "screenshot_format": "png"
+    }
+  }
+}

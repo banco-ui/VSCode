@@ -1,0 +1,199 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "NE 증설: Dry-run (JSON 미리보기)",
+      "detail": "CSV → JSON 변환만 출력 (API 호출 안 함)",
+      "type": "shell",
+      "command": "node",
+      "args": [
+        "scripts/usm-ne-provisioning.js",
+        "${input:csvFile}",
+        "--dry-run"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "NE 증설: 실행 (대화형 확인)",
+      "detail": "각 NE마다 사용자 확인 후 API 호출",
+      "type": "shell",
+      "command": "node",
+      "args": [
+        "scripts/usm-ne-provisioning.js",
+        "${input:csvFile}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "NE 증설: 자동 실행 (확인 생략)",
+      "detail": "⚠️ 모든 NE를 자동으로 API 호출 (사용자 확인 생략)",
+      "type": "shell",
+      "command": "node",
+      "args": [
+        "scripts/usm-ne-provisioning.js",
+        "${input:csvFile}",
+        "--auto"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Cell 증설: Dry-run (JSON 미리보기)",
+      "detail": "Cell CSV → JSON 변환만 출력 (API 호출 안 함)",
+      "type": "shell",
+      "command": "node",
+      "args": [
+        "scripts/usm-cell-provisioning.js",
+        "${input:cellCsvFile}",
+        "${input:neName}",
+        "--dry-run"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Cell 증설: 자동 실행",
+      "detail": "⚠️ Cell 자동 API 호출 (NE 증설 이후 실행)",
+      "type": "shell",
+      "command": "node",
+      "args": [
+        "scripts/usm-cell-provisioning.js",
+        "${input:cellCsvFile}",
+        "${input:neName}",
+        "--auto"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "NE 목록 조회",
+      "detail": "USM에서 관리 중인 NE 목록 조회",
+      "type": "shell",
+      "command": "curl",
+      "args": [
+        "-s", "-k",
+        "-u", "ossuser:osspasswd",
+        "https://10.251.209.131:7443/oss/neList"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "VNFC 목록 조회",
+      "detail": "USM VNFC 목록 조회",
+      "type": "shell",
+      "command": "curl",
+      "args": [
+        "-s", "-k",
+        "-u", "ossuser:osspasswd",
+        "https://10.251.209.131:7443/oss/vnfcList"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "최근 로그 보기",
+      "detail": "provisioning.log 마지막 50줄",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "Get-Content '${workspaceFolder}\\logs\\provisioning.log' -Tail 50"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "최근 리포트 보기",
+      "detail": "output/reports 폴더의 최신 JSON 파일",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "Get-ChildItem '${workspaceFolder}\\output\\reports\\*.json' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "csvFile",
+      "type": "promptString",
+      "description": "NE 증설 CSV 파일 경로를 입력하세요",
+      "default": "csv_templates/test-ne-create.csv"
+    },
+    {
+      "id": "cellCsvFile",
+      "type": "promptString",
+      "description": "Cell 증설 CSV 파일 경로를 입력하세요",
+      "default": "[13172] 26A_SKT_NVGNB_CELL_0804.csv"
+    },
+    {
+      "id": "neName",
+      "type": "promptString",
+      "description": "대상 NE Name을 입력하세요 (예: NVGNB_13172)",
+      "default": "NVGNB_13172"
+    }
+  ]
+}
