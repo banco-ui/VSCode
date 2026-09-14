@@ -1,12 +1,14 @@
 {
   "name": "sd-search",
   "version": "1.0.0",
-  "description": "Samsung Doc Search - Mosaic, Confluence, axhub 통합 검색 툴",
-  "main": "index.js",
+  "description": "Samsung Doc Search - Mosaic, Confluence, AX HUB 통합 검색 툴",
+  "main": "gui/server.js",
   "scripts": {
     "search": "node index.js search",
     "detail": "node index.js detail",
-    "gui": "node gui/server.js"
+    "gui": "node gui/server.js",
+    "start": "node gui/server.js",
+    "build:exe": "node build-exe.js"
   },
   "dependencies": {
     "axios": "^1.7.0",
@@ -14,5 +16,23 @@
     "chalk": "^4.1.2",
     "cli-table3": "^0.6.5",
     "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.16.1"
+  },
+  "pkg": {
+    "scripts": [
+      "gui/server.js",
+      "adapters/*.js",
+      "core/*.js"
+    ],
+    "assets": [
+      "config/**/*",
+      "gui/public/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist"
   }
 }
