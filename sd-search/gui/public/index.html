@@ -166,49 +166,27 @@
             <section id="tab-extract" class="tab-content">
                 <div class="platform-header">
                     <span class="platform-badge mosaic">📥 게시글 추출</span>
-                    <span class="platform-desc">Mosaic 통합검색 API로 게시글 내용 추출 (미가입 workspace 포함)</span>
+                    <span class="platform-desc">Mosaic 게시글 URL을 입력하면 본문 내용을 추출합니다 (미가입 workspace 포함)</span>
                 </div>
                 <div class="search-bar">
-                    <select id="opt-category-extract" class="search-category-select">
-                        <option value="all">📋 전체 카테고리</option>
-                        <option value="workspace">🏢 Workspace</option>
-                        <option value="board">📝 Board (게시글)</option>
-                        <option value="mcast">🎬 M Cast</option>
-                        <option value="mindmap">🧠 Mind Map</option>
-                        <option value="ideation">💡 Ideation</option>
-                        <option value="cx">⭐ CX</option>
-                        <option value="lifetrend">📈 Life Trend</option>
-                        <option value="idea">💡 Idea</option>
-                        <option value="discussion">💬 Discussion</option>
-                        <option value="survey">📊 Survey</option>
-                    </select>
-                    <input type="text" id="search-input-extract" class="search-input" 
-                           placeholder="추출할 게시글 키워드..." autocomplete="off">
-                    <button id="btn-search-extract" class="btn btn-primary">🔍 검색</button>
+                    <input type="text" id="url-input-extract" class="search-input" 
+                           placeholder="Mosaic 게시글 URL 입력 (예: https://mosaic.sec.samsung.net/collaboration/workspace/584541588/list/592839726/detail/1800053612)" autocomplete="off">
+                    <button id="btn-extract-url" class="btn btn-primary">📥 추출</button>
                 </div>
                 <div class="search-options">
                     <label class="select-label">
-                        추출 개수:
-                        <select id="opt-max-extract">
-                            <option value="10">10개</option>
-                            <option value="20" selected>20개</option>
-                            <option value="50">50개</option>
-                            <option value="100">100개</option>
-                        </select>
-                    </label>
-                    <label class="select-label">
                         출력 형식:
                         <select id="opt-format-extract">
-                            <option value="json">JSON</option>
-                            <option value="csv">CSV</option>
                             <option value="txt">TXT (제목+본문)</option>
                             <option value="md">Markdown</option>
+                            <option value="json">JSON</option>
                         </select>
                     </label>
                     <button id="btn-extract-download" class="btn btn-small" style="display:none;">💾 파일 저장</button>
                     <button id="btn-extract-copy" class="btn btn-small" style="display:none;">📋 클립보드 복사</button>
                 </div>
             </section>
+
 
             <!-- 로그 영역 -->
 
