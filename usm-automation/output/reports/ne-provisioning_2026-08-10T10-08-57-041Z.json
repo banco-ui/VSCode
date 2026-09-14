@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-08-10T10:08:57.041Z",
+  "action": "ne-provisioning",
+  "usmServer": "https://10.251.209.131:7443",
+  "csvFile": "[13172] 26A_SKT_NVGNB_0612.csv",
+  "result": {
+    "status": "dry-run",
+    "neName": "NVGNB_13172"
+  }
+}

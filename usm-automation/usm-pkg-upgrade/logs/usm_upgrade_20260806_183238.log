@@ -1,0 +1,23 @@
+[접속] vsm@10.251.209.131:22
+[접속] 성공
+
+[PKG 업로드] SFTP 업로드 및 검증
+21909076
+
+[업로드] ILM_5.6.0_76_20260326.tar -> /home/vsm/ILM_5.6.0_76_20260326.tar
+[업로드] 동일 크기 파일 발견, SHA-256 확인 중
+70d3b06910255126be3cea007f07fd3a3b1a6f73e7149df0b2d0a3c6d3dd85b8  /home/vsm/ILM_5.6.0_76_20260326.tar
+[업로드] 기존 파일의 SHA-256이 일치하여 전송 생략
+
+[업로드] USM_TOTAL_27.A_00_25_20260730.jar -> /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar
+[업로드] 동일 크기 파일 발견, SHA-256 확인 중
+2ad1b2b6fbd0b7e464ac35c5e913323b50b78492c793ae58bbb0de801b93b168  /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar
+[업로드] 기존 파일의 SHA-256이 일치하여 전송 생략
+[HOST] MCM0
+-rw-rw---- 1 vsm aceman 1.9M Aug  6 17:48 /home/vsm/ILM_5.6.0_76_20260326.tar
+-rw-rw---- 1 vsm aceman 2.2G Aug  6 17:50 /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar
+[DISK]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        99G   74G   21G  78% /
+
+[업로드 완료] 두 패키지의 원격 검증이 완료되었습니다.

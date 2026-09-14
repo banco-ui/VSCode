@@ -1,0 +1,17 @@
+{
+  "total": 1,
+  "success": 0,
+  "error": 0,
+  "skipped": 0,
+  "dryRun": 1,
+  "timestamp": "2026-08-10T06:41:44.263Z",
+  "csvFile": "csv_templates/test-ne-create.csv",
+  "usmServer": "https://10.251.209.131:7443",
+  "results": [
+    {
+      "status": "dry-run",
+      "rowNumber": 1,
+      "neName": "NVGNB_TEST_001"
+    }
+  ]
+}

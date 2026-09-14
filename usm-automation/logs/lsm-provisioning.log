@@ -1,0 +1,25 @@
+[2026-08-11T05:06:27.796Z] [LSM-NE] [INFO] === LSM NE 증설 자동화 시작 ===
+[2026-08-11T05:06:27.799Z] [LSM-NE] [INFO] CSV 파일: jenkins_enb_7550_lmd1.csv
+[2026-08-11T05:06:27.801Z] [LSM-NE] [INFO] 자동 확인: false, Dry-run: true
+[2026-08-11T05:06:27.802Z] [LSM-NE] [INFO] LSM 서버: https://10.251.175.31:7443
+[2026-08-11T05:06:27.805Z] [LSM-NE] [INFO] CSV 파싱 완료: 18개 섹션
+[2026-08-11T05:06:27.808Z] [LSM-NE] [INFO] JSON 빌드 완료
+[2026-08-11T05:06:27.809Z] [LSM-NE] [INFO] NE Name: enb_7550, NE ID: 7550, Type: macro_unified, Version: 26.B.0
+[2026-08-11T05:06:27.812Z] [LSM-NE] [INFO] === LSM NE 증설 자동화 완료 ===
+[2026-08-11T05:06:45.645Z] [LSM-CELL] [INFO] === LSM Cell 증설 자동화 시작 ===
+[2026-08-11T05:06:45.647Z] [LSM-CELL] [INFO] NE Name: enb_7550
+[2026-08-11T05:06:45.649Z] [LSM-CELL] [INFO] CSV 파일: jenkins_cell_enb_7550_rf90_ph4.csv
+[2026-08-11T05:06:45.650Z] [LSM-CELL] [INFO] 자동 확인: false, Dry-run: true
+[2026-08-11T05:06:45.652Z] [LSM-CELL] [INFO] LSM 서버: https://10.251.175.31:7443
+[2026-08-11T05:06:45.655Z] [LSM-CELL] [INFO] CSV 파싱 완료: 5개 섹션
+[2026-08-11T05:06:45.657Z] [LSM-CELL] [INFO] JSON 빌드 완료
+[2026-08-11T05:06:45.659Z] [LSM-CELL] [INFO] NE: enb_7550, Cell: 2 (2), Earfcn DL: 2515, PCI: 2, State: ADD
+[2026-08-11T05:06:45.662Z] [LSM-CELL] [INFO] === LSM Cell 증설 자동화 완료 ===
+[2026-08-11T05:08:11.904Z] [LSM-NE] [INFO] === LSM NE 증설 자동화 시작 ===
+[2026-08-11T05:08:11.906Z] [LSM-NE] [INFO] CSV 파일: jenkins_enb_7550_lmd1.csv
+[2026-08-11T05:08:11.908Z] [LSM-NE] [INFO] 자동 확인: false, Dry-run: true
+[2026-08-11T05:08:11.909Z] [LSM-NE] [INFO] LSM 서버: https://10.251.175.31:7443
+[2026-08-11T05:08:11.912Z] [LSM-NE] [INFO] CSV 파싱 완료: 18개 섹션
+[2026-08-11T05:08:11.913Z] [LSM-NE] [INFO] JSON 빌드 완료
+[2026-08-11T05:08:11.915Z] [LSM-NE] [INFO] NE Name: enb_7550, NE ID: 7550, Type: macro_unified, Version: 26.B.0
+[2026-08-11T05:08:11.918Z] [LSM-NE] [INFO] === LSM NE 증설 자동화 완료 ===

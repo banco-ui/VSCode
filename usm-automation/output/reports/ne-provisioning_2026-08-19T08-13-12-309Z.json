@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-08-19T08:13:12.309Z",
+  "csvFile": "csv_templates/sample.csv",
+  "usmServer": "https://10.251.209.131:7443",
+  "result": {
+    "status": "dry-run",
+    "neName": "Unknown",
+    "neId": ""
+  }
+}

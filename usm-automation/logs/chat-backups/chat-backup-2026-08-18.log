@@ -1,0 +1,9 @@
+[2026-08-18 01:09:16] === 대화 기록 백업 시작 ===
+[2026-08-18 01:09:16] ERROR: Cline chat history 디렉토리를 찾을 수 없습니다: C:\Users\banco\AppData\Roaming\Code\User\globalStorage\saoudrizwan.claude-dev\chat-history
+[2026-08-18 01:09:16] Cline 확장 프로그램이 설치되어 있는지 확인하세요.
+[2026-08-18 01:09:50] === 대화 기록 백업 시작 ===
+[2026-08-18 01:09:50] INFO: Cline chat history 디렉토리를 찾을 수 없습니다. (확장 프로그램 미설치 또는 다른 경로)
+[2026-08-18 01:09:50] 백업 완료: d:\Data\AI\VSCode\usm-automation\logs\chat-backups\Cline_대화기록_2026-08-18.md
+[2026-08-18 01:09:50] 파일 크기: 284.93 KB
+[2026-08-18 01:09:50] 백업 완료: d:\Data\AI\VSCode\usm-automation\logs\chat-backups\Cline_LSM_NE_대화기록_2026-08-18.md
+[2026-08-18 01:09:50] === 대화 기록 백업 완료 ===

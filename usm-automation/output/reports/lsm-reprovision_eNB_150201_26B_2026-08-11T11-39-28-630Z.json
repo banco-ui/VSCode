@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-08-11T11:39:28.630Z",
+  "xmlFile": "d:\\Data\\AI\\VSCode\\usm-automation\\eNB_150201_26B.csv",
+  "neName": "eNB_150201_26B",
+  "neType": "unknown",
+  "neVersion": "",
+  "neRelVersion": "",
+  "server": "https://10.251.175.31:7443",
+  "results": {
+    "delete": null,
+    "upload": true,
+    "create": true,
+    "unlock": null
+  }
+}

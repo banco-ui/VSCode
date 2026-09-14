@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-08-10T08:04:38.383Z",
+  "csvFile": "[13172] 26A_SKT_NVGNB_CELL_0804.csv",
+  "neName": "NVGNB_13172",
+  "result": {
+    "status": "success",
+    "neName": "NVGNB_13172",
+    "cellCount": 3,
+    "result": "13172: This parameter is already set.(@CELL_INFORMATION : Cell Identity[162])\n",
+    "response": {
+      "RESULT": "13172: This parameter is already set.(@CELL_INFORMATION : Cell Identity[162])\n"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-08-11T05:06:27.811Z",
+  "csvFile": "jenkins_enb_7550_lmd1.csv",
+  "lsmServer": "https://10.251.175.31:7443",
+  "system": "LSM",
+  "neType": "eNB",
+  "result": {
+    "status": "dry-run",
+    "neName": "enb_7550",
+    "neId": "7550"
+  }
+}

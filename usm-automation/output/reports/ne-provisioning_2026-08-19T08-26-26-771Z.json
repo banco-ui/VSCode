@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-08-19T08:26:26.771Z",
+  "csvFile": "csv_templates/ne-create-template.csv",
+  "usmServer": "https://10.251.209.131:7443",
+  "result": {
+    "status": "dry-run",
+    "neName": "NVGNB_NE_ID_HERE",
+    "neId": "NE_ID_HERE"
+  }
+}

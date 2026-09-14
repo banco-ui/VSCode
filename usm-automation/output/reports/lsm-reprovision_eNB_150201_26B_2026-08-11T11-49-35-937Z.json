@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-08-11T11:49:35.937Z",
+  "csvFile": "d:\\Data\\AI\\VSCode\\usm-automation\\eNB_150201_26B.csv",
+  "lsmIp": "10.251.175.31",
+  "neName": "eNB_150201_26B",
+  "neType": "unknown",
+  "neVersion": "",
+  "neRelVersion": "",
+  "server": "https://10.251.175.31:7443/aceman/",
+  "results": {
+    "delete": null,
+    "upload": true,
+    "create": true,
+    "unlock": null
+  }
+}

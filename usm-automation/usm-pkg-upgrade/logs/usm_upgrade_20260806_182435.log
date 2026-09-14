@@ -1,0 +1,8 @@
+[접속] vsm@10.251.209.131:22
+[접속] 성공
+
+[PKG 업로드] SFTP 업로드 및 검증
+df: options -P and --output are mutually exclusive
+Try 'df --help' for more information.
+
+[오류] RuntimeError: 업로드 디스크 여유 공간을 해석할 수 없습니다.

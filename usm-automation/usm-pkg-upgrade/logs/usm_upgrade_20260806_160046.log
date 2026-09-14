@@ -1,0 +1,14 @@
+[접속] vsm@10.251.209.131:22
+[접속] 성공
+[HOST] MCM0
+-rw-rw---- 1 vsm aceman 1.9M Aug  6 14:43 /home/vsm/ILM_5.6.0_76_20260326.tar
+-rw-rw---- 1 vsm aceman 2.2G Aug  6 14:21 /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar
+[DISK]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        99G   67G   28G  71% /
+
+[1/4] USM Diagnosis 실행
+#######################################################################
+		        USM Diagnosis V.1.13
+#######################################################################
+Input vsm's password : 

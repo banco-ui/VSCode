@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-08-10T07:44:48.466Z",
+  "csvFile": "[13190] 26A_SKT_NVGNB_0612.csv",
+  "usmServer": "https://10.251.209.131:7443",
+  "result": {
+    "status": "dry-run",
+    "neName": "NVGNB_13190",
+    "neId": "13190"
+  }
+}

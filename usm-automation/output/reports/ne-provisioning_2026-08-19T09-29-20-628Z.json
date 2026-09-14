@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-08-19T09:29:20.628Z",
+  "csvFile": "[13172] 26A_SKT_NVGNB_0612.csv",
+  "usmServer": "https://10.251.209.131:7443",
+  "result": {
+    "status": "success",
+    "neName": "NVGNB_13172",
+    "neId": "13172",
+    "result": "13172: gNB ID[13172] already exists. The system ID already exists. The name already exists. (NVGNB_13172)\n",
+    "response": {
+      "RESULT": "13172: gNB ID[13172] already exists. The system ID already exists. The name already exists. (NVGNB_13172)\n"
+    }
+  }
+}

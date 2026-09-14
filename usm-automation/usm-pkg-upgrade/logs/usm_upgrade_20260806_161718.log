@@ -1,0 +1,195 @@
+[접속] vsm@10.251.209.131:22
+[접속] 성공
+[HOST] MCM0
+-rw-rw---- 1 vsm aceman 1.9M Aug  6 14:43 /home/vsm/ILM_5.6.0_76_20260326.tar
+-rw-rw---- 1 vsm aceman 2.2G Aug  6 14:21 /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar
+[DISK]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        99G   67G   28G  71% /
+
+[1/4] USM Diagnosis 실행
+#######################################################################
+		        USM Diagnosis V.1.13
+#######################################################################
+Input vsm's password : 
+[자동 입력] 프롬프트 응답 전송
+
+Input root's password : 
+[자동 입력] 프롬프트 응답 전송
+
+Input mariadb root's password : 
+[자동 입력] 프롬프트 응답 전송
+
+1. CPU                                                         [OK]
+2. Memory                                                      [OK]
+3. Disk                                                        [OK]
+4. SSH connectivity                                            [OK]
+5. Volume mount                                                [OK]
+6. SSL Certificate                                             [OK]
+7. VNFM connectivity                                           [OK]
+8. USM PKG version : USM_TOTAL_26.B_00_112_20260715            [OK]
+
+[2/4] ILM 디렉터리 준비
+Password: [자동 입력] 프롬프트 응답 전송
+
+ILM/
+ILM/bin/
+ILM/bin/ilm_install.sh
+ILM/bin/ilm_main.sh
+ILM/bin/ilm_make_bundle.sh
+ILM/bin/ilm_rename_bundle.sh
+ILM/bin/ilm_uninstall.sh
+ILM/conf/
+ILM/conf/.version.info.un~
+ILM/conf/exclude.list
+ILM/conf/exclude_for_md5.list
+ILM/conf/filelist/
+ILM/conf/filelist/nms_base.list
+ILM/conf/filelist/nms_etc.list
+ILM/conf/filelist/nms_raid.list
+ILM/conf/filelist/nms_var.list
+ILM/conf/ilm.conf
+ILM/conf/installer.id
+ILM/conf/prevlist/
+ILM/conf/prevlist/ASM.list
+ILM/conf/prevlist/LSM.list
+ILM/conf/version.info
+ILM/conf/blacklist_for_script.list
+ILM/data/
+ILM/data/env/
+ILM/data/env/alias.env
+ILM/data/env/ant.env
+ILM/data/env/apache.env
+ILM/data/env/bashrc
+ILM/data/env/informix.env
+ILM/data/env/ireasoning.env
+ILM/data/env/java.env
+ILM/data/env/jdom.env
+ILM/data/env/jloox.env
+ILM/data/env/junit.env
+ILM/data/env/libsmi.env
+ILM/data/env/mariadb.env
+ILM/data/env/my.cnf
+ILM/data/env/mysql.env
+ILM/data/env/mysql.server
+ILM/data/env/nms.env
+ILM/data/env/ntp.env
+ILM/data/env/openssl.env
+ILM/data/env/opera.env
+ILM/data/env/oracle.env
+ILM/data/env/profile
+ILM/data/env/pyang.env
+ILM/data/env/struts.env
+ILM/data/env/tomcat.env
+ILM/data/env/usermodule.env
+ILM/data/pre_config.tcl
+ILM/data/tools/
+ILM/data/tools/ilm_tools.jar
+ILM/data/tools/ilm_tools.sh
+ILM/data/tools/lib/
+ILM/data/tools/lib/commons-codec-1.10.jar
+ILM/data/tools/lib/commons-codec.jar
+ILM/data/tools/lib/db_common.jar
+ILM/data/tools/lib/myEncrypt.jar
+ILM/data/tools/lib/myUtil.jar
+ILM/data/tools/lib/prjUtil_pc.jar
+ILM/lib/
+ILM/lib/call_switchover.sh
+ILM/lib/check_active_ip.sh
+ILM/lib/check_env.sh
+ILM/lib/check_ha_stat.sh
+ILM/lib/check_ip_format.sh
+ILM/lib/check_mysql_engine.sh
+ILM/lib/check_oracle_engine.sh
+ILM/lib/check_password.sh
+ILM/lib/check_patchver_format.sh
+ILM/lib/check_pkg_naming_rule.sh
+ILM/lib/check_pkgver_format.sh
+ILM/lib/check_space_passibility.sh
+ILM/lib/check_subject.sh
+ILM/lib/check_tmp.sh
+ILM/lib/check_user.sh
+ILM/lib/check_vendor.sh
+ILM/lib/chkMD5.sh
+ILM/lib/chkSHA256.sh
+ILM/lib/collect_server_info.sh
+ILM/lib/copy_ilm.sh
+ILM/lib/copy_pkg.sh
+ILM/lib/crte_group.sh
+ILM/lib/crte_user.sh
+ILM/lib/display_ipaddr.sh
+ILM/lib/display_pkg.sh
+ILM/lib/getMD5.sh
+ILM/lib/getMD5_backup.sh
+ILM/lib/getMD5_bundle.sh
+ILM/lib/getMD5_sitefiles.sh
+ILM/lib/getSHA256_backup.sh
+ILM/lib/get_HA_server.sh
+ILM/lib/get_free_space.sh
+ILM/lib/get_group.sh
+ILM/lib/get_home_path.sh
+ILM/lib/get_ipaddr.sh
+ILM/lib/get_ism_patchver.sh
+ILM/lib/get_ism_pkgver.sh
+ILM/lib/get_ism_version.sh
+ILM/lib/get_mysql_property.sh
+ILM/lib/get_ora_sid.sh
+ILM/lib/get_patch_filename.sh
+ILM/lib/get_pkgfile.sh
+ILM/lib/get_req_space.sh
+ILM/lib/get_server_info.sh
+ILM/lib/get_sw_versions.sh
+ILM/lib/get_version_info.sh
+ILM/lib/pkg_logger.sh
+ILM/lib/pkg_logger_init.sh
+ILM/lib/pkg_logger_stdout.sh
+ILM/lib/pkg_tar.sh
+ILM/lib/progress.sh
+ILM/lib/regist_ip.sh
+ILM/lib/restore_rm_files.sh
+ILM/lib/rm_log.sh
+ILM/lib/run_db_ready.sh
+ILM/lib/script_man.sh
+ILM/lib/start_progress.sh
+ILM/lib/verify_db_schema.sh
+ILM/nms_bin/
+ILM/nms_bin/ems_start.sh
+ILM/nms_bin/ems_stat.sh
+ILM/nms_bin/ems_stop.sh
+ILM/nms_bin/oracle_shutdown.sh
+ILM/nms_bin/oracle_startup.sh
+ILM/nms_bin/remake_db_space.sh
+ILM/nms_bin/remake_db_user.sh
+ILM/nms_bin/remake_db_user_func.sh
+ILM/nms_bin/tomcat_start.sh
+ILM/nms_bin/tomcat_stat.sh
+ILM/nms_bin/tomcat_stop.sh
+ILM/sbin/
+ILM/sbin/apply_patch.sh
+ILM/sbin/backup_for_restoring.sh
+ILM/sbin/call_ilm_install.sh
+ILM/sbin/call_ilm_uninstall.sh
+ILM/sbin/check_hdd_space.sh
+ILM/sbin/check_to_rollback_sw.sh
+ILM/sbin/check_to_update_sw.sh
+ILM/sbin/extract_patch_files.sh
+ILM/sbin/make_links.sh
+ILM/sbin/pre_extract_patch.sh
+ILM/sbin/regist_cron.sh
+ILM/sbin/remove_file.sh
+ILM/sbin/restore_rm_files.sh
+ILM/sbin/run_install_rpm.sh
+ILM/sbin/run_install_script.sh
+ILM/sbin/run_raid_script.sh
+ILM/sbin/run_uninstall_script.sh
+ILM/sbin/set_env_for_install.sh
+ILM/sbin/set_env_for_ism.sh
+ILM/sbin/run_install_python.sh
+
+[3/4] ilm_main.sh 실행 (최대 2시간)
+
+
+       ** ILM Manager version : ILM_5.6.0_76_20260326 **
+
+
+��ȣ:

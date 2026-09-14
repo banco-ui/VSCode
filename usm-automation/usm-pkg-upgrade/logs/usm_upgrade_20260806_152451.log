@@ -1,0 +1,5 @@
+[접속] vsm@10.251.209.131:22
+[접속] 성공
+[HOST] MCM0
+-rw-rw---- 1 vsm aceman 1.9M Aug  6 14:43 /home/vsm/ILM_5.6.0_76_20260326.tar
+[MISSING] /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar

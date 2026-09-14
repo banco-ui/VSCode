@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-08-10T08:18:16.751Z",
+  "csvFile": "[13190] 26A_SKT_NVGNB_CELL_0612.csv",
+  "neName": "NVGNB_13190",
+  "result": {
+    "status": "dry-run",
+    "neName": "NVGNB_13190",
+    "cellCount": 3
+  }
+}

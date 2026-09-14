@@ -1,0 +1,35 @@
+[접속] vsm@10.251.209.131:22
+[접속] 성공
+[HOST] MCM0
+-rw-rw---- 1 vsm aceman 1.9M Aug  6 14:43 /home/vsm/ILM_5.6.0_76_20260326.tar
+-rw-rw---- 1 vsm aceman 2.2G Aug  6 14:21 /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar
+[DISK]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        99G   67G   28G  71% /
+
+[1/4] USM Diagnosis 실행
+#######################################################################
+		        USM Diagnosis V.1.13
+#######################################################################
+Input vsm's password : 
+[자동 입력] 프롬프트 응답 전송
+
+Input root's password : 
+[자동 입력] 프롬프트 응답 전송
+
+Input mariadb root's password : 
+[자동 입력] 프롬프트 응답 전송
+
+1. CPU                                                         [OK]
+2. Memory                                                      [OK]
+3. Disk                                                        [OK]
+4. SSH connectivity                                            [OK]
+5. Volume mount                                                [OK]
+6. SSL Certificate                                             [OK]
+7. VNFM connectivity                                           [OK]
+8. USM PKG version : USM_TOTAL_26.B_00_112_20260715            [OK]
+
+[2/4] ILM 디렉터리 준비
+Password: [자동 입력] 프롬프트 응답 전송
+
+/etc/bashrc: line 99: SSH_CLIENT: unbound variable
