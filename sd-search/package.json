@@ -1,14 +1,16 @@
 {
   "name": "sd-search",
   "version": "1.0.0",
-  "description": "Samsung Doc Search - Mosaic, Confluence, AX HUB 통합 검색 툴",
-  "main": "gui/server.js",
+  "description": "Samsung Doc Search - Mosaic, Confluence, AX HUB integrated search tool",
+  "main": "electron/main.js",
   "scripts": {
     "search": "node index.js search",
     "detail": "node index.js detail",
     "gui": "node gui/server.js",
-    "start": "node gui/server.js",
-    "build:exe": "node build-exe.js"
+    "start": "electron .",
+    "start:dev": "node gui/server.js",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
   },
   "dependencies": {
     "axios": "^1.7.0",
@@ -18,21 +20,55 @@
     "express": "^4.21.0"
   },
   "devDependencies": {
-    "@yao-pkg/pkg": "^5.16.1"
+    "electron": "^43.0.0",
+
+    "electron-builder": "^25.1.0"
   },
-  "pkg": {
-    "scripts": [
-      "gui/server.js",
-      "adapters/*.js",
-      "core/*.js"
-    ],
-    "assets": [
+  "build": {
+    "appId": "com.samsung.sdsearch",
+    "productName": "SDSearch",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "gui/**/*",
+      "adapters/**/*",
+      "core/**/*",
       "config/**/*",
-      "gui/public/**/*"
+      "package.json"
     ],
-    "targets": [
-      "node18-win-x64"
-    ],
-    "outputPath": "dist"
+    "nodeModules": {
+      "include": [
+        "axios",
+        "playwright",
+        "playwright-core",
+        "chalk",
+        "cli-table3",
+        "express"
+      ]
+    },
+
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SDSearch"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/playwright/**/*",
+      "node_modules/playwright-core/**/*"
+    ]
   }
 }
