@@ -1,22 +1,23 @@
 const axios = require('axios');
 
 (async () => {
-    // Confluence 검색 테스트
-    console.log('=== Confluence Search Test ===');
+    console.log('=== AX HUB Search Test (fixed Id regex) ===');
     try {
-        const r = await axios.post('http://localhost:3120/api/search/confluence', {
-            keyword: '5g',
-            maxResults: 10,
+        const r = await axios.post('http://localhost:3120/api/search/axhub', {
+            keyword: 'github',
+            maxResults: 5,
             cacheOnly: false
-        }, { timeout: 60000 });
+        }, { timeout: 300000 });
         
         const data = r.data;
         console.log('success:', data.success);
         console.log('results:', data.results?.length || 0);
         if (data.logs) data.logs.forEach(l => console.log('  log:', l));
         if (data.results?.length > 0) {
-            data.results.slice(0, 3).forEach((r, i) => {
-                console.log(`  ${i+1}. ${r.title?.substring(0, 50)} | ${r.url}`);
+            data.results.forEach((r, i) => {
+                console.log(`\n  ${i+1}. title: ${r.title}`);
+                console.log(`     url: ${r.url}`);
+                console.log(`     author: ${r.author} | date: ${r.date} | id: ${r.id}`);
             });
         }
     } catch (e) {

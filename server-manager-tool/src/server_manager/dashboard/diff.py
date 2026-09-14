@@ -27,8 +27,8 @@ def compute_snapshot_diff(
     Returns:
         SnapshotDiff with changed, added, and removed fields.
     """
-    dict_a = inventory_a.model_dump()
-    dict_b = inventory_b.model_dump()
+    dict_a = inventory_a.model_dump(by_alias=True)
+    dict_b = inventory_b.model_dump(by_alias=True)
 
     changed_fields: list[FieldDiff] = []
     added_fields: list[str] = []

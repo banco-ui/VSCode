@@ -513,6 +513,6 @@ class ServerInventory(BaseModel):
     workload: Workload = Field(default_factory=Workload)
     power_thermal: PowerThermal = Field(default_factory=PowerThermal)
     vendor_ext: VendorExt = Field(default_factory=VendorExt)
-    meta: Meta = Field(default_factory=Meta)
+    meta: Meta = Field(default_factory=Meta, alias="_meta")
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "populate_by_name": True}
