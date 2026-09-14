@@ -48,11 +48,13 @@ class Searcher {
                 console.warn(`⚠️  알 수 없는 플랫폼: ${platform}`);
                 return Promise.resolve([]);
             }
-            return adapter.search(keyword, maxResults).catch(err => {
+            const cacheOnly = options.cacheOnly || false;
+            return adapter.search(keyword, maxResults, cacheOnly).catch(err => {
                 console.error(`❌ [${platform}] 오류:`, err.message);
                 return [];
             });
         });
+
         
         const searchResults = await Promise.all(searchPromises);
         

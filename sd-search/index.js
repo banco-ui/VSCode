@@ -37,7 +37,10 @@ function parseOptions(args) {
             options.maxResults = parseInt(args[++i]);
         } else if (args[i] === '--board' && args[i + 1]) {
             options.board = args[++i];
+        } else if (args[i] === '--cache-only') {
+            options.cacheOnly = true;
         }
+
     }
     return options;
 }

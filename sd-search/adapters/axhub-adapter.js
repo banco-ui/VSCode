@@ -30,13 +30,18 @@ class AxhubAdapter {
         return this.browser;
     }
 
-    async search(keyword, maxResults = 20) {
+    async search(keyword, maxResults = 20, cacheOnly = false) {
         console.log(`[axhub] 검색: "${keyword}"`);
         
+        if (cacheOnly) {
+            return this.searchFromCache(keyword);
+        }
+
         const browser = await this.connect();
         if (!browser) {
             return this.searchFromCache(keyword);
         }
+
         
         try {
             const results = [];
@@ -159,7 +164,8 @@ class AxhubAdapter {
     async searchFromCache(keyword) {
         console.log('[axhub] 캐시에서 검색 중...');
         const results = [];
-        const cacheDir = path.resolve(__dirname, '../output');
+        const cacheDir = path.resolve(__dirname, '../../output');
+
         
         try {
             const files = fs.readdirSync(cacheDir).filter(f => f.startsWith('axhub-'));
