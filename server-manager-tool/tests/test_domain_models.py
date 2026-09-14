@@ -330,3 +330,66 @@ class TestServerInventory:
         for model in models_to_test:
             with pytest.raises(Exception):
                 model(extra_field="should_fail")
+
+    # ── P1 Regression Tests ──────────────────────────────────────────
+
+    def test_meta_alias_serialization(self):
+        """P1: Assert _meta is the canonical serialized JSON key.
+
+        Protects the P0 fix (alias="_meta", populate_by_name=True)
+        from regression.
+        """
+        import json as _json
+
+        inv = ServerInventory(
+            identity=Identity(server_id="R750-001", vendor=Vendor.Dell),
+        )
+
+        # by_alias=True → "_meta" is the external key
+        alias_dump = inv.model_dump(by_alias=True)
+        assert "_meta" in alias_dump
+        assert "meta" not in alias_dump
+
+        # without by_alias → "meta" is the Python field name
+        internal_dump = inv.model_dump()
+        assert "meta" in internal_dump
+        assert "_meta" not in internal_dump
+
+        # JSON with by_alias → "_meta" key present
+        alias_json = inv.model_dump_json(by_alias=True)
+        parsed = _json.loads(alias_json)
+        assert "_meta" in parsed
+        assert "meta" not in parsed
+
+        # JSON without by_alias → "meta" key (not "_meta")
+        internal_json = inv.model_dump_json()
+        parsed_internal = _json.loads(internal_json)
+        assert "meta" in parsed_internal
+        assert "_meta" not in parsed_internal
+
+    def test_meta_alias_round_trip(self):
+        """P1: Round-trip serialization preserves _meta alias contract."""
+        inv = ServerInventory(
+            identity=Identity(server_id="R750-001", vendor=Vendor.Dell),
+        )
+
+        # Serialize with by_alias, deserialize — meta intact
+        json_str = inv.model_dump_json(by_alias=True)
+        restored = ServerInventory.model_validate_json(json_str)
+        assert restored.meta.schema_version == "1.0"
+
+        # Serialize without by_alias, deserialize — meta intact
+        json_str2 = inv.model_dump_json()
+        restored2 = ServerInventory.model_validate_json(json_str2)
+        assert restored2.meta.schema_version == "1.0"
+
+        # Both _meta and meta keys accepted as input (populate_by_name)
+        dict_alias = inv.model_dump(by_alias=True)
+        restored3 = ServerInventory.model_validate(dict_alias)
+        assert restored3.meta.schema_version == "1.0"
+
+        dict_internal = inv.model_dump()
+        restored4 = ServerInventory.model_validate(dict_internal)
+        assert restored4.meta.schema_version == "1.0"
+
+

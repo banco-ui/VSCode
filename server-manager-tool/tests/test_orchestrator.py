@@ -168,3 +168,77 @@ class TestOrchestrator:
         assert result.total_duration_ms >= 0
         assert result.started_at is not None
         assert result.completed_at is not None
+
+    # ── P1 Regression Tests ──────────────────────────────────────────
+
+    def test_orchestrator_normalizer_failure_partial(self):
+        """P1: Collector succeeds but normalizer raises → PARTIAL.
+
+        When one source's normalizer fails but another succeeds,
+        the overall status should be PARTIAL.
+        """
+        def coll_ok():
+            return {"source": "redfish"}
+
+        def coll_ok2():
+            return {"source": "ssh"}
+
+        def norm_fail(raw):
+            raise ValueError("normalization parse error")
+
+        def norm_ok(raw):
+            return self._make_inventory()
+
+        orch = Orchestrator()
+        result = orch.run(
+            "R750-001",
+            {"redfish": coll_ok, "ssh": coll_ok2},
+            {"redfish": norm_fail, "ssh": norm_ok},
+        )
+
+        # One source failed normalization → PARTIAL
+        assert result.status == OrchestrationStatus.PARTIAL
+
+        # Redfish source: collection OK, normalization failed
+        redfish_sr = [sr for sr in result.source_results if sr.source == "redfish"][0]
+        assert redfish_sr.collection_success is True
+        assert redfish_sr.normalization_success is False
+        assert len(redfish_sr.errors) > 0
+
+        # SSH source: both OK
+        ssh_sr = [sr for sr in result.source_results if sr.source == "ssh"][0]
+        assert ssh_sr.collection_success is True
+        assert ssh_sr.normalization_success is True
+
+        # Canonical from SSH (the successful source)
+        assert result.canonical_source == "ssh"
+        assert result.canonical_inventory is not None
+
+    def test_orchestrator_normalizer_failure_all_fail(self):
+        """P1: All normalizers fail → FAILED.
+
+        When all sources' normalizers fail, the overall status
+        should be FAILED.
+        """
+        def coll_ok():
+            return {"source": "redfish"}
+
+        def norm_fail(raw):
+            raise ValueError("normalization error")
+
+        orch = Orchestrator()
+        result = orch.run(
+            "R750-001",
+            {"redfish": coll_ok},
+            {"redfish": norm_fail},
+        )
+
+        assert result.status == OrchestrationStatus.FAILED
+        assert result.canonical_inventory is None
+
+        sr = result.source_results[0]
+        assert sr.collection_success is True
+        assert sr.normalization_success is False
+        assert len(sr.errors) > 0
+
+

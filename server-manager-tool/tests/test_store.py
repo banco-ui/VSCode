@@ -11,6 +11,8 @@ from server_manager.models.inventory import (
 )
 from server_manager.verifiers.base import VerificationResult, FieldResult
 from server_manager.models.enums import VerificationStatus
+import json as _json
+
 
 
 def make_test_inventory(server_id="R750-001", cores=48):
@@ -352,3 +354,75 @@ class TestBackupRestore:
         server = store2.get_server("R750-001")
         assert server is not None
         store2.close()
+
+
+# ── P1 Regression Tests ──────────────────────────────────────────────
+
+class TestMetaAliasRoundTrip:
+    """P1: Verify _meta key survives Store save/load cycle."""
+
+    def test_meta_alias_round_trip_through_store(self, store):
+        """P1: Store saves with by_alias=True, so _meta must be in DB JSON.
+
+        Verifies:
+        1. Snapshot save succeeds
+        2. Stored JSON contains "_meta" key (not "meta")
+        3. Read-back inventory.meta is correctly restored
+        """
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="Server 1",
+            vendor=Vendor.Dell,
+        )
+        store.register_server(entry)
+
+        snap = make_test_snapshot()
+        assert store.save_snapshot(snap) is True
+
+        # Verify stored JSON in DB contains "_meta"
+        row = store.conn.execute(
+            "SELECT inventory_json FROM inventory_snapshots WHERE snapshot_id = ?",
+            ("snap-run-001",),
+        ).fetchone()
+        assert row is not None
+        stored_json = row["inventory_json"]
+        parsed = _json.loads(stored_json)
+        assert "_meta" in parsed
+        assert "meta" not in parsed
+
+        # Read back through public API
+        retrieved = store.get_snapshot("snap-run-001")
+        assert retrieved is not None
+        assert retrieved.inventory.meta.schema_version == "1.0"
+
+
+class TestCredentialEnvSafety:
+    """P1: Verify credential_env stores name, not value."""
+
+    def test_credential_env_stores_name_not_value(self):
+        """P1: EndpointRef stores env var NAME, not the credential value."""
+        env_name = "SERVER_MANAGER_TEST_PASSWORD"
+        secret_value = "SUPER_SECRET_TEST_PASSWORD_12345"
+
+        ep = EndpointRef(
+            host="10.0.0.1",
+            port=443,
+            username="admin",
+            credential_env=env_name,
+        )
+
+        # model_dump should contain env var name, not secret value
+        dumped = ep.model_dump()
+        assert env_name in dumped.get("credential_env", "")
+        assert secret_value not in _json.dumps(dumped)
+
+        # model_dump_json should contain env var name, not secret value
+        json_str = ep.model_dump_json()
+        assert env_name in json_str
+        assert secret_value not in json_str
+
+        # String representation should not leak secret
+        assert secret_value not in repr(ep)
+        assert secret_value not in str(ep)
+
+
