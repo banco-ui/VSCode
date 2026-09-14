@@ -1,0 +1,175 @@
+Home
+AI Services
+AI News
+AI Practices
+AI Learning
+AI Community
+AI Ranking
+배
+삼성 Github 활용 - 산출물 공유하기(Git ignore, Commit & Push)
+2026년 8월 13일 (목)김지선
+285
+0
+20
+
+삼성 사내 Enterprise GitHub(github.sec.samsung.net)을 활용하여 AI 산출물을 공유하고 팀원들과 안전하게 협업하는 방법입니다.
+Git의 기초 개념부터 VS Code/PowerShell 활용법, .gitignore 보안 관리, AI 프롬프트 활용 팁까지 한눈에 정리했습니다.
+
+1. Git이란 무엇인가? (Git의 용도)
+
+Git은 코드 및 파일의 변경 이력을 관리하는 **분산 버전 관리 시스템(DVCS)**입니다.
+
+코드 이력 관리: 누가, 언제, 어떤 코드를 수정했는지 상세히 기록하며, 필요시 과거 시점으로 손쉽게 복구할 수 있습니다.
+
+안전한 협업: 여러 사람이 동시에 동일한 프로젝트를 작업하더라도 코드가 덮어씌워지지 않고 안전하게 병합(Merge)됩니다.
+
+브랜치(Branch) 활용: 기존 서비스에 영향을 주지 않고 새로운 기능을 독립적인 공간에서 실험 및 개발할 수 있습니다.
+
+2. VS Code를 활용한 협업 및 동기화 (Sync) 💡 권장
+
+Visual Studio Code(VS Code)를 사용하면 터미널 명령어 없이 GUI 환경에서 간편하고 직관적으로 코드를 동기화하고 협업할 수 있습니다.
+
+실시간 동시 수정 (VS Code Live Share)
+
+확장 프로그램 Live Share를 설치하면 팀원과 동일한 코드 에디터 화면을 공유하여 실시간 동시 편집 및 공동 디버깅이 가능합니다.
+
+원격 저장소 동기화 (Sync Changes)
+
+좌측 소스 제어(Source Control) 탭(Ctrl + Shift + G)에서 클릭 한 번으로 팀원의 최신 코드를 불러오고(Pull), 내 변경사항을 바로 올릴(Push) 수 있습니다.
+
+3. 저장소 복제 (Clone) 방법
+
+원격 저장소(github.sec.samsung.net)의 코드를 내 로컬 PC로 가져오는 두 가지 방법입니다.
+
+3.1 VS Code를 활용한 복제 (GUI 방식) ⭐ 추천
+
+VS Code 실행 후 상단 메뉴에서 View → Command Palette... 선택 (Ctrl + Shift + P)
+
+검색창에 Git: Clone 입력 후 선택
+
+삼성 Enterprise GitHub 저장소 URL 입력:
+https://github.sec.samsung.net/{조직 또는 사용자명}/{저장소명}.git
+
+저장할 로컬 폴더를 지정하면 복제가 완료되며, 즉시 열어서 작업을 시작할 수 있습니다.
+
+💡 더 쉬운 방법: 좌측 소스 제어(Source Control) 탭 클릭 → [Clone Repository] 버튼 클릭 후 URL 붙여넣기
+
+3.2 PowerShell을 활용한 복제 (CLI 방식)
+
+Win + X 누른 후 Windows PowerShell 실행 (또는 VS Code 내 통합 터미널 Ctrl + ` 실행)
+
+프로젝트를 저장할 디렉터리로 이동:
+
+cd C:\Users\Username\Projects
+
+
+다음 복제 명령어 실행:
+
+git clone https://github.sec.samsung.net/{조직 또는 사용자명}/{저장소명}.git
+
+
+생성된 프로젝트 폴더로 이동:
+
+cd {저장소명}
+
+4. Git 기본 워크플로우 (Commit & Push)
+4.1 VS Code GUI 이용하기
+
+변경 사항 확인: 파일 수정 후 좌측 소스 제어 탭 이동
+
+스테이징 (Stage Changes): 변경된 파일 옆의 + 버튼 클릭하여 커밋 대기 상태 전환
+
+커밋 (Commit): 상단 텍스트 상자에 커밋 메시지(예: feat: 로그인 기능 구현) 입력 후 [Commit] 버튼 클릭
+
+푸시 및 동기화 (Sync/Push): 하단의 [Sync Changes] 또는 [Publish Branch] 버튼을 클릭하여 사내 GitHub에 반영
+
+4.2 PowerShell 이용하기
+# 1. 상태 확인
+git status
+
+# 2. 변경된 파일 스테이징
+git add .
+
+# 3. 커밋 생성
+git commit -m "feat: 로그인 기능 구현"
+
+# 4. 원격 저장소로 푸시
+git push origin main
+
+5. .gitignore 작성 및 관리 방법 ⚠️ 필수
+
+.gitignore 파일은 빌드 결과물, 가상환경, 개인 설정 파일, 비밀키 등을 Git 추적 대상에서 제외할 때 사용합니다.
+
+🚨 보안 주의: 개인 토큰 번호, 비밀키, 불필요한 더미 데이터 등을 무심코 커밋/푸시하면 보안 사고 발생 및 저장소 용량 증대의 원인이 됩니다. Git 작업 전 반드시 .gitignore를 등록해야 합니다.
+
+5.1 주요 작성 예시
+# 가상 환경 및 패키지
+.venv/
+node_modules/
+
+# 빌드 결과물 및 임시 파일
+dist/
+build/
+*.log
+
+# 개인 설정 및 환경변수
+.env
+.vscode/
+
+5.2 이미 추적 중인 파일 제거하기 (PowerShell / 터미널)
+
+.gitignore 등록 전 이미 커밋된 파일은 아래 명령어로 캐시를 삭제해 주어야 추적이 중단됩니다.
+
+# Git 인덱스에서만 삭제 (실제 로컬 파일은 유지됨)
+git rm -r --cached .
+git add .
+git commit -m "fix: ignore 캐시 삭제 및 .gitignore 적용"
+git push origin main
+
+6. AI 활용 프롬프트 ("AI에게 이렇게 말하면 해줍니다")
+
+AI 코딩 도구(Claude Code, GitHub Copilot, Cursor 등)에 다음과 같이 간단히 요청하면 커밋, 푸시, 정리를 자동으로 수행해 줍니다.
+
+⚡ 6.1 일상 작업 및 단순 푸시 요청 (단순/명령형)
+
+간단한 커밋 & 푸시 요청
+
+"지금까지 수정한 내용 적절한 커밋 메시지 작성해서 바로 push해줘."
+
+불필요한 파일 정리 후 푸시
+
+"프로젝트에 임시 파일이나 빌드 결과물 정리해주고, .gitignore 점검한 다음에 깔끔하게 커밋해서 푸시해줘."
+
+커밋 메시지 자동 작성
+
+"내가 만든 변경 사항(git diff) 보고 Conventional Commit 규칙(feat, fix, docs 등)에 맞게 커밋 메시지 한 줄로 써줘."
+
+새 브랜치 생성 및 푸시
+
+"feat/login-page 브랜치 새로 생성해서 그리로 전환한 다음, 변경사항 올리고 원격 저장소에 push해줘."
+
+💡 6.2 환경 설정 및 고급 자동화 프롬프트
+
+상황 1: 프로젝트 맞춤형 .gitignore 생성
+
+"내가 지금 [Python FastAPI + React] 프로젝트를 만들고 있어. OS는 Windows랑 Mac을 같이 써. 이 환경에 맞는 표준 .gitignore 파일 내용을 주석과 함께 작성해 줘."
+
+상황 2: .env나 빌드 폴더가 계속 추적될 때
+
+"내가 .gitignore에 .env를 추가했는데도 git status를 치면 계속 추적되고 있어. 원인이 무엇인지 알려주고, 내 로컬 파일은 지우지 않으면서 Git 추적에서만 제외하는 명령어를 순서대로 알려줘."
+
+처음에는 Git hub가 뭔지 몰라 헤맸는데요. 한번 해보고 나니 동료들과 자료를 공유하기에도 내 산출물을 올리기에도 매우 유용하니 한번 활용해보세요 !
+
+20
+댓글 0
+최신순
+좋아요순
+배
+등록
+[이전글] AX를 통해 회사의 조직을 functionalize한다...
+[다음글] 한총 프록시 等 셋팅 방법 및 사내 Cline 설치 가이드
+목록으로
+© Samsung
+이용약관
+개인정보처리방침
+Contact us
