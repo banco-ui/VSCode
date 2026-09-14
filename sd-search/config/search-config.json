@@ -1,0 +1,38 @@
+{
+  "mosaic": {
+    "baseUrl": "https://mosaic.sec.samsung.net",
+    "sessionFile": "../../config/mosaic-session.json",
+
+    "searchEndpoint": "/api/v1/search",
+    "listEndpoint": "/api/v1/workspaces",
+    "timeout": 30000
+  },
+  "confluence": {
+    "baseUrl": "https://confluence.sec.samsung.net",
+    "searchEndpoint": "/rest/api/search",
+    "contentEndpoint": "/rest/api/content",
+    "cookieFile": "../../config/confluence-session.json",
+
+    "timeout": 30000
+  },
+  "axhub": {
+    "baseUrl": "https://axhub.sec.samsung.net",
+    "cdpPort": 9222,
+    "searchBoards": [
+      "AICrewActivityBoard",
+      "AICommunityBoard"
+    ],
+    "timeout": 60000
+  },
+  "cache": {
+    "enabled": true,
+    "ttlSeconds": 300,
+    "cacheDir": "../../output/search-cache"
+
+  },
+  "defaults": {
+    "platforms": ["mosaic", "confluence", "axhub"],
+    "maxResults": 20,
+    "outputFormat": "table"
+  }
+}
