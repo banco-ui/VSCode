@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDSearch - Samsung Doc Search</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- 헤더 -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🔍</span>
+                <span class="logo-text">SDSearch</span>
+                <span class="logo-subtitle">Samsung Doc Search</span>
+            </div>
+            <div class="header-actions">
+                <button id="btn-cache-clear" class="btn btn-icon" title="캐시 삭제">🗑️ 캐시 삭제</button>
+            </div>
+        </header>
+
+        <!-- 탭 네비게이션 -->
+        <nav class="tabs">
+            <button class="tab active" data-tab="unified">
+                <span class="tab-icon">🔗</span> 통합 검색
+            </button>
+            <button class="tab" data-tab="mosaic">
+                <span class="tab-icon">🟦</span> Mosaic
+            </button>
+            <button class="tab" data-tab="confluence">
+                <span class="tab-icon">🟩</span> Confluence
+            </button>
+            <button class="tab" data-tab="axhub">
+                <span class="tab-icon">🟧</span> axhub
+            </button>
+        </nav>
+
+        <!-- 검색 영역 -->
+        <main class="main-content">
+            <!-- 통합 검색 탭 -->
+            <section id="tab-unified" class="tab-content active">
+                <div class="search-bar">
+                    <input type="text" id="search-input-unified" class="search-input" 
+                           placeholder="검색어를 입력하세요..." autocomplete="off">
+                    <button id="btn-search-unified" class="btn btn-primary">🔍 검색</button>
+                </div>
+                <div class="search-options">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="opt-cache-only-unified"> 
+                        <span>캐시만 검색 (오프라인 모드)</span>
+                    </label>
+                    <label class="select-label">
+                        최대 결과:
+                        <select id="opt-max-unified">
+                            <option value="10">10개</option>
+                            <option value="20" selected>20개</option>
+                            <option value="50">50개</option>
+                            <option value="100">100개</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+
+            <!-- Mosaic 탭 -->
+            <section id="tab-mosaic" class="tab-content">
+                <div class="platform-header">
+                    <span class="platform-badge mosaic">🟦 Mosaic</span>
+                    <span class="platform-desc">Mosaic API 기반 검색</span>
+                </div>
+                <div class="search-bar">
+                    <input type="text" id="search-input-mosaic" class="search-input" 
+                           placeholder="Mosaic에서 검색..." autocomplete="off">
+                    <button id="btn-search-mosaic" class="btn btn-primary">🔍 검색</button>
+                </div>
+                <div class="search-options">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="opt-cache-only-mosaic"> 
+                        <span>캐시만 검색</span>
+                    </label>
+                    <label class="select-label">
+                        최대 결과:
+                        <select id="opt-max-mosaic">
+                            <option value="10">10개</option>
+                            <option value="20" selected>20개</option>
+                            <option value="50">50개</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+
+            <!-- Confluence 탭 -->
+            <section id="tab-confluence" class="tab-content">
+                <div class="platform-header">
+                    <span class="platform-badge confluence">🟩 Confluence</span>
+                    <span class="platform-desc">Confluence REST API (CQL) 기반 검색</span>
+                </div>
+                <div class="search-bar">
+                    <input type="text" id="search-input-confluence" class="search-input" 
+                           placeholder="Confluence에서 검색..." autocomplete="off">
+                    <button id="btn-search-confluence" class="btn btn-primary">🔍 검색</button>
+                </div>
+                <div class="search-options">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="opt-cache-only-confluence"> 
+                        <span>캐시만 검색</span>
+                    </label>
+                    <label class="select-label">
+                        최대 결과:
+                        <select id="opt-max-confluence">
+                            <option value="10">10개</option>
+                            <option value="20" selected>20개</option>
+                            <option value="50">50개</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+
+            <!-- axhub 탭 -->
+            <section id="tab-axhub" class="tab-content">
+                <div class="platform-header">
+                    <span class="platform-badge axhub">🟧 axhub</span>
+                    <span class="platform-desc">Playwright CDP 기반 axhub 게시판 검색</span>
+                </div>
+                <div class="search-bar">
+                    <input type="text" id="search-input-axhub" class="search-input" 
+                           placeholder="axhub에서 검색..." autocomplete="off">
+                    <button id="btn-search-axhub" class="btn btn-primary">🔍 검색</button>
+                </div>
+                <div class="search-options">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="opt-cache-only-axhub"> 
+                        <span>캐시만 검색</span>
+                    </label>
+                    <label class="select-label">
+                        최대 결과:
+                        <select id="opt-max-axhub">
+                            <option value="10">10개</option>
+                            <option value="20" selected>20개</option>
+                            <option value="50">50개</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+
+            <!-- 로그 영역 -->
+            <div id="log-area" class="log-area" style="display: none;">
+                <div class="log-header">
+                    <span>📋 검색 로그</span>
+                    <button id="btn-toggle-log" class="btn btn-small">접기</button>
+                </div>
+                <pre id="log-content" class="log-content"></pre>
+            </div>
+
+            <!-- 결과 영역 -->
+            <div id="results-area" class="results-area">
+                <div id="results-summary" class="results-summary"></div>
+                <div id="results-table" class="results-table"></div>
+            </div>
+        </main>
+
+        <!-- 상세 모달 -->
+        <div id="detail-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <span id="modal-title">상세 내용</span>
+                    <button id="btn-modal-close" class="btn btn-icon">✕</button>
+                </div>
+                <div id="modal-body" class="modal-body"></div>
+            </div>
+        </div>
+
+        <!-- 로딩 오버레이 -->
+        <div id="loading-overlay" class="loading-overlay" style="display: none;">
+            <div class="spinner"></div>
+            <p id="loading-text">검색 중...</p>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
