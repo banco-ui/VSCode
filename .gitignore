@@ -28,18 +28,41 @@ dist-electron/
 *.blob
 *.mht
 *.rtf
-mosaic_api_lines.txt
-mosaic_core.js
-mosaic_main.js
-Verizon USM-OSS Interface Specification_25A_v1.0.*
-KDDI gNB EMS-OSS Interface 사양서_v1.1__20230914.odt
-[CMS-OS0017]_KDDI_OSS_Integration_Support_NFVO_SW_Design.docx
-[KDDI]Curl message(OSS)를 이용한 Slice 자동화-v2-20260810_151345.docx
-10. LSM 설치 자동화-v8-20260811_144527.docx
-CN_KDDI_OSS_연동_NBI.docx
-KDDI gNB EMS-OSS Interface 사양서_v1.1__20230914.docx
-OSS(KDDI) 연동 API 테스트 결과.docx
-(CMS-OS0017)_KDDI_OSS_INTEGRATION_SUPPORT_NFVO_SW_DESIGN_BT.xlsx
+
+# 대용량 압축/바이너리 파일
+*.tar.gz
+*.tar.xz
+*.zip
+*.exe
+*.msi
+*.nupkg
+
+# PDF 문서
+*.pdf
+
+# 문서 파일 (사내문서, 대용량)
+*.docx
+*.xlsx
+*.pptx
+*.odt
+
+# 이미지/스크린샷 파일 (대용량)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.svg
+
+# CSV 데이터 파일 (usm-automation 내 대용량 데이터만 제외, 템플릿은 포함)
+usm-automation/[*[*.csv
+
+
+
+# 디버그 로그
+*-debug.log
+mosaic-debug.log
+
 
 # OS 파일
 Thumbs.db
