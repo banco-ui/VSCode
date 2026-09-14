@@ -66,9 +66,22 @@
             <section id="tab-mosaic" class="tab-content">
                 <div class="platform-header">
                     <span class="platform-badge mosaic">🟦 Mosaic</span>
-                    <span class="platform-desc">Mosaic API 기반 검색</span>
+                    <span class="platform-desc">Mosaic 통합검색 API (itg-search + i-search)</span>
                 </div>
                 <div class="search-bar">
+                    <select id="opt-category-mosaic" class="search-category-select">
+                        <option value="all">📋 통합검색 (전체)</option>
+                        <option value="workspace">🏢 Workspace</option>
+                        <option value="board">📝 Board (게시글)</option>
+                        <option value="mcast">🎬 M Cast</option>
+                        <option value="mindmap">🧠 Mind Map</option>
+                        <option value="ideation">💡 Ideation</option>
+                        <option value="cx">⭐ CX</option>
+                        <option value="lifetrend">📈 Life Trend</option>
+                        <option value="idea">💡 Idea</option>
+                        <option value="discussion">💬 Discussion</option>
+                        <option value="survey">📊 Survey</option>
+                    </select>
                     <input type="text" id="search-input-mosaic" class="search-input" 
                            placeholder="Mosaic에서 검색..." autocomplete="off">
                     <button id="btn-search-mosaic" class="btn btn-primary">🔍 검색</button>
@@ -84,10 +97,12 @@
                             <option value="10">10개</option>
                             <option value="20" selected>20개</option>
                             <option value="50">50개</option>
+                            <option value="100">100개</option>
                         </select>
                     </label>
                 </div>
             </section>
+
 
             <!-- Confluence 탭 -->
             <section id="tab-confluence" class="tab-content">

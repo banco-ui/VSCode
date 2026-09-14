@@ -322,7 +322,35 @@ body {
 @keyframes spin { 0% { transform: rotate(0); } 100% { transform: rotate(360deg); } }
 .loading-text { color: #ccc; font-size: 16px; }
 
+/* ===== Category Select ===== */
+.search-category-select {
+    padding: 10px 14px;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    background: #16213e;
+    color: #e0e0e0;
+    font-size: 14px;
+    cursor: pointer;
+    min-width: 180px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.search-category-select:focus { border-color: #e94560; }
+.search-category-select option { background: #16213e; color: #e0e0e0; }
+
+/* 카테고리 배지 */
+.result-category {
+    display: inline-block;
+    background: rgba(99, 102, 241, 0.15);
+    color: #818cf8;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-right: 8px;
+}
+
 /* ===== Scrollbar ===== */
+
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-track { background: #0d1117; }
 ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
