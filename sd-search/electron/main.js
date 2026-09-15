@@ -1,32 +1,58 @@
 const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
-const { fork } = require('child_process');
 
 let mainWindow = null;
-let serverProcess = null;
+let serverStarted = false;
 
-// Express 서버를 자식 프로세스로 실행
+// Express 서버를 직접 require하여 실행 (asar 호환)
 function startServer() {
-    const serverPath = path.join(__dirname, 'gui', 'server.js');
-    serverProcess = fork(serverPath, [], {
-        env: {
-            ...process.env,
-            ELECTRON_RUN_AS_NODE: '1'
-        },
-        stdio: 'pipe'
-    });
+    try {
+        const serverPath = path.join(__dirname, '..', 'gui', 'server.js');
+        require(serverPath);
+        serverStarted = true;
+        console.log('[SDSearch] Express server started');
+    } catch (err) {
+        console.error('[SDSearch] Failed to start server:', err);
+    }
+}
 
-    serverProcess.stdout.on('data', (data) => {
-        console.log(`[server] ${data.toString().trim()}`);
-    });
-
-    serverProcess.stderr.on('data', (data) => {
-        console.error(`[server:err] ${data.toString().trim()}`);
-    });
-
-    serverProcess.on('exit', (code) => {
-        console.log(`Server process exited with code ${code}`);
-    });
+// Express 서버가 시작될 때까지 재시도하며 대기
+function waitForServerAndLoad() {
+    const maxRetries = 10;
+    let retryCount = 0;
+    
+    function tryLoad() {
+        const http = require('http');
+        const req = http.get('http://localhost:3120', (res) => {
+            if (res.statusCode === 200 || res.statusCode === 302 || res.statusCode === 304) {
+                mainWindow.loadURL('http://localhost:3120');
+            } else {
+                retry();
+            }
+            res.destroy();
+        });
+        
+        req.on('error', () => {
+            retry();
+        });
+        
+        req.setTimeout(2000, () => {
+            req.destroy();
+            retry();
+        });
+    }
+    
+    function retry() {
+        retryCount++;
+        if (retryCount < maxRetries) {
+            setTimeout(tryLoad, 500);
+        } else {
+            // 최후의 수단: 바로 로드 시도
+            mainWindow.loadURL('http://localhost:3120');
+        }
+    }
+    
+    tryLoad();
 }
 
 // Electron 창 생성
@@ -37,7 +63,6 @@ function createWindow() {
         minWidth: 900,
         minHeight: 600,
         title: 'SDSearch - Samsung Doc Search',
-        icon: path.join(__dirname, 'build', 'icon.png'),
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true
@@ -45,12 +70,7 @@ function createWindow() {
     });
 
     // Express 서버가 시작될 때까지 대기 후 로드
-    setTimeout(() => {
-        mainWindow.loadURL('http://localhost:3120');
-        
-        // 개발 도구는 프로덕션에서 닫기
-        // mainWindow.webContents.openDevTools();
-    }, 2000);
+    waitForServerAndLoad();
 
     mainWindow.on('closed', () => {
         mainWindow = null;
@@ -92,14 +112,5 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-    if (serverProcess) {
-        serverProcess.kill();
-    }
     app.quit();
-});
-
-app.on('before-quit', () => {
-    if (serverProcess) {
-        serverProcess.kill();
-    }
 });
