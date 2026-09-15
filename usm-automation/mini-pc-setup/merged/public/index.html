@@ -156,8 +156,11 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
       <div class="gtc-actions">
         <button onclick="loadGtcFiles()" class="btn btn-sm">🔄 새로고침</button>
         <button onclick="document.getElementById('gtcFileInput').click()" class="btn btn-sm btn-primary">⬆️ 파일 업로드</button>
-        <input type="file" id="gtcFileInput" style="display:none" onchange="uploadGtcFile(this)">
+        <button onclick="document.getElementById('gtcDirInput').click()" class="btn btn-sm btn-primary">📁 디렉토리 업로드</button>
+        <input type="file" id="gtcFileInput" style="display:none" onchange="uploadGtcFile(this)" multiple>
+        <input type="file" id="gtcDirInput" style="display:none" onchange="uploadGtcFile(this)" webkitdirectory directory multiple>
       </div>
+
     </div>
     <div id="gtcDiskUsage" class="gtc-disk-usage"></div>
     <div id="gtcFileList" class="gtc-file-list">
