@@ -2,7 +2,11 @@
   "name": "sd-search",
   "version": "1.0.0",
   "description": "Samsung Doc Search - Mosaic, Confluence, AX HUB integrated search tool",
+  "author": "Samsung Research",
+  "license": "UNLICENSED",
+  "private": true,
   "main": "electron/main.js",
+
   "scripts": {
     "search": "node index.js search",
     "detail": "node index.js detail",
@@ -56,10 +60,7 @@
       "createStartMenuShortcut": true,
       "shortcutName": "SDSearch"
     },
-    "asar": true,
-    "asarUnpack": [
-      "node_modules/playwright/**/*",
-      "node_modules/playwright-core/**/*"
-    ]
+    "asar": false
+
   }
 }
