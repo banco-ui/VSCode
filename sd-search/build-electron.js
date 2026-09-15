@@ -33,13 +33,46 @@ if (fs.existsSync(path.join(localElectron, 'electron.exe'))) {
     process.exit(1);
 }
 
-// 빌드 결과물에서 제외할 패키지들 (devDependencies)
+// 빌드 결과물에서 완전히 제외할 패키지들 (빌드 도구, 실행 시 불필요)
+// 주의: electron 패키지는 제외하지 않음 (require('electron')이 작동해야 함)
+//       단, electron/dist (electron.exe 복사본)는 별도로 제거
 const EXCLUDE_PACKAGES = [
-    'electron',
+    // electron-builder 관련 (빌드 도구, 실행 시 불필요)
     'electron-builder',
     'electron-builder-squirrel-windows',
     'electron-publish',
+    'app-builder-bin',
+    'app-builder-lib',
+    '7zip-bin',
+    '@electron-internal',
+    // TypeScript (빌드 도구)
+    'typescript',
+    // 타입 정의 (실행 시 불필요)
+    '@types',
+    // node-gyp (빌드 도구)
+    'node-gyp',
+    // 기타 빌드 도구
+    'dmg-builder',
+    'builder-util',
+    'builder-util-runtime',
+    'fs-extra',
+    'stat-mode',
+    'dotenv',
+    'globby',
 ];
+
+// electron 패키지 내에서 제거할 하위 디렉토리 (electron.exe 복사본, 약 238MB)
+const ELECTRON_DIST_TO_REMOVE = ['dist', 'path.txt', 'download-url.txt'];
+
+
+
+// node_modules 내에서 제외할 하위 디렉토리들 (Playwright 브라우저 바이너리 등)
+const EXCLUDE_DIRS = [
+    '.local-browsers',    // Playwright 브라우저 바이너리 (CDP 연결만 사용하므로 불필요)
+    '.bin',               // CLI 실행 파일
+    '.cache',             // 캐시
+];
+
 
 console.log('=== SDSearch Electron Packaging (no asar) ===\n');
 console.log(`Electron binary: ${electronDist}\n`);
@@ -85,8 +118,8 @@ for (const item of copyItems) {
     }
 }
 
-// node_modules에서 제외 패키지 삭제
-console.log('\n  Excluding dev packages...');
+// node_modules에서 제외 패키지 및 불필요한 디렉토리 삭제
+console.log('\n  Excluding dev packages and large binaries...');
 const nodeModulesDir = path.join(appResourcesDir, 'node_modules');
 for (const pkg of EXCLUDE_PACKAGES) {
     const pkgPath = path.join(nodeModulesDir, pkg);
@@ -95,7 +128,54 @@ for (const pkg of EXCLUDE_PACKAGES) {
         console.log(`  Removed: ${pkg}`);
     }
 }
+
+// Playwright 브라우저 바이너리 등 대용량 디렉토리 제거
+function removeDirRecursive(dirPath) {
+    if (fs.existsSync(dirPath)) {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+        return true;
+    }
+    return false;
+}
+
+// node_modules 하위의 제외 디렉토리들
+for (const dir of EXCLUDE_DIRS) {
+    const dirPath = path.join(nodeModulesDir, dir);
+    if (removeDirRecursive(dirPath)) {
+        console.log(`  Removed: node_modules/${dir}`);
+    }
+}
+
+// playwright-core 내의 브라우저 바이너리 경로 제거 (CDP 연결만 사용)
+const playwrightCorePath = path.join(nodeModulesDir, 'playwright-core');
+if (fs.existsSync(playwrightCorePath)) {
+    const pwBinPath = path.join(playwrightCorePath, '.local-browsers');
+    if (removeDirRecursive(pwBinPath)) {
+        console.log('  Removed: playwright-core/.local-browsers');
+    }
+}
+
+// electron 패키지 내의 dist 폴더 제거 (electron.exe 복사본, 약 238MB)
+// require('electron')은 index.js만 필요하므로 dist는 불필요
+const electronPkgPath = path.join(nodeModulesDir, 'electron');
+if (fs.existsSync(electronPkgPath)) {
+    for (const item of ELECTRON_DIST_TO_REMOVE) {
+        const itemPath = path.join(electronPkgPath, item);
+        if (removeDirRecursive(itemPath)) {
+            console.log(`  Removed: electron/${item}`);
+        } else if (fs.existsSync(itemPath)) {
+            fs.unlinkSync(itemPath);
+            console.log(`  Removed: electron/${item}`);
+        }
+    }
+    // path.txt 재생성 (SDSearch.exe 경로로)
+    const pathTxt = path.join(electronPkgPath, 'path.txt');
+    fs.writeFileSync(pathTxt, '');
+    console.log('  Created: electron/path.txt (empty)');
+}
 console.log('  OK\n');
+
+
 
 // 4. 깨끗한 package.json 생성 (devDependencies 제거)
 console.log('[3/3] Writing clean package.json...');
