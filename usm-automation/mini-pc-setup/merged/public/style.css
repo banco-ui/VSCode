@@ -1,0 +1,439 @@
+/* ===== 미니 PC 통합 관리 스타일 ===== */
+:root {
+  --bg: #0b1020;
+  --card-bg: #121b31;
+  --card-hover: #1a2540;
+  --border: #263656;
+  --text: #edf2ff;
+  --text-dim: #aab6d3;
+  --primary: #3d6eea;
+  --primary-hover: #4d7efa;
+  --green: #57d38c;
+  --red: #ff6973;
+  --yellow: #f5bd58;
+  --gray: #666;
+  --radius: 10px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Segoe UI', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+/* ===== 헤더 ===== */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 24px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 20px; }
+.server-time { color: var(--text-dim); font-size: 12px; margin-left: 12px; }
+.header-left { display: flex; align-items: center; }
+.header-right { display: flex; align-items: center; gap: 8px; }
+.summary { font-size: 13px; color: var(--text-dim); margin-right: 8px; }
+
+/* ===== 버튼 ===== */
+.btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card-bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+.btn:hover { background: var(--card-hover); }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-warning { background: var(--yellow); border-color: var(--yellow); color: #000; }
+.btn-danger { background: var(--red); border-color: var(--red); color: #fff; }
+.btn-success { background: var(--green); border-color: var(--green); color: #000; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ===== 탭 ===== */
+.tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 24px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 10px 24px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+.tab-content { display: none; padding: 20px 24px; }
+.tab-content.active { display: block; }
+
+/* ===== 툴바 ===== */
+.toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+.search-input, .filter-select {
+  padding: 8px 14px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+}
+.search-input { flex: 1; max-width: 400px; }
+.search-input:focus, .filter-select:focus { outline: none; border-color: var(--primary); }
+
+/* ===== 대시보드 ===== */
+.device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+}
+.device-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  transition: all 0.15s;
+}
+.device-card:hover { background: var(--card-hover); border-color: var(--primary); }
+.device-card.offline { opacity: 0.6; }
+.device-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.device-name { font-size: 15px; font-weight: 600; }
+.device-ip { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+.status-badge {
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.status-online { background: rgba(87,211,140,0.2); color: var(--green); }
+.status-offline { background: rgba(255,105,115,0.2); color: var(--red); }
+.status-degraded { background: rgba(245,189,88,0.2); color: var(--yellow); }
+.status-checking { background: rgba(102,102,102,0.2); color: var(--gray); }
+.status-disabled { background: rgba(102,102,102,0.2); color: var(--gray); }
+
+.device-info {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-wrap: wrap;
+}
+.device-info span { display: flex; align-items: center; gap: 4px; }
+.port-ok { color: var(--green); }
+.port-fail { color: var(--red); }
+
+.install-badge {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.install-running { background: rgba(61,110,234,0.2); color: var(--primary); }
+.install-done { background: rgba(87,211,140,0.2); color: var(--green); }
+.install-failed { background: rgba(255,105,115,0.2); color: var(--red); }
+
+.device-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ===== 설치 관리 탭 ===== */
+.install-container { display: flex; gap: 20px; height: calc(100vh - 160px); }
+.install-left { width: 400px; display: flex; flex-direction: column; }
+.install-right { flex: 1; display: flex; flex-direction: column; }
+.install-desc { color: var(--text-dim); font-size: 13px; margin-bottom: 12px; }
+
+.install-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+.install-device-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.install-device-item:hover { background: var(--card-hover); }
+.install-device-item.selected { border-color: var(--primary); background: rgba(61,110,234,0.1); }
+.install-device-info { flex: 1; }
+.install-device-name { font-weight: 600; font-size: 13px; }
+.install-device-ip { font-size: 11px; color: var(--text-dim); }
+.install-device-actions { display: flex; gap: 6px; }
+
+.install-log-panel {
+  flex: 1;
+  background: #000;
+  border-radius: var(--radius);
+  padding: 14px;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-line { color: #ccc; margin-bottom: 2px; }
+
+/* ===== 터미널 탭 ===== */
+.terminal-container { display: flex; gap: 16px; height: calc(100vh - 160px); }
+.terminal-left { width: 280px; display: flex; flex-direction: column; gap: 8px; }
+#terminalSearch { width: 100% !important; max-width: none !important; height: 10px !important; min-height: 10px !important; padding: 0 8px !important; font-size: 13px; box-sizing: border-box; }
+
+
+
+
+
+
+.terminal-right { flex: 1; display: flex; flex-direction: column; }
+
+.terminal-device-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; flex: 1; }
+.terminal-device-item {
+  padding: 10px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.terminal-device-item:hover { background: var(--card-hover); }
+.terminal-device-item.selected { border-color: var(--primary); background: rgba(61,110,234,0.1); }
+.terminal-device-item .td-name { font-size: 13px; font-weight: 600; }
+.terminal-device-item .td-ip { font-size: 11px; color: var(--text-dim); }
+
+.terminal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.terminal-target { color: var(--primary); font-size: 13px; }
+.terminal-input { display: flex; gap: 8px; margin-bottom: 8px; }
+.terminal-input input {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: 'Consolas', monospace;
+  font-size: 13px;
+}
+.terminal-input input:focus { outline: none; border-color: var(--primary); }
+
+.terminal-quick { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+.terminal-quick button {
+  padding: 4px 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+}
+.terminal-quick button:hover { color: var(--text); border-color: var(--primary); }
+
+.terminal-output {
+  flex: 1;
+  background: #000;
+  border-radius: var(--radius);
+  padding: 14px;
+  font-family: 'Consolas', monospace;
+  font-size: 13px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.terminal-placeholder { color: var(--text-dim); }
+.terminal-output .cmd-line { color: var(--yellow); }
+.terminal-output .cmd-result { color: #ccc; }
+.terminal-output .cmd-error { color: var(--red); }
+
+/* ===== 패키지 탭 ===== */
+.packages-container { max-width: 900px; }
+.package-list { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.package-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.package-name { flex: 1; font-size: 14px; }
+.package-size { color: var(--text-dim); font-size: 13px; min-width: 80px; text-align: right; }
+
+/* ===== 모달 ===== */
+.modal {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  width: 400px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.modal-large { width: 700px; }
+.modal h2 { margin-bottom: 16px; }
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-dim); }
+.form-group input, .form-group select {
+  width: 100%;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+}
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* ===== 일괄 명령 ===== */
+.batch-device-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 16px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.batch-device-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.batch-device-item input { cursor: pointer; }
+.batch-result { margin-top: 16px; }
+.batch-result-item {
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 6px;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+}
+.batch-result-item .br-ip { font-weight: 700; color: var(--primary); }
+.batch-result-item .br-output { color: #ccc; margin-top: 4px; white-space: pre-wrap; }
+
+/* ===== 코드 블록 ===== */
+.code-block {
+  background: #000;
+  color: #0f0;
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-family: 'Consolas', monospace;
+  font-size: 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+/* ===== GTC 파일서버 탭 ===== */
+.gtc-container { max-width: 1200px; }
+.gtc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.gtc-header h2 { font-size: 18px; }
+.gtc-actions { display: flex; gap: 8px; }
+.gtc-disk-usage {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.disk-info {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.disk-info span { color: var(--text-dim); }
+.gtc-file-list {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.gtc-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.gtc-table th, .gtc-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.gtc-table th {
+  background: rgba(61,110,234,0.1);
+  color: var(--primary);
+  font-weight: 600;
+  font-size: 13px;
+}
+.gtc-table td { font-size: 13px; }
+.gtc-table tr:hover { background: var(--card-hover); }
+.gtc-table .btn { margin-right: 4px; }
+
+/* ===== 로딩 ===== */
+.loading { text-align: center; padding: 40px; color: var(--text-dim); }
+
+/* ===== 스크롤바 ===== */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+

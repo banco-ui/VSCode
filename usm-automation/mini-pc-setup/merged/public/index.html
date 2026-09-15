@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>미니 PC 통합 관리</title>
+<link rel="stylesheet" href="style.css?v=20260907v2">
+
+
+</head>
+<body>
+
+<!-- 헤더 -->
+<header>
+  <div class="header-left">
+    <h1>🖥️ 미니 PC 통합 관리</h1>
+    <span id="serverTime" class="server-time"></span>
+  </div>
+  <div class="header-right">
+    <span id="summary" class="summary"></span>
+    <button onclick="checkNow()" class="btn btn-sm">🔄 새로고침</button>
+    <button onclick="showAddDevice()" class="btn btn-sm btn-primary">➕ 장비 추가</button>
+    <button onclick="showBatchModal()" class="btn btn-sm btn-warning">⚡ 일괄 명령</button>
+  </div>
+</header>
+
+<!-- 탭 -->
+<nav class="tabs">
+  <button class="tab active" onclick="switchTab(event,'dashboard')">📊 대시보드</button>
+  <button class="tab" onclick="switchTab(event,'install')">🚀 설치 관리</button>
+  <button class="tab" onclick="switchTab(event,'terminal')">💻 원격 명령</button>
+  <button class="tab" onclick="switchTab(event,'packages')">📦 패키지</button>
+  <button class="tab" onclick="switchTab(event,'gtc')">📁 GTC 파일서버</button>
+</nav>
+
+
+<!-- 대시보드 탭 -->
+<div id="tab-dashboard" class="tab-content active">
+  <div class="toolbar">
+    <input type="text" id="searchInput" placeholder="🔍 이름 또는 IP로 검색..." oninput="renderDashboard(currentData)" class="search-input">
+    <select id="filterStatus" onchange="renderDashboard(currentData)" class="filter-select">
+      <option value="">전체 상태</option>
+      <option value="online">정상</option>
+      <option value="offline">장애</option>
+      <option value="degraded">불안정</option>
+    </select>
+    <select id="filterSetup" onchange="renderDashboard(currentData)" class="filter-select">
+      <option value="">전체</option>
+      <option value="setup">세팅 완료</option>
+      <option value="notsetup">미세팅</option>
+    </select>
+  </div>
+  <div id="deviceGrid" class="device-grid">
+    <div class="loading">장비 상태를 확인하는 중...</div>
+  </div>
+</div>
+
+<!-- 설치 관리 탭 -->
+<div id="tab-install" class="tab-content">
+  <!-- Step 1: OpenSSH 설치 (SSH 미설치 PC용) -->
+  <div style="margin-bottom:24px;padding:16px;background:#252526;border-radius:8px;border:1px solid #3c3c3c;">
+    <h2 style="color:#4ec9b0;margin-bottom:8px;">📋 Step 1: OpenSSH 설치 (RDP 접속 필요)</h2>
+    <p style="color:#888;margin-bottom:12px;">SSH가 설치되지 않은 미니 PC (SSH ✗)는 RDP로 접속하여 아래 절차를 수행하세요. OpenSSH만 설치합니다.</p>
+    <ol style="color:#ccc;line-height:1.8;padding-left:20px;">
+      <li>대시보드에서 <b style="color:#4ec9b0;">🖥️ RDP</b> 버튼으로 해당 PC에 RDP 접속</li>
+      <li>PowerShell을 <b style="color:#f44747;">관리자 권한</b>으로 실행</li>
+      <li>아래 명령어를 복사하여 실행:
+<pre style="background:#1e1e1e;padding:12px;border-radius:4px;margin:8px 0;color:#dcdcdc;overflow-x:auto;">Invoke-WebRequest -Uri "http://10.254.170.201:4310/install-ssh.ps1" -OutFile "$env:TEMP\install-ssh.ps1"
+Set-ExecutionPolicy Bypass -Scope Process -Force
+& "$env:TEMP\install-ssh.ps1"</pre>
+      </li>
+      <li>install-ssh.ps1이 자동으로 다음을 설치:
+        <ul style="margin-top:4px;padding-left:20px;">
+          <li>OpenSSH Server (포트 22)</li>
+          <li>방화벽 규칙 (SSH 22, RDP 3389)</li>
+          <li>네트워크 프로파 Private로 변경</li>
+        </ul>
+      </li>
+      <li>설치 완료 후 RDP 종료 → 대시보드에서 SSH ✓ 확인</li>
+      <li>SSH ✓ 확인 후 <b style="color:#4ec9b0;">Step 2</b>에서 프로그램 원격 설치 진행</li>
+    </ol>
+
+  </div>
+
+  <!-- Step 2: 프로그램 원격 설치 (SSH 설치 후) -->
+  <div style="padding:16px;background:#252526;border-radius:8px;border:1px solid #3c3c3c;">
+    <h2 style="color:#4ec9b0;margin-bottom:8px;">🚀 Step 2: 프로그램 원격 설치 (SSH 필요)</h2>
+    <p style="color:#888;margin-bottom:12px;">SSH가 설치된 장비 (SSH ✓)에 bootstrap.ps1을 원격 전송하여 자동 설치합니다. SSH가 없는 장비는 Step 1을 먼저 완료하세요.</p>
+    <div class="install-container">
+      <div class="install-left">
+        <div id="installDeviceList" class="install-device-list"></div>
+      </div>
+      <div class="install-right">
+        <h3>📋 설치 로그</h3>
+        <div id="installLogPanel" class="install-log-panel">
+          <div class="terminal-placeholder">장비를 선택하고 설치를 실행하세요.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+
+<!-- 원격 명령 탭 -->
+<div id="tab-terminal" class="tab-content">
+  <div class="terminal-container">
+    <div class="terminal-left">
+      <h3>장비 선택</h3>
+      <div id="terminalDeviceList" class="terminal-device-list"></div>
+
+    </div>
+
+
+    <div class="terminal-right">
+      <div class="terminal-header">
+        <h3>원격 명령 실행</h3>
+        <span id="terminalTarget" class="terminal-target">장비를 선택하세요</span>
+      </div>
+      <div class="terminal-input">
+        <input type="text" id="cmdInput" placeholder="명령어 입력 후 Enter (예: hostname, ipconfig, dir C:\)" onkeydown="if(event.key==='Enter')execCmd()">
+        <button onclick="execCmd()" class="btn btn-primary">실행</button>
+      </div>
+      <div class="terminal-quick">
+        <button onclick="quickCmd('hostname')">hostname</button>
+        <button onclick="quickCmd('ipconfig')">ipconfig</button>
+        <button onclick="quickCmd('node --version')">node -v</button>
+        <button onclick="quickCmd('python --version')">python -v</button>
+        <button onclick="quickCmd('sc query sshd')">sshd 상태</button>
+        <button onclick="quickCmd('Get-Volume | Format-Table -AutoSize')">디스크</button>
+        <button onclick="quickCmd('tasklist | findstr node')">node 프로세스</button>
+      </div>
+      <div id="terminalOutput" class="terminal-output">
+        <div class="terminal-placeholder">명령어를 실행하면 결과가 여기에 표시됩니다.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 패키지 탭 -->
+<div id="tab-packages" class="tab-content">
+  <div class="packages-container">
+    <h2>📦 패키지 서버 (Yaong 서버 /home/yaong/Mini_PC)</h2>
+    <p class="install-desc">미니 PC 에서 http://10.254.170.201:4310/Mini_PC/ 경로로 다운로드합니다.</p>
+    <div id="packageList" class="package-list">
+      <div class="loading">패키지 목록을 불러오는 중...</div>
+    </div>
+  </div>
+</div>
+
+<!-- GTC 파일서버 탭 -->
+<div id="tab-gtc" class="tab-content">
+  <div class="gtc-container">
+    <div class="gtc-header">
+      <h2>📁 GTC 파일서버 (Yaong 서버 /home/yaong/GTC_fileserver)</h2>
+      <div class="gtc-actions">
+        <button onclick="loadGtcFiles()" class="btn btn-sm">🔄 새로고침</button>
+        <button onclick="document.getElementById('gtcFileInput').click()" class="btn btn-sm btn-primary">⬆️ 파일 업로드</button>
+        <input type="file" id="gtcFileInput" style="display:none" onchange="uploadGtcFile(this)">
+      </div>
+    </div>
+    <div id="gtcDiskUsage" class="gtc-disk-usage"></div>
+    <div id="gtcFileList" class="gtc-file-list">
+      <div class="loading">파일 목록을 불러오는 중...</div>
+    </div>
+  </div>
+</div>
+
+<!-- 모달: 장비 추가 -->
+
+<div id="addDeviceModal" class="modal" style="display:none">
+  <div class="modal-content">
+    <h2>장비 추가</h2>
+    <div class="form-group">
+      <label>장비 이름</label>
+      <input type="text" id="newDeviceName" placeholder="예: 미니PC-01">
+    </div>
+    <div class="form-group">
+      <label>IP 주소</label>
+      <input type="text" id="newDeviceIp" placeholder="예: 10.254.170.209">
+    </div>
+    <div class="form-group">
+      <label>그룹 (선택)</label>
+      <input type="text" id="newDeviceGroup" placeholder="예: 1팀, 쉴드1, QXDM">
+    </div>
+    <div class="modal-actions">
+      <button onclick="addDevice()" class="btn btn-primary">추가</button>
+      <button onclick="closeModal('addDeviceModal')" class="btn">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- 모달: 일괄 명령 -->
+<div id="batchModal" class="modal" style="display:none">
+  <div class="modal-content modal-large">
+    <h2>⚡ 일괄 명령 실행</h2>
+    <p>선택한 장비들에 동일한 명령을 실행합니다.</p>
+    <div class="batch-device-list" id="batchDeviceList"></div>
+    <div class="form-group">
+      <label>실행할 명령</label>
+      <input type="text" id="batchCmd" placeholder="예: hostname">
+    </div>
+    <div class="terminal-quick">
+      <button onclick="document.getElementById('batchCmd').value='hostname'">hostname</button>
+      <button onclick="document.getElementById('batchCmd').value='ipconfig | findstr IPv4'">IP 확인</button>
+      <button onclick="document.getElementById('batchCmd').value='node --version'">node -v</button>
+      <button onclick="document.getElementById('batchCmd').value='python --version'">python -v</button>
+      <button onclick="document.getElementById('batchCmd').value='sc query sshd | findstr STATE'">sshd 상태</button>
+    </div>
+    <div class="modal-actions">
+      <button onclick="execBatch()" class="btn btn-primary">실행</button>
+      <button onclick="closeModal('batchModal')" class="btn">취소</button>
+    </div>
+    <div id="batchResult" class="batch-result"></div>
+  </div>
+</div>
+
+<!-- 모달: 장비 편집 -->
+<div id="editDeviceModal" class="modal" style="display:none">
+  <div class="modal-content">
+    <h2>장비 편집</h2>
+    <div class="form-group">
+      <label>장비 이름</label>
+      <input type="text" id="editDeviceName" placeholder="예: 미니PC-01">
+    </div>
+    <div class="form-group">
+      <label>IP 주소 (수정 불가)</label>
+      <input type="text" id="editDeviceIp" readonly style="opacity:0.6">
+    </div>
+    <div class="form-group">
+      <label>그룹</label>
+      <input type="text" id="editDeviceGroup" placeholder="예: 1팀, 쉴드1, QXDM">
+    </div>
+    <div class="form-group">
+      <label class="toggle">
+        <input type="checkbox" id="editDeviceEnabled"> 모니터링 사용
+      </label>
+    </div>
+    <div class="form-group">
+      <label class="toggle">
+        <input type="checkbox" id="editDeviceSetupDone"> 세팅 완료
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button onclick="saveEditDevice()" class="btn btn-primary">저장</button>
+      <button onclick="closeModal('editDeviceModal')" class="btn">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- 모달: 장비 상세 -->
+<div id="deviceDetailModal" class="modal" style="display:none">
+
+  <div class="modal-content modal-large">
+    <h2 id="detailTitle">장비 상세</h2>
+    <div id="detailContent"></div>
+    <div class="modal-actions">
+      <button onclick="closeModal('deviceDetailModal')" class="btn">닫기</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
