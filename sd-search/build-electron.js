@@ -95,13 +95,23 @@ if (!fs.existsSync(appResourcesDir)) {
     fs.mkdirSync(appResourcesDir, { recursive: true });
 }
 
+// node_modules 위치 찾기 (sd-search 내부 또는 상위 디렉토리)
+let nodeModulesSrc = path.join(rootDir, 'node_modules');
+if (!fs.existsSync(nodeModulesSrc)) {
+    nodeModulesSrc = path.join(path.dirname(rootDir), 'node_modules');
+    if (!fs.existsSync(nodeModulesSrc)) {
+        console.error('ERROR: node_modules not found!');
+        process.exit(1);
+    }
+    console.log(`  Using parent node_modules: ${nodeModulesSrc}`);
+}
+
 const copyItems = [
     'electron',
     'gui',
     'adapters',
     'core',
     'config',
-    'node_modules',
     'package.json'
 ];
 
@@ -117,6 +127,13 @@ for (const item of copyItems) {
         console.log(`  Copied: ${item}`);
     }
 }
+
+// node_modules 별도 복사 (상위 디렉토리일 수 있음)
+const destNodeModules = path.join(appResourcesDir, 'node_modules');
+console.log(`  Copying node_modules from: ${nodeModulesSrc}`);
+execSync(`xcopy "${nodeModulesSrc}" "${destNodeModules}" /E /I /Q /Y`, { stdio: 'pipe' });
+console.log('  Copied: node_modules');
+
 
 // node_modules에서 제외 패키지 및 불필요한 디렉토리 삭제
 console.log('\n  Excluding dev packages and large binaries...');
