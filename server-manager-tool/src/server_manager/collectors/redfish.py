@@ -89,8 +89,13 @@ class RedfishCollector(BaseCollector):
                 pcie_data = self._get_collection(system, "PCIeDevices")
                 if pcie_data:
                     data["pcie_devices"] = self._get_all_members(pcie_data)
+                # Storage
+                storage_data = self._get_collection(system, "Storage")
+                if storage_data:
+                    data["storage"] = self._collect_storage(storage_data)
 
         # Fetch chassis
+
         chassis_data = self._get_collection(root, "Chassis")
         if chassis_data:
             chassis = self._get_first_member(chassis_data)
@@ -179,3 +184,74 @@ class RedfishCollector(BaseCollector):
                 if data:
                     results.append(data)
         return results
+
+    def _collect_storage(self, storage_collection: dict) -> list[dict]:
+        """Collect storage resources from a Storage collection.
+
+        Fetches each Storage member, along with its Drives and Volumes.
+        Partial failures are logged and skipped — one storage subsystem
+        failure does not prevent collection of others.
+
+        Args:
+            storage_collection: The Storage collection response.
+
+        Returns:
+            List of storage resource dicts, each containing:
+            - controller info (StorageControllers)
+            - drives (list of drive dicts)
+            - volumes (list of volume dicts)
+        """
+        results: list[dict] = []
+        members = storage_collection.get("Members", [])
+        for m in members:
+            if not isinstance(m, dict) or "@odata.id" not in m:
+                continue
+            storage = self._get(m["@odata.id"])
+            if storage is None:
+                logger.warning("Failed to fetch Storage resource at %s", m.get("@odata.id"))
+                continue
+
+            entry: dict[str, Any] = {
+                "@odata.id": storage.get("@odata.id", m["@odata.id"]),
+                "controllers": storage.get("StorageControllers", []),
+            }
+
+            # Collect Drives
+            drives_ref = storage.get("Drives")
+            if drives_ref and isinstance(drives_ref, list):
+                drives: list[dict] = []
+                for d in drives_ref:
+                    if isinstance(d, dict) and "@odata.id" in d:
+                        drive = self._get(d["@odata.id"])
+                        if drive:
+                            drives.append(drive)
+                        else:
+                            logger.warning("Failed to fetch Drive at %s", d.get("@odata.id"))
+                entry["drives"] = drives
+            else:
+                entry["drives"] = []
+
+            # Collect Volumes
+            volumes_ref = storage.get("Volumes")
+            if isinstance(volumes_ref, dict) and "@odata.id" in volumes_ref:
+                vol_collection = self._get(volumes_ref["@odata.id"])
+                if vol_collection:
+                    volumes: list[dict] = []
+                    for v in vol_collection.get("Members", []):
+                        if isinstance(v, dict) and "@odata.id" in v:
+                            vol = self._get(v["@odata.id"])
+                            if vol:
+                                volumes.append(vol)
+                            else:
+                                logger.warning("Failed to fetch Volume at %s", v.get("@odata.id"))
+                    entry["volumes"] = volumes
+                else:
+                    entry["volumes"] = []
+            else:
+                entry["volumes"] = []
+
+            results.append(entry)
+
+        return results
+
+
