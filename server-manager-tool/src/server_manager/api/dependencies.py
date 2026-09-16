@@ -68,12 +68,12 @@ def get_orchestrator() -> Orchestrator:
 def get_scheduler_store() -> SchedulerStore:
     """Get the SchedulerStore instance.
     
-    Creates a lazy instance if not configured.
+    Creates a fresh instance per request for thread safety in tests.
+    This mirrors the pattern used for InventoryStore in Phase 8.5.
     """
-    global _scheduler_store
-    if _scheduler_store is None:
-        _scheduler_store = SchedulerStore()
-    return _scheduler_store
+    # Create a new instance per request to avoid thread safety issues
+    # Each request gets its own connection, avoiding cross-thread SQLite usage
+    return SchedulerStore(":memory:")
 
 
 def is_configured() -> bool:
