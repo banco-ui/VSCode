@@ -4,6 +4,7 @@ Scheduled collection orchestration.
 """
 from .models import ScheduleDefinition, ScheduleExecution, ScheduleStatus
 from .scheduler import Scheduler, SchedulerConfig
+from .store import SchedulerStore
 
 __all__ = [
     "ScheduleDefinition",
@@ -11,4 +12,5 @@ __all__ = [
     "ScheduleStatus",
     "Scheduler",
     "SchedulerConfig",
+    "SchedulerStore",
 ]

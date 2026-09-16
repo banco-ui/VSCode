@@ -111,6 +111,7 @@ class ScheduleExecution(BaseModel):
         server_id: Target server for this execution.
         run_id: Reference to orchestration run_id.
         status: Execution status.
+        claimed_at: When execution was claimed.
         started_at: When execution started.
         completed_at: When execution completed.
         error_message: Error message if failed.
@@ -119,7 +120,8 @@ class ScheduleExecution(BaseModel):
     schedule_id: str
     server_id: str
     run_id: Optional[str] = None
-    status: str = "PENDING"  # PENDING, RUNNING, SUCCESS, FAILED, SKIPPED
+    status: str = "PENDING"  # PENDING, RUNNING, SUCCESS, FAILED, SKIPPED, CLAIMED
+    claimed_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
