@@ -1,4 +1,4 @@
-"""FastAPI Application (Phase 8).
+"""FastAPI Application (Phase 8/10C).
 
 Server Manager REST API application object.
 """
@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .routes import router
+from .scheduler_routes import router as scheduler_router
 from .schemas import ErrorResponse, ErrorDetail
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
 
     # Register routes
     app.include_router(router)
+    app.include_router(scheduler_router)
 
     # ── Error handlers ────────────────────────────────────────────────
 
