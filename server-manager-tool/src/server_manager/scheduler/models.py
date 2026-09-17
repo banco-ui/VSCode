@@ -51,11 +51,17 @@ class ScheduleDefinition(BaseModel):
     
     model_config = {"extra": "forbid"}
     
-    def is_due(self, current_time: Optional[datetime] = None) -> bool:
+    def is_due(self, current_time: Optional[datetime] = None, missed_policy: str = "skip") -> bool:
         """Check if this schedule is due for execution.
+        
+        Phase 10D: Missed Schedule Policy
+        - "skip": Skip missed executions (default, prevents backlog)
+        - "latest": Execute immediately if missed (catch-up latest only)
+        - "all": Execute all missed (not recommended, can cause backlog)
         
         Args:
             current_time: Time to check against (defaults to now).
+            missed_policy: Policy for missed schedules ("skip", "latest", "all").
             
         Returns:
             True if the schedule should run now.
@@ -70,7 +76,23 @@ class ScheduleDefinition(BaseModel):
         current = current_time or datetime.now(timezone.utc)
         try:
             next_run = datetime.fromisoformat(self.next_run_at.replace("Z", "+00:00"))
-            return current >= next_run
+            
+            if current < next_run:
+                # Not yet due
+                return False
+            
+            # Schedule is overdue - apply missed policy
+            if missed_policy == "skip":
+                # Skip missed execution, calculate next run
+                # This prevents backlog from accumulating
+                return False
+            elif missed_policy == "latest":
+                # Execute latest missed (catch-up)
+                return True
+            else:  # "all"
+                # Execute all missed (can cause backlog)
+                return True
+                
         except (ValueError, AttributeError):
             # Invalid timestamp — treat as due
             return True
