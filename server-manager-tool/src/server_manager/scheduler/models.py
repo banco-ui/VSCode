@@ -115,15 +115,19 @@ class ScheduleExecution(BaseModel):
         started_at: When execution started.
         completed_at: When execution completed.
         error_message: Error message if failed.
+        recovery_id: Optional recovery operation identifier (Phase 10D).
+        recovery_count: Number of times this execution was recovered (Phase 10D).
     """
     execution_id: str
     schedule_id: str
     server_id: str
     run_id: Optional[str] = None
-    status: str = "PENDING"  # PENDING, RUNNING, SUCCESS, FAILED, SKIPPED, CLAIMED
+    status: str = "PENDING"  # PENDING, RUNNING, SUCCESS, FAILED, SKIPPED, CLAIMED, RECOVERED
     claimed_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
+    recovery_id: Optional[str] = None  # Phase 10D: Recovery operation identifier
+    recovery_count: int = 0  # Phase 10D: Number of recovery attempts
     
     model_config = {"extra": "forbid"}
