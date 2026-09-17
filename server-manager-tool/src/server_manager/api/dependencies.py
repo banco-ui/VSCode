@@ -68,12 +68,29 @@ def get_orchestrator() -> Orchestrator:
 def get_scheduler_store() -> SchedulerStore:
     """Get the SchedulerStore instance.
     
-    Creates a fresh instance per request for thread safety in tests.
-    This mirrors the pattern used for InventoryStore in Phase 8.5.
+    Returns a shared persistent SchedulerStore instance.
+    Uses singleton pattern to ensure all API requests share the same database.
+    
+    For tests, use app.dependency_overrides to inject a test-specific instance.
     """
-    # Create a new instance per request to avoid thread safety issues
-    # Each request gets its own connection, avoiding cross-thread SQLite usage
-    return SchedulerStore(":memory:")
+    global _scheduler_store
+    if _scheduler_store is None:
+        # Use a persistent database file for production
+        # Tests should override this via dependency_overrides
+        import os
+        from pathlib import Path
+        
+        # Get DB path from environment or use default
+        db_path = os.environ.get("SCHEDULER_DB_PATH", None)
+        if db_path is None:
+            # Default to application data directory
+            app_data = Path.home() / ".server-manager"
+            app_data.mkdir(parents=True, exist_ok=True)
+            db_path = str(app_data / "scheduler.db")
+        
+        _scheduler_store = SchedulerStore(db_path)
+    
+    return _scheduler_store
 
 
 def is_configured() -> bool:
