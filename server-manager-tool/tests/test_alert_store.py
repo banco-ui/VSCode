@@ -4,21 +4,12 @@ from __future__ import annotations
 import pytest
 
 from src.server_manager.alert.store import (
-    AlertStore,
-    AlertNotFoundError,
-    AlertDuplicateError,
-    AlertInvalidTransitionError,
+    AlertStore, AlertNotFoundError, AlertDuplicateError, AlertInvalidTransitionError,
 )
 from src.server_manager.alert.models import (
-    AlertStatus,
-    AlertSeverity,
-    AlertType,
-    ResourceType,
+    AlertStatus, AlertSeverity, AlertType, ResourceType,
 )
-from src.server_manager.alert.fingerprint import (
-    create_fingerprint,
-    validate_fingerprint,
-)
+from src.server_manager.alert.fingerprint import create_fingerprint, validate_fingerprint
 
 
 class TestFingerprint:
@@ -47,6 +38,13 @@ class TestFingerprint:
 
     def test_different_condition_different_fingerprint(self):
         fp1 = create_fingerprint("srv01", "HEALTH_CRITICAL", "system", None, "health == CRITICAL")
+        fp2 = create_fingerprint("srv01", "HEALTH_CRITICAL", "system", None, "health == WARNING")
+        assert fp1 != fp2
+
+    def test_resource_id_none_normalization(self):
+        fp1 = create_fingerprint("srv01", "HEALTH_CRITICAL", "system", None, "health == CRITICAL")
+        fp2 = create_fingerprint("srv01", "HEALTH_CRITICAL", "system", "", "health == CRITICAL")
+        assert fp1 == fp2
 
 
 class TestAlertStoreSchema:
@@ -81,17 +79,20 @@ class TestAlertStoreSchema:
         cursor = store.conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='alerts'")
         indexes = {row["name"] for row in cursor.fetchall()}
         expected = {"idx_alerts_fingerprint", "idx_alerts_status", "idx_alerts_server_id",
-                    "idx_alerts_severity", "idx_alerts_status_server", "idx_alerts_created_at",
-                    "idx_alerts_active_fingerprint"}
+                    "idx_alerts_severity", "idx_alerts_status_server", "idx_alerts_created_at"}
         assert expected.issubset(indexes)
         store.close()
 
-    def test_partial_unique_index_exists(self):
+    def test_application_level_deduplication(self):
         store = AlertStore(db_path=":memory:")
-        cursor = store.conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_alerts_active_fingerprint'")
-        row = cursor.fetchone()
-        assert row is not None
-        assert row["sql"] is not None
+        alert1 = store.create_alert(server_id="srv01", alert_type=AlertType.HEALTH_CRITICAL,
+                                   resource_type=ResourceType.SYSTEM, condition="health == CRITICAL",
+                                   severity=AlertSeverity.CRITICAL)
+        with pytest.raises(AlertDuplicateError):
+            store.create_alert(server_id="srv01", alert_type=AlertType.HEALTH_CRITICAL,
+                              resource_type=ResourceType.SYSTEM, condition="health == CRITICAL",
+                              severity=AlertSeverity.CRITICAL)
+        store.close()
 
 
 class TestAlertStoreCRUD:
@@ -140,13 +141,6 @@ class TestAlertStoreCRUD:
                               severity=AlertSeverity.CRITICAL)
         all_alerts = store.get_all_alerts(limit=10)
         assert len(all_alerts) == 5
-        assert "WHERE status IN ('OPEN', 'ACKNOWLEDGED')" in row["sql"]
-        store.close()
-        fp2 = create_fingerprint("srv01", "HEALTH_CRITICAL", "system", None, "health == WARNING")
-        assert fp1 != fp2
-
-    def test_resource_id_none_normalization(self):
-        fp1 = create_fingerprint("srv01", "HEALTH_CRITICAL", "system", None, "health == CRITICAL")
 
 
 class TestAlertLifecycle:
@@ -195,8 +189,6 @@ class TestAlertLifecycle:
         store.acknowledge_alert(alert.alert_id, acknowledged_by="admin")
         with pytest.raises(AlertInvalidTransitionError):
             store.acknowledge_alert(alert.alert_id, acknowledged_by="admin2")
-        fp2 = create_fingerprint("srv01", "HEALTH_CRITICAL", "system", "", "health == CRITICAL")
-        assert fp1 == fp2
 
 
 class TestActiveDeduplication:
@@ -275,15 +267,6 @@ class TestSnapshotReferences:
 
     def test_snapshot_ids_persisted(self, store):
         snapshot_id = "snap_20260921_001"
-        alert = store.create_alert(server_id="srv01", alert_type=AlertType.HEALTH_CRITICAL,
-                                  resource_type=ResourceType.SYSTEM, condition="health == CRITICAL",
-                                  severity=AlertSeverity.CRITICAL, snapshot_id=snapshot_id)
-        assert alert.first_snapshot_id == snapshot_id
-        assert alert.last_snapshot_id == snapshot_id
-        new_snapshot = "snap_20260921_002"
-        updated = store.update_counters(alert.alert_id, failure=True, snapshot_id=new_snapshot)
-        assert updated.first_snapshot_id == snapshot_id
-        assert updated.last_snapshot_id == new_snapshot
 
 
 class TestPersistence:
@@ -340,3 +323,12 @@ class TestPersistence:
         assert alert2.status == AlertStatus.RESOLVED
         assert alert2.resolution_note == "Fixed"
         store2.close()
+        alert = store.create_alert(server_id="srv01", alert_type=AlertType.HEALTH_CRITICAL,
+                                  resource_type=ResourceType.SYSTEM, condition="health == CRITICAL",
+                                  severity=AlertSeverity.CRITICAL, snapshot_id=snapshot_id)
+        assert alert.first_snapshot_id == snapshot_id
+        assert alert.last_snapshot_id == snapshot_id
+        new_snapshot = "snap_20260921_002"
+        updated = store.update_counters(alert.alert_id, failure=True, snapshot_id=new_snapshot)
+        assert updated.first_snapshot_id == snapshot_id
+        assert updated.last_snapshot_id == new_snapshot
