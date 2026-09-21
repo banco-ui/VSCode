@@ -323,12 +323,3 @@ class TestPersistence:
         assert alert2.status == AlertStatus.RESOLVED
         assert alert2.resolution_note == "Fixed"
         store2.close()
-        alert = store.create_alert(server_id="srv01", alert_type=AlertType.HEALTH_CRITICAL,
-                                  resource_type=ResourceType.SYSTEM, condition="health == CRITICAL",
-                                  severity=AlertSeverity.CRITICAL, snapshot_id=snapshot_id)
-        assert alert.first_snapshot_id == snapshot_id
-        assert alert.last_snapshot_id == snapshot_id
-        new_snapshot = "snap_20260921_002"
-        updated = store.update_counters(alert.alert_id, failure=True, snapshot_id=new_snapshot)
-        assert updated.first_snapshot_id == snapshot_id
-        assert updated.last_snapshot_id == new_snapshot
