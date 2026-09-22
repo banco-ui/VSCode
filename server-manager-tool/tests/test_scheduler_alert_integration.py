@@ -14,6 +14,7 @@ from server_manager.orchestrator.models import OrchestrationResult, Orchestratio
 from server_manager.store.store import InventoryStore
 from server_manager.store.models import ServerRegistryEntry
 from server_manager.models.enums import ServerLifecycle, Vendor
+from server_manager.models.inventory import ServerInventory, Identity, Topology, Hardware, Management, OS, Virtualization, Containers, DevelopmentEnvironment, Compute, Health, Workload, PowerThermal, VendorExt, Meta
 from server_manager.alert import AlertStore, AlertEngine, AlertEvaluationContext
 from server_manager.alert.rule_engine import AlertEvaluationResult
 
@@ -35,9 +36,9 @@ def inventory_store():
     inv.register_server(
         ServerRegistryEntry(
             server_id="server-001",
-            name="Test Server",
-            lifecycle=ServerLifecycle.ACTIVE,
+            display_name="Test Server",
             vendor=Vendor.Unknown,
+            model="Test Model",
         )
     )
     yield inv
@@ -95,8 +96,12 @@ class TestBasicIntegration:
         mock_result.run_id = "test-run-001"
         mock_result.server_id = "server-001"
         mock_result.status = OrchestrationStatus.SUCCESS
+        mock_result.started_at = datetime.now(timezone.utc).isoformat()
+        mock_result.completed_at = datetime.now(timezone.utc).isoformat()
         mock_result.canonical_inventory = Mock()
         mock_result.canonical_inventory.health_status = "OK"
+        mock_result.canonical_source = "ssh"
+        mock_result.source_results = []
         mock_result.verification = Mock()
         mock_result.verification.has_discrepancy = False
         mock_orchestrator.run.return_value = mock_result
@@ -112,8 +117,7 @@ class TestBasicIntegration:
             )
             scheduler._store = scheduler_store
             
-            scheduler_store.add_schedule(schedule)
-            scheduler_store.create_execution(execution)
+            scheduler_store.save_schedule(schedule)
             
             scheduler._execute_collection(schedule, "server-001", execution)
             
@@ -134,6 +138,10 @@ class TestBasicIntegration:
         mock_result.status = OrchestrationStatus.SUCCESS
         mock_result.canonical_inventory = Mock()
         mock_result.canonical_inventory.health_status = "OK"
+        mock_result.canonical_source = "ssh"
+        mock_result.started_at = datetime.now(timezone.utc).isoformat()
+        mock_result.completed_at = datetime.now(timezone.utc).isoformat()
+        mock_result.source_results = []
         mock_result.verification = Mock()
         mock_result.verification.has_discrepancy = False
         mock_orchestrator.run.return_value = mock_result
@@ -148,8 +156,7 @@ class TestBasicIntegration:
                 alert_store_factory=lambda: alert_store,
             )
             scheduler._store = scheduler_store
-            scheduler_store.add_schedule(schedule)
-            scheduler_store.create_execution(execution)
+            scheduler_store.save_schedule(schedule)
             
             scheduler._execute_collection(schedule, "server-001", execution)
             
@@ -175,8 +182,12 @@ class TestBasicIntegration:
         mock_result.run_id = "test-run-001"
         mock_result.server_id = "server-001"
         mock_result.status = OrchestrationStatus.SUCCESS
+        mock_result.started_at = datetime.now(timezone.utc).isoformat()
+        mock_result.completed_at = datetime.now(timezone.utc).isoformat()
         mock_result.canonical_inventory = Mock()
         mock_result.canonical_inventory.health_status = "OK"
+        mock_result.canonical_source = "ssh"
+        mock_result.source_results = []
         mock_result.verification = Mock()
         mock_result.verification.has_discrepancy = False
         mock_orchestrator.run.return_value = mock_result
@@ -194,8 +205,7 @@ class TestBasicIntegration:
                 alert_store_factory=lambda: alert_store,
             )
             scheduler._store = scheduler_store
-            scheduler_store.add_schedule(schedule)
-            scheduler_store.create_execution(execution)
+            scheduler_store.save_schedule(schedule)
             
 
 # ── Failure Isolation Tests ─────────────────────────────────────────────
@@ -212,8 +222,12 @@ class TestFailureIsolation:
         mock_result.run_id = "test-run-001"
         mock_result.server_id = "server-001"
         mock_result.status = OrchestrationStatus.SUCCESS
+        mock_result.started_at = datetime.now(timezone.utc).isoformat()
+        mock_result.completed_at = datetime.now(timezone.utc).isoformat()
         mock_result.canonical_inventory = Mock()
         mock_result.canonical_inventory.health_status = "OK"
+        mock_result.canonical_source = "ssh"
+        mock_result.source_results = []
         mock_result.verification = Mock()
         mock_result.verification.has_discrepancy = False
         mock_orchestrator.run.return_value = mock_result
@@ -226,8 +240,7 @@ class TestFailureIsolation:
                 alert_store_factory=lambda: alert_store,
             )
             scheduler._store = scheduler_store
-            scheduler_store.add_schedule(schedule)
-            scheduler_store.create_execution(execution)
+            scheduler_store.save_schedule(schedule)
             
             # Execute collection - should not raise
             scheduler._execute_collection(schedule, "server-001", execution)
@@ -265,8 +278,7 @@ class TestFailureIsolation:
                 alert_store_factory=lambda: alert_store,
             )
             scheduler._store = scheduler_store
-            scheduler_store.add_schedule(schedule)
-            scheduler_store.create_execution(execution)
+            scheduler_store.save_schedule(schedule)
             
             scheduler._execute_collection(schedule, "server-001", execution)
             
@@ -282,8 +294,12 @@ class TestFailureIsolation:
         mock_result.run_id = "test-run-001"
         mock_result.server_id = "server-001"
         mock_result.status = OrchestrationStatus.SUCCESS
+        mock_result.started_at = datetime.now(timezone.utc).isoformat()
+        mock_result.completed_at = datetime.now(timezone.utc).isoformat()
         mock_result.canonical_inventory = Mock()
         mock_result.canonical_inventory.health_status = "OK"
+        mock_result.canonical_source = "ssh"
+        mock_result.source_results = []
         mock_result.verification = Mock()
         mock_result.verification.has_discrepancy = False
         mock_orchestrator.run.return_value = mock_result
@@ -296,8 +312,7 @@ class TestFailureIsolation:
                 alert_store_factory=lambda: alert_store,
             )
             scheduler._store = scheduler_store
-            scheduler_store.add_schedule(schedule)
-            scheduler_store.create_execution(execution)
+            scheduler_store.save_schedule(schedule)
             
             # Execute - should not crash worker
             try:
@@ -328,8 +343,12 @@ class TestAlertStoreFailure:
         mock_result.run_id = "test-run-001"
         mock_result.server_id = "server-001"
         mock_result.status = OrchestrationStatus.SUCCESS
+        mock_result.started_at = datetime.now(timezone.utc).isoformat()
+        mock_result.completed_at = datetime.now(timezone.utc).isoformat()
         mock_result.canonical_inventory = Mock()
         mock_result.canonical_inventory.health_status = "OK"
+        mock_result.canonical_source = "ssh"
+        mock_result.source_results = []
         mock_result.verification = Mock()
         mock_result.verification.has_discrepancy = False
         mock_orchestrator.run.return_value = mock_result
@@ -345,8 +364,7 @@ class TestAlertStoreFailure:
             alert_store_factory=lambda: failing_store,
         )
         scheduler._store = scheduler_store
-        scheduler_store.add_schedule(schedule)
-        scheduler_store.create_execution(execution)
+        scheduler_store.save_schedule(schedule)
         
         # Execute - should handle failure gracefully
         try:
