@@ -31,15 +31,16 @@ def scheduler_store():
 @pytest.fixture
 def inventory_store():
     """Create an in-memory InventoryStore for tests."""
+    import json
     inv = InventoryStore(":memory:")
-    inv.register_server(
-        ServerRegistryEntry(
-            server_id="server-001",
-            name="Test Server",
-            lifecycle=ServerLifecycle.ACTIVE,
-            vendor=Vendor.Unknown,
-        )
+    entry = ServerRegistryEntry(
+        server_id="server-001",
+        display_name="Test Server",
+        hardware_identity=json.dumps({}),
+        vendor=Vendor.Unknown,
+        model="Test Model",
     )
+    inv.register_server(entry)
     yield inv
     inv.close()
 
@@ -60,26 +61,24 @@ def mock_orchestrator():
 
 
 @pytest.fixture
-def schedule():
+def schedule(scheduler_store):
     """Create a test schedule."""
-    return ScheduleDefinition(
+    schedule = ScheduleDefinition(
         schedule_id="test-schedule",
         name="Test Schedule",
         server_ids=["server-001"],
         enabled=True,
         interval_seconds=3600,
     )
+    scheduler_store.save_schedule(schedule)
+    return schedule
 
 
 @pytest.fixture
-def execution():
+def execution(scheduler_store, schedule):
     """Create a test execution."""
-    return ScheduleExecution(
-        execution_id="exec-001",
-        schedule_id="test-schedule",
-        server_id="server-001",
-        status=ScheduleStatus.RUNNING,
-    )
+    execution = scheduler_store.claim_execution(schedule, "server-001")
+    return execution
 
 # ── Basic Integration Tests ─────────────────────────────────────────────
 
@@ -91,14 +90,30 @@ class TestBasicIntegration:
         mock_orchestrator, schedule, execution
     ):
         """Test that AlertEngine.evaluate() is called after collection."""
+        from server_manager.store.models import ServerInventory
+        
+        mock_inventory = ServerInventory(
+            server_id="server-001",
+            health_status="OK",
+            storage_controllers=[],
+            physical_disks=[],
+            virtual_disks=[],
+            network_interfaces=[],
+            memory_modules=[],
+            processors=[],
+        )
+        
         mock_result = Mock(spec=OrchestrationResult)
         mock_result.run_id = "test-run-001"
         mock_result.server_id = "server-001"
         mock_result.status = OrchestrationStatus.SUCCESS
-        mock_result.canonical_inventory = Mock()
-        mock_result.canonical_inventory.health_status = "OK"
-        mock_result.verification = Mock()
-        mock_result.verification.has_discrepancy = False
+        mock_result.started_at = datetime.now(timezone.utc).isoformat()
+        mock_result.completed_at = datetime.now(timezone.utc).isoformat()
+        mock_result.canonical_inventory = mock_inventory
+        mock_result.canonical_source = "ssh"
+        mock_result.source_results_summary = {}
+        mock_result.source_results = []
+        mock_result.verification = None
         mock_orchestrator.run.return_value = mock_result
         
         with patch.object(AlertEngine, 'evaluate') as mock_evaluate:
@@ -111,9 +126,6 @@ class TestBasicIntegration:
                 alert_store_factory=lambda: alert_store,
             )
             scheduler._store = scheduler_store
-            
-            scheduler_store.add_schedule(schedule)
-            scheduler_store.create_execution(execution)
             
             scheduler._execute_collection(schedule, "server-001", execution)
             

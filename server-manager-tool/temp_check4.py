@@ -1,4 +1,7 @@
-import inspect
-from server_manager.store.store import InventoryStore
-methods = [m[0] for m in inspect.getmembers(InventoryStore, predicate=inspect.ismethod) if not m[0].startswith('_')]
-print("InventoryStore methods:", methods)
+try:
+    from server_manager.store.models import ServerInventory
+    print("ServerInventory found in store.models")
+except ImportError:
+    print("ServerInventory not found in store.models")
+    from server_manager.orchestrator.models import CanonicalInventory
+    print("CanonicalInventory found in orchestrator.models")
