@@ -1,4 +1,4 @@
-"""Alert module — Phase 11D-1."""
+"""Alert module — Phase 11D-2."""
 from .models import Alert, AlertStatus, AlertSeverity, AlertType, ResourceType
 from .fingerprint import create_fingerprint, validate_fingerprint
 from .store import AlertStore, AlertStoreError, AlertNotFoundError, AlertDuplicateError, AlertInvalidTransitionError
@@ -9,6 +9,7 @@ from .rule_engine import (
     FAILURE_THRESHOLD,
     RECOVERY_THRESHOLD,
 )
+from .engine import AlertEngine, AlertEngineResult
 
 __all__ = [
     "Alert",
@@ -28,4 +29,6 @@ __all__ = [
     "AlertEvaluationResult",
     "FAILURE_THRESHOLD",
     "RECOVERY_THRESHOLD",
+    "AlertEngine",
+    "AlertEngineResult",
 ]
