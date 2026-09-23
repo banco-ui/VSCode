@@ -1,0 +1,59 @@
+=== FULL COMMIT AUDIT IN store.py ===
+
+Method: init
+  Line 157: self._conn.commit()
+  Context: self._conn.row_factory = sqlite3.Row
+            self._conn.executescript(ALERT_STORE_SCHEMA_SQL)
+
+Method: _create
+  Line 272: self.conn.commit()
+  Context: ),
+            )
+
+Method: _update
+  Line 360: self.conn.commit()
+  Context: (AlertStatus.ACKNOWLEDGED.value, now, acknowledged_by, acknowledge_note, now, alert_id),
+            )
+
+Method: _update
+  Line 386: self.conn.commit()
+  Context: (AlertStatus.RESOLVED.value, now, resolution_note, now, alert_id),
+            )
+
+Method: _update
+  Line 417: self.conn.commit()
+  Context: 
+            cursor = self.conn.execute(query, params)
+
+Method: _insert
+  Line 493: self.conn.commit()
+  Context: (evaluation_id, server_id, snapshot_id, evaluated_at),
+            )
+
+Method: _update
+  Line 605: self.conn.commit()
+  Context: )
+            
+
+Method: _reset
+  Line 627: self.conn.commit()
+  Context: (server_id, fingerprint),
+            )
+
+Method: _reset
+  Line 638: self.conn.commit()
+  Context: (server_id,),
+            )
+
+Method: _update
+  Line 670: self.conn.commit()
+  Context: (snapshot_id, datetime.now(timezone.utc).isoformat(), alert_id),
+            )
+
+Method: _reset
+  Line 691: self.conn.commit()
+  Context: (alert_id,),
+            )
+
+=== SUMMARY ===
+Total commit() calls: 11

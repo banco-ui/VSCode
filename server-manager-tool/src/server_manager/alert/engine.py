@@ -51,7 +51,14 @@ class AlertEngine:
                 context.collection_success,
             )
             
-            result = self.rule_engine.evaluate(context)
+            # Begin explicit transaction for atomic evaluation
+            self.alert_store.begin_transaction()
+            try:
+                result = self.rule_engine.evaluate(context)
+                self.alert_store.commit()
+            except Exception:
+                self.alert_store.rollback()
+                raise
             
             logger.debug(
                 "Alert evaluation complete: server=%s created=%d updated=%d resolved=%d",

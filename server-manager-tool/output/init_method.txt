@@ -1,0 +1,41 @@
+130:     """Active alert with same fingerprint already exists."""
+131:     pass
+132: 
+133: 
+134: class AlertInvalidTransitionError(AlertStoreError):
+135:     """Invalid lifecycle transition attempted."""
+136:     pass
+137: 
+138: class AlertStore:
+139:     """SQLite-backed alert persistence store."""
+140: 
+141:     def __init__(
+142:         self,
+143:         db_path: str | Path = ":memory:",
+144:         lock_retry_count: int = DEFAULT_LOCK_RETRY_COUNT,
+145:         lock_retry_backoff: float = DEFAULT_LOCK_RETRY_BACKOFF,
+146:     ) -> None:
+147:         self.db_path = str(db_path)
+148:         self._conn: Optional[sqlite3.Connection] = None
+149:         self._lock_retry_count = lock_retry_count
+150:         self._lock_retry_backoff = lock_retry_backoff
+151:         self.init()
+152: 
+153:     def init(self) -> None:
+154:         self._conn = sqlite3.connect(self.db_path)
+155:         self._conn.row_factory = sqlite3.Row
+156:         self._conn.executescript(ALERT_STORE_SCHEMA_SQL)
+157:         self._conn.commit()
+158: 
+159:     def close(self) -> None:
+160:         if self._conn:
+161:             self._conn.close()
+162:             self._conn = None
+163: 
+164:     @property
+165:     def conn(self) -> sqlite3.Connection:
+166:         if self._conn is None:
+167:             raise RuntimeError("Database not initialized. Call init() first.")
+168:         return self._conn
+169: 
+170:     def _is_lock_error(self, e: Exception) -> bool:

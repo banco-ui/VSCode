@@ -1,0 +1,28 @@
+Total methods: 25
+
+=== ALL METHODS ===
+  - __init__
+  - init
+  - close
+  - conn
+  - _is_lock_error
+  - _retry_on_lock
+  - _row_to_alert
+  - create_alert
+  - get_alert_by_fingerprint
+  - list_alerts
+  - acknowledge_alert
+  - resolve_alert
+  - update_counters
+  - get_all_alerts
+  - get_alert
+  - is_snapshot_evaluated
+  - record_evaluation
+  - get_failure_count
+  - update_failure_count
+  - increment_failure_count
+  - reset_failure_count
+  - reset_all_failure_tracking
+  - get_failure_tracking_count
+  - increment_ok_count
+  - reset_ok_count

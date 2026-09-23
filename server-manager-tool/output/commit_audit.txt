@@ -1,0 +1,16 @@
+=== ALL commit() CALLS IN store.py ===
+
+Line 157:         self._conn.commit()
+Line 272:             self.conn.commit()
+Line 360:             self.conn.commit()
+Line 386:             self.conn.commit()
+Line 417:             self.conn.commit()
+Line 493:             self.conn.commit()
+Line 605:             self.conn.commit()
+Line 627:             self.conn.commit()
+Line 638:             self.conn.commit()
+Line 670:             self.conn.commit()
+Line 691:             self.conn.commit()
+
+=== SUMMARY ===
+Total commit() calls: 11
