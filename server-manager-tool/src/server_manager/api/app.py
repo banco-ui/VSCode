@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from .routes import router
 from .scheduler_routes import router as scheduler_router
+from .alert_routes import router as alert_router
 from .schemas import ErrorResponse, ErrorDetail
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     # Register routes
     app.include_router(router)
     app.include_router(scheduler_router)
+    app.include_router(alert_router)
 
     # ── Error handlers ────────────────────────────────────────────────
 
