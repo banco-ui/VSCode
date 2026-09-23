@@ -133,3 +133,50 @@ class ComputeCandidateResponse(BaseModel):
 class ComputeCandidatesResponse(BaseModel):
     candidates: list[ComputeCandidateResponse] = Field(default_factory=list)
     total: int = 0
+
+
+# ── Alert ───────────────────────────────────────────────────────────────
+
+class AlertResponse(BaseModel):
+    """Alert API response schema."""
+    alert_id: str
+    fingerprint: str
+    fingerprint_version: int
+    server_id: str
+    alert_type: str
+    resource_type: str
+    resource_id: Optional[str] = None
+    condition: str
+    severity: str
+    status: str
+    created_at: str
+    updated_at: str
+    acknowledged_at: Optional[str] = None
+    acknowledged_by: Optional[str] = None
+    acknowledge_note: Optional[str] = None
+    resolved_at: Optional[str] = None
+    resolution_note: Optional[str] = None
+    consecutive_failure_count: int
+    consecutive_ok_count: int
+    first_snapshot_id: Optional[str] = None
+    last_snapshot_id: Optional[str] = None
+    recovery_count: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AlertListResponse(BaseModel):
+    """Alert list API response schema."""
+    alerts: list[AlertResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class AlertAcknowledgeRequest(BaseModel):
+    """Alert acknowledge API request schema."""
+    acknowledged_by: str
+    note: Optional[str] = None
+
+
+class AlertResolveRequest(BaseModel):
+    """Alert resolve API request schema."""
+    resolution_note: Optional[str] = None
+

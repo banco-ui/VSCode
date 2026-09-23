@@ -13,6 +13,7 @@ from ..store.store import InventoryStore
 from ..dashboard.query_service import DashboardQueryService
 from ..orchestrator.orchestrator import Orchestrator
 from ..scheduler.store import SchedulerStore
+from ..alert.store import AlertStore
 
 
 # ── Service singletons ───────────────────────────────────────────────
@@ -20,6 +21,7 @@ from ..scheduler.store import SchedulerStore
 _store: Optional[InventoryStore] = None
 _dashboard: Optional[DashboardQueryService] = None
 _scheduler_store: Optional[SchedulerStore] = None
+_alert_store: Optional[AlertStore] = None
 
 # Orchestrator factory: callers register collectors/normalizers
 _orchestrator_factory: Optional[Callable[[], Orchestrator]] = None
@@ -29,6 +31,7 @@ def configure(
     store: InventoryStore,
     orchestrator_factory: Optional[Callable[[], Orchestrator]] = None,
     scheduler_store: Optional[SchedulerStore] = None,
+    alert_store: Optional[AlertStore] = None,
 ) -> None:
     """Configure service dependencies.
 
@@ -36,12 +39,14 @@ def configure(
         store: InventoryStore instance.
         orchestrator_factory: Callable that returns a configured Orchestrator.
         scheduler_store: SchedulerStore instance (optional, created lazily if not provided).
+        alert_store: AlertStore instance (optional, created lazily if not provided).
     """
-    global _store, _dashboard, _orchestrator_factory, _scheduler_store
+    global _store, _dashboard, _orchestrator_factory, _scheduler_store, _alert_store
     _store = store
     _dashboard = DashboardQueryService(store)
     _orchestrator_factory = orchestrator_factory
     _scheduler_store = scheduler_store
+    _alert_store = alert_store
 
 
 def get_store() -> InventoryStore:
@@ -91,6 +96,34 @@ def get_scheduler_store() -> SchedulerStore:
         _scheduler_store = SchedulerStore(db_path)
     
     return _scheduler_store
+
+
+def get_alert_store() -> AlertStore:
+    """Get the AlertStore instance.
+    
+    Returns a shared persistent AlertStore instance.
+    Uses singleton pattern to ensure all API requests share the same database.
+    
+    For tests, use app.dependency_overrides to inject a test-specific instance.
+    """
+    global _alert_store
+    if _alert_store is None:
+        # Use a persistent database file for production
+        # Tests should override this via dependency_overrides
+        import os
+        from pathlib import Path
+        
+        # Get DB path from environment or use default
+        db_path = os.environ.get("ALERT_DB_PATH", None)
+        if db_path is None:
+            # Default to application data directory
+            app_data = Path.home() / ".server-manager"
+            app_data.mkdir(parents=True, exist_ok=True)
+            db_path = str(app_data / "alerts.db")
+        
+        _alert_store = AlertStore(db_path)
+    
+    return _alert_store
 
 
 def is_configured() -> bool:
