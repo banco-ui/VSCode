@@ -10,7 +10,7 @@ echo.
 REM ========================================
 REM CONFIG: Edit for your Security PC
 REM ========================================
-set J5DRIVE=E:
+set J5DRIVE=D:
 set WORKSPACE=d:\work\usm-automation
 set J5_INPUT=%J5DRIVE%\j5sync\to-security
 set J5_OUTPUT=%J5DRIVE%\j5sync\from-security

@@ -56,7 +56,7 @@ echo.
 powershell -Command "Get-ChildItem -Path '%WORKSPACE%' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 10MB } | Select-Object -First 20 FullName | Format-Table -HideTableHeaders"
 
 echo.
-echo [ACTION] Copy above files to: %J5DRIVE%\j5sync\to-security\
+echo [ACTION] Copy above files to: D:\j5sync\to-security\
 echo.
 
 :summary
