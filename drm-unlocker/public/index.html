@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DRM 문서 풀기</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Malgun Gothic', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { color: white; text-align: center; margin-bottom: 30px; font-size: 2.5em; }
+    .card { background: white; border-radius: 12px; padding: 30px; margin-bottom: 20px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
+    .form-group { margin-bottom: 20px; }
+    label { display: block; font-weight: bold; margin-bottom: 8px; color: #333; }
+    select, input[type="text"] { width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 15px; }
+    .radio-group { display: flex; gap: 15px; }
+    .radio-option { flex: 1; }
+    .radio-option input[type="radio"] { display: none; }
+    .radio-option label { display: block; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; cursor: pointer; }
+    .radio-option input:checked + label { border-color: #667eea; background: #f0f4ff; }
+    .radio-title { font-weight: bold; display: block; margin-bottom: 3px; }
+    .radio-desc { font-size: 12px; color: #666; }
+    .btn-group { display: flex; gap: 10px; margin-top: 20px; }
+    button { flex: 1; padding: 14px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
+    .btn-primary { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+    .btn-secondary { background: #f0f0f0; color: #333; }
+    .btn-browse { background: #4CAF50; color: white; max-width: 130px; }
+    #log { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; font-family: Consolas; font-size: 13px; min-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔓 DRM 문서 풀기</h1>
+    <div class="card">
+      <div class="form-group">
+        <label for="docType">📄 문서 종류</label>
+        <select id="docType">
+          <option value="word">Word 문서 (.docx)</option>
+          <option value="pdf">PDF (.pdf)</option>
+        </select>
+      </div>
+      <div class="form-group" id="modeGroup">
+        <label>🔧 처리 방식</label>
+        <div class="radio-group">
+          <div class="radio-option">
+            <input type="radio" id="modeTextCapture" name="mode" value="text-capture" checked>
+            <label for="modeTextCapture">
+              <span class="radio-title">📝 텍스트 + 캡처</span>
+              <span class="radio-desc">텍스트 + 스크린샷</span>
+            </label>
+          </div>
+          <div class="radio-option">
+            <input type="radio" id="modeHtml" name="mode" value="html">
+            <label for="modeHtml">
+              <span class="radio-title">🌐 HTML 저장</span>
+              <span class="radio-desc">통합 HTML</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="filePath">📁 파일 경로</label>
+        <div class="btn-group" style="margin-top:10px;">
+          <input type="text" id="filePath" placeholder="파일 경로">
+          <button type="button" class="btn-browse" onclick="browseFile()">찾아보기</button>
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="button" class="btn-primary" onclick="startExtract()">시작하기</button>
+        <button type="button" class="btn-secondary" onclick="openFolder()">결과 폴더</button>
+      </div>
+    </div>
+    <div class="card"><label>📊 로그</label><div id="log">대기 중...</div></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
