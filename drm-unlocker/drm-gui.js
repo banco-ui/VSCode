@@ -14,7 +14,7 @@ const server = http.createServer((req, res) => {
     fs.readFile(path.join(__dirname, 'public', 'index.html'), 'utf8', (e, html) => {
       res.end(html || '');
     });
-  } else if (req.url === '/public/app.js') {
+  } else if (req.url === '/public/app.js' || req.url.startsWith('/app.js')) {
     res.writeHead(200, { 'Content-Type': 'application/javascript' });
     fs.readFile(path.join(__dirname, 'public', 'app.js'), 'utf8', (e, js) => {
       res.end(js || '');
