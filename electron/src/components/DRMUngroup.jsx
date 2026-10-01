@@ -43,21 +43,32 @@ function DRMUngroup() {
       icon: '⚡',
       name: '빠른 텍스트 추출',
       features: [
-        'Word/Excel/PowerPoint 라이브러리 사용',
+        'Word/Excel/PowerPoint COM 사용',
         'PDF: pdf-parse 사용',
         '텍스트만 빠르게 추출',
         '30초 ~ 2분 소요',
       ],
     },
     {
-      id: 'full',
-      icon: '🔍',
-      name: '완전 분석',
+      id: 'capture',
+      icon: '📸',
+      name: '캡처 추출',
       features: [
-        '텍스트 + 그림/표 캡처',
-        'HTML 포맷으로 저장',
+        '텍스트 + 그림/표 화면 캡처',
+        '페이지별 JPG 이미지 저장',
+        'Word 문서만 지원',
         '2 ~ 5분 소요',
-        'Word/Excel/PPT/PDF 모두 지원',
+      ],
+    },
+    {
+      id: 'html',
+      icon: '🌐',
+      name: 'HTML 저장',
+      features: [
+        'Word/Excel/PPT SaveAs HTML',
+        'DRM 제거된 HTML 파일 생성',
+        '브라우저에서 바로 보기 가능',
+        '1 ~ 3분 소요',
       ],
     },
   ];
@@ -95,6 +106,20 @@ function DRMUngroup() {
   const handleRun = async () => {
     if (!selectedFile) {
       alert('파일을 선택해주세요');
+      return;
+    }
+
+    // 모드별 지원 문서 검증
+    const modeSupport = {
+      fast: ['word', 'excel', 'ppt', 'pdf'],
+      capture: ['word'],
+      html: ['word', 'excel', 'ppt'],
+    };
+    const supported = modeSupport[mode] || [];
+    if (!supported.includes(docType)) {
+      const modeName = modes.find(m => m.id === mode)?.name || mode;
+      const docName = docTypes.find(d => d.id === docType)?.name || docType;
+      alert(`${modeName}는 ${supported.map(s => docTypes.find(d => d.id === s)?.name).join(', ')}만 지원합니다.\n${docName}은(는) 지원하지 않습니다.`);
       return;
     }
 
@@ -154,7 +179,7 @@ function DRMUngroup() {
         <div style={styles.guideTitle}>📖 사용 방법</div>
         <ul style={styles.guideList}>
           <li><b>1단계:</b> 문서 종류를 선택하세요 (Word, Excel, PowerPoint, PDF)</li>
-          <li><b>2단계:</b> 처리 방식을 선택하세요 (빠른 텍스트 추출 / 완전 분석)</li>
+          <li><b>2단계:</b> 처리 방식을 선택하세요 (빠른 추출 / 캡처 추출 / HTML 저장)</li>
           <li><b>3단계:</b> 파일을 선택하고 시작하기를 클릭하세요</li>
         </ul>
       </div>
@@ -369,8 +394,8 @@ const styles = {
   },
   modeGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(2, 1fr)',
-    gap: '16px',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: '12px',
   },
   modeCard: {
     background: '#1e1e30',
