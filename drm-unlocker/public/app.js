@@ -3,7 +3,7 @@ var selectedMode = 'fast';
 var logDiv = document.getElementById('log');
 var filePathInput = document.getElementById('filePath');
 
-console.log('🔍 app.js 로드됨 - DOMContentLoaded 등록');
+console.log('🔍 app.js 로드됨');
 
 // Initialize click handlers
 document.addEventListener('DOMContentLoaded', function() {
@@ -13,7 +13,6 @@ document.addEventListener('DOMContentLoaded', function() {
   console.log('📄 문서 카드 개수:', docCards.length);
   
   docCards.forEach(function(card) {
-    console.log('📄 카드 등록:', card.dataset.value);
     card.addEventListener('click', function() {
       console.log('📄 클릭됨:', this.dataset.value);
       selectDocType(this.dataset.value);
@@ -24,7 +23,6 @@ document.addEventListener('DOMContentLoaded', function() {
   console.log('🔧 모드 카드 개수:', modeCards.length);
   
   modeCards.forEach(function(card) {
-    console.log('🔧 모드 카드 등록:', card.dataset.value);
     card.addEventListener('click', function() {
       console.log('🔧 모드 클릭됨:', this.dataset.value);
       selectMode(this.dataset.value);
@@ -33,7 +31,7 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function selectDocType(type) {
-  console.log('📄 selectDocType 호출:', type);
+  console.log('📄 selectDocType:', type);
   selectedDocType = type;
   document.querySelectorAll('.doc-card').forEach(function(card) {
     card.classList.remove('selected');
@@ -42,7 +40,7 @@ function selectDocType(type) {
 }
 
 function selectMode(mode) {
-  console.log('🔧 selectMode 호출:', mode);
+  console.log('🔧 selectMode:', mode);
   selectedMode = mode;
   document.querySelectorAll('.mode-card').forEach(function(card) {
     card.classList.remove('selected');
@@ -51,7 +49,7 @@ function selectMode(mode) {
 }
 
 function browseFile() {
-  console.log('📁 browseFile 호출됨');
+  console.log('📁 browseFile 호출');
   var extMap = {
     word: 'Word|*.docx;*.doc;*.mht|',
     excel: 'Excel|*.xlsx;*.xls;*.csv|',
@@ -62,18 +60,23 @@ function browseFile() {
   var filter = extMap[selectedDocType] + extMap.all;
   console.log('📁 필터:', filter);
   
-  var ps = `Add-Type -AssemblyName System.Windows.Forms; $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = '` + filter + `'; $ofd.InitialDirectory = [Environment]::GetFolderPath("Desktop"); if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ofd.FileName }`;
-  console.log('📁 PowerShell:', ps);
+  var ps = 'Add-Type -AssemblyName System.Windows.Forms\n' +
+           '$ofd = New-Object System.Windows.Forms.OpenFileDialog\n' +
+           "$ofd.Filter = '" + filter + "'\n" +
+           '$ofd.InitialDirectory = [Environment]::GetFolderPath("Desktop")\n' +
+           'if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ofd.FileName }';
+  
+  console.log('📁 PowerShell 스크립트:', ps);
   
   fetch('/api/browse', { method: 'POST', body: ps })
     .then(function(r) { return r.text(); })
     .then(function(p) { 
-      console.log('📁 선택된 파일:', p);
-      if (p && p.trim() && !p.includes('오류') && !p.includes('Error')) {
+      console.log('📁 응답:', p);
+      if (p && p.length > 3 && p.indexOf(':\\') > 0) {
         filePathInput.value = p.trim();
         log('📁 파일 선택: ' + p.trim(), 'info');
       } else {
-        log('❌ 파일 선택 실패: ' + p, 'error');
+        log('❌ 파일 선택 실패', 'error');
       }
     })
     .catch(function(e) { log('❌ 오류: ' + e.message, 'error'); });

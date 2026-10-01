@@ -32,9 +32,10 @@ const server = http.createServer((req, res) => {
     let ps = '';
     req.on('data', c => { ps += c; });
     req.on('end', () => {
-      const fullCmd = ps + ' | Out-String';
-      const encoded = Buffer.from(fullCmd, 'utf8').toString('base64');
-      exec('powershell -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand ' + encoded, { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const tempPs1 = path.join(__dirname, 'temp-browse.ps1');
+      fs.writeFileSync(tempPs1, ps, 'utf8');
+      exec('powershell -ExecutionPolicy Bypass -File "' + tempPs1 + '"', { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
         res.writeHead(err ? 500 : 200);
         const output = stdout || stderr || '';
         res.end(output.trim());
