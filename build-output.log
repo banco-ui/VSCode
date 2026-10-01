@@ -1,0 +1,112 @@
+
+> yaong-tools@1.0.0 electron:build
+> npm run build && cross-env NODE_TLS_REJECT_UNAUTHORIZED=0 electron-builder --win --x64
+
+
+> yaong-tools@1.0.0 build
+> vite build
+
+[33m(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - ESM syntax in a file loaded as CommonJS (vite.config.js:1:1). Use a `.mjs` extension or set `"type": "module"` in the closest package.json
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.[39m
+[36mvite v8.3.0 [32mbuilding client environment for production...[36m[39m
+transforming...
+✓ 26 modules transformed.
+rendering chunks...
+computing gzip size...
+dist-electron/index.html                   0.61 kB │ gzip:  0.42 kB
+dist-electron/assets/index-COoUrKZg.css    0.86 kB │ gzip:  0.44 kB
+dist-electron/assets/index-XWSqthRY.js   317.60 kB │ gzip: 90.52 kB
+
+[32m✓ built in 942ms[39m
+  • electron-builder  version=25.1.8 os=10.0.26200
+  • loaded configuration  file=package.json ("build" field)
+  • unresolved deps  unresolved=asynckitcombined-streames-set-tostringtaghasown nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=debug nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=debug nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=archiverdayjsfast-csvjszipreadable-streamsaxestmpuuid nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=big-integerbinarybluebirdbuffer-indexof-polyfillduplexer2fstreamgraceful-fslistenercountsetimmediate
+                     nodeModuleDir=D:\Data\AI\VSCode\node_modules\exceljs\node_modules
+                     round=0
+  • unresolved deps  unresolved=big-integerbinarybluebirdbuffer-indexof-polyfillduplexer2fstreamgraceful-fslistenercountsetimmediate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=1
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argssafe-bufferstring_decoderutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules\exceljs\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=1
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=graceful-fsinherits nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=minimist nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=glob nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=fs.realpathinflightinheritsoncepath-is-absolute nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=concat-map nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=globgraceful-fslazystreamlodash.defaultslodash.differencelodash.flattenlodash.isplainobjectlodash.unionnormalize-path nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=compress-commonsreadable-stream nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=globgraceful-fslazystreamlodash.defaultslodash.differencelodash.flattenlodash.isplainobjectlodash.unionnormalize-pathreadable-stream
+                     nodeModuleDir=D:\Data\AI\VSCode\node_modules
+                     round=0
+  • unresolved deps  unresolved=lodash.escaperegexplodash.isbooleanlodash.isequallodash.isfunctionlodash.isnil nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=lodash.escaperegexplodash.groupbylodash.isfunctionlodash.isnillodash.isundefinedlodash.uniq nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=liepakosetimmediate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=bytesdebughttp-errorsiconv-liteon-finishedqsraw-bodytype-is nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=media-typermime-types nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@xmldom/xmldombase64-jsbluebirddingbat-to-unicodejsziploppath-is-absoluteunderscorexmlbuilder nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=append-fieldbusboyconcat-stream nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=fflatepdfjs-disttesseract.js nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@tokenizer/inflatestrtok3token-typesuint8array-extras nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@napi-rs/canvas-android-arm64@napi-rs/canvas-darwin-arm64@napi-rs/canvas-darwin-x64@napi-rs/canvas-linux-arm-gnueabihf@napi-rs/canvas-linux-arm64-gnu@napi-rs/canvas-linux-arm64-musl@napi-rs/canvas-linux-riscv64-gnu@napi-rs/canvas-linux-x64-gnu@napi-rs/canvas-linux-x64-musl@napi-rs/canvas-win32-arm64-msvc
+                     nodeModuleDir=D:\Data\AI\VSCode\node_modules
+                     round=0
+  • unresolved deps  unresolved=@napi-rs/canvas nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@napi-rs/canvas nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=string-widthwrap-ansi nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=emoji-regexget-east-asian-width nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=ansi-stylesstring-width nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • executing @electron/rebuild  electronVersion=43.7.0 arch=x64 buildFromSource=false appDir=./
+  • installing native dependencies  arch=x64
+  • completed installing native dependencies
+  • packaging       platform=win32 arch=x64 electron=43.7.0 appOutDir=dist\win-unpacked
+  • map async       taskCount=2
+  • map async       taskCount=1
+  • map async       taskCount=75
+  • unresolved deps  unresolved=asynckitcombined-streames-set-tostringtaghasown nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=debug nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=debug nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=archiverdayjsfast-csvjszipreadable-streamsaxestmpuuid nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=big-integerbinarybluebirdbuffer-indexof-polyfillduplexer2fstreamgraceful-fslistenercountsetimmediate
+                     nodeModuleDir=D:\Data\AI\VSCode\node_modules\exceljs\node_modules
+                     round=0
+  • unresolved deps  unresolved=big-integerbinarybluebirdbuffer-indexof-polyfillduplexer2fstreamgraceful-fslistenercountsetimmediate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=1
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argssafe-bufferstring_decoderutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules\exceljs\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=1
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=graceful-fsinherits nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=minimist nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=glob nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=fs.realpathinflightinheritsoncepath-is-absolute nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=concat-map nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=globgraceful-fslazystreamlodash.defaultslodash.differencelodash.flattenlodash.isplainobjectlodash.unionnormalize-path nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=compress-commonsreadable-stream nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=globgraceful-fslazystreamlodash.defaultslodash.differencelodash.flattenlodash.isplainobjectlodash.unionnormalize-pathreadable-stream
+                     nodeModuleDir=D:\Data\AI\VSCode\node_modules
+                     round=0
+  • unresolved deps  unresolved=lodash.escaperegexplodash.isbooleanlodash.isequallodash.isfunctionlodash.isnil nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=lodash.escaperegexplodash.groupbylodash.isfunctionlodash.isnillodash.isundefinedlodash.uniq nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=liepakosetimmediate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=core-util-isinheritsisarrayprocess-nextick-argsutil-deprecate nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=bytesdebughttp-errorsiconv-liteon-finishedqsraw-bodytype-is nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=media-typermime-types nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@xmldom/xmldombase64-jsbluebirddingbat-to-unicodejsziploppath-is-absoluteunderscorexmlbuilder nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=append-fieldbusboyconcat-stream nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=fflatepdfjs-disttesseract.js nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@tokenizer/inflatestrtok3token-typesuint8array-extras nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@napi-rs/canvas-android-arm64@napi-rs/canvas-darwin-arm64@napi-rs/canvas-darwin-x64@napi-rs/canvas-linux-arm-gnueabihf@napi-rs/canvas-linux-arm64-gnu@napi-rs/canvas-linux-arm64-musl@napi-rs/canvas-linux-riscv64-gnu@napi-rs/canvas-linux-x64-gnu@napi-rs/canvas-linux-x64-musl@napi-rs/canvas-win32-arm64-msvc
+                     nodeModuleDir=D:\Data\AI\VSCode\node_modules
+                     round=0
+  • unresolved deps  unresolved=@napi-rs/canvas nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=@napi-rs/canvas nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=string-widthwrap-ansi nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=emoji-regexget-east-asian-width nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • unresolved deps  unresolved=ansi-stylesstring-width nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
