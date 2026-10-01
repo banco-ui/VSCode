@@ -61,22 +61,22 @@
       <div class="form-group">
         <label>📄 문서 종류 선택</label>
         <div class="doc-grid">
-          <div class="doc-card selected" data-value="word" onclick="selectDocType('word')">
+          <div class="doc-card selected" data-value="word">
             <div class="doc-icon">📄</div>
             <div class="doc-name">Word 문서</div>
             <div class="doc-ext">.docx, .doc, .mht</div>
           </div>
-          <div class="doc-card" data-value="excel" onclick="selectDocType('excel')">
+          <div class="doc-card" data-value="excel">
             <div class="doc-icon">📊</div>
             <div class="doc-name">Excel 스프레드시트</div>
             <div class="doc-ext">.xlsx, .xls, .csv</div>
           </div>
-          <div class="doc-card" data-value="ppt" onclick="selectDocType('ppt')">
+          <div class="doc-card" data-value="ppt">
             <div class="doc-icon">📽️</div>
             <div class="doc-name">PowerPoint 프레젠테이션</div>
             <div class="doc-ext">.pptx, .ppt</div>
           </div>
-          <div class="doc-card" data-value="pdf" onclick="selectDocType('pdf')">
+          <div class="doc-card" data-value="pdf">
             <div class="doc-icon">📕</div>
             <div class="doc-name">PDF 문서</div>
             <div class="doc-ext">.pdf</div>
@@ -86,7 +86,7 @@
       <div class="form-group">
         <label>🔧 처리 방식 선택</label>
         <div class="mode-grid">
-          <div class="mode-card selected" data-value="fast" onclick="selectMode('fast')">
+          <div class="mode-card selected" data-value="fast">
             <div class="mode-icon">⚡</div>
             <div class="mode-title">빠른 텍스트 추출</div>
             <div class="mode-desc">
@@ -98,7 +98,7 @@
               </ul>
             </div>
           </div>
-          <div class="mode-card" data-value="full" onclick="selectMode('full')">
+          <div class="mode-card" data-value="full">
             <div class="mode-icon">🔍</div>
             <div class="mode-title">완전 분석</div>
             <div class="mode-desc">
@@ -126,6 +126,6 @@
     </div>
     <div class="card"><label>📊 로그</label><div id="log">대기 중...</div></div>
   </div>
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

@@ -3,7 +3,37 @@ var selectedMode = 'fast';
 var logDiv = document.getElementById('log');
 var filePathInput = document.getElementById('filePath');
 
+console.log('🔍 app.js 로드됨 - DOMContentLoaded 등록');
+
+// Initialize click handlers
+document.addEventListener('DOMContentLoaded', function() {
+  console.log('🔍 DOMContentLoaded 발생!');
+  
+  var docCards = document.querySelectorAll('.doc-card');
+  console.log('📄 문서 카드 개수:', docCards.length);
+  
+  docCards.forEach(function(card) {
+    console.log('📄 카드 등록:', card.dataset.value);
+    card.addEventListener('click', function() {
+      console.log('📄 클릭됨:', this.dataset.value);
+      selectDocType(this.dataset.value);
+    });
+  });
+  
+  var modeCards = document.querySelectorAll('.mode-card');
+  console.log('🔧 모드 카드 개수:', modeCards.length);
+  
+  modeCards.forEach(function(card) {
+    console.log('🔧 모드 카드 등록:', card.dataset.value);
+    card.addEventListener('click', function() {
+      console.log('🔧 모드 클릭됨:', this.dataset.value);
+      selectMode(this.dataset.value);
+    });
+  });
+});
+
 function selectDocType(type) {
+  console.log('📄 selectDocType 호출:', type);
   selectedDocType = type;
   document.querySelectorAll('.doc-card').forEach(function(card) {
     card.classList.remove('selected');
@@ -12,6 +42,7 @@ function selectDocType(type) {
 }
 
 function selectMode(mode) {
+  console.log('🔧 selectMode 호출:', mode);
   selectedMode = mode;
   document.querySelectorAll('.mode-card').forEach(function(card) {
     card.classList.remove('selected');
@@ -20,6 +51,7 @@ function selectMode(mode) {
 }
 
 function browseFile() {
+  console.log('📁 browseFile 호출됨');
   var extMap = {
     word: 'Word|*.docx;*.doc;*.mht|',
     excel: 'Excel|*.xlsx;*.xls;*.csv|',
@@ -28,17 +60,25 @@ function browseFile() {
     all: 'All|*.*'
   };
   var filter = extMap[selectedDocType] + extMap.all;
-  var ps = 'Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::AppActivate("Visual Studio Code"); Add-Type -AssemblyName System.Windows.Forms; $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = "' + filter + '"; if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::WriteLine($ofd.FileName) }';
+  console.log('📁 필터:', filter);
+  var ps = 'Add-Type -AssemblyName System.Windows.Forms; $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = "' + filter + '"; $ofd.InitialDirectory = [Environment]::GetFolderPath("Desktop"); if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ofd.FileName }';
   fetch('/api/browse', { method: 'POST', body: ps })
     .then(function(r) { return r.text(); })
-    .then(function(p) { if (p && p.trim()) filePathInput.value = p.trim(); })
+    .then(function(p) { 
+      console.log('📁 선택된 파일:', p);
+      if (p && p.trim()) {
+        filePathInput.value = p.trim();
+        log('📁 파일 선택: ' + p.trim(), 'info');
+      }
+    })
     .catch(function(e) { log('❌ 오류: ' + e.message, 'error'); });
 }
 
 function startExtract() {
   var filePath = filePathInput.value.trim();
   if (!filePath) { alert('파일을 선택하세요'); return; }
-  log('🚀 시작: ' + selectedDocType + ' / ' + selectedMode + '\\n   파일: ' + filePath + '\\n', 'info');
+  log('🚀 시작: ' + selectedDocType + ' / ' + selectedMode, 'info');
+  log('   파일: ' + filePath, 'info');
   fetch('/api/extract', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -50,7 +90,7 @@ function startExtract() {
       return reader.read().then(function(res) {
         if (res.done) return;
         var chunk = decoder.decode(res.value, { stream: true });
-        chunk.split('\\n').filter(function(l) { return l.trim(); }).forEach(function(line) {
+        chunk.split('\n').filter(function(l) { return l.trim(); }).forEach(function(line) {
           try {
             var msg = JSON.parse(line);
             if (msg.type === 'output') log(msg.data, 'info');
