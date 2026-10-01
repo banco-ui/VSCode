@@ -110,3 +110,27 @@ dist-electron/assets/index-XWSqthRY.js   317.60 kB │ gzip: 90.52 kB
   • unresolved deps  unresolved=string-widthwrap-ansi nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
   • unresolved deps  unresolved=emoji-regexget-east-asian-width nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
   • unresolved deps  unresolved=ansi-stylesstring-width nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
+  • updating asar integrity executable resource  executablePath=dist\win-unpacked\Yaong Tools.exe
+  • path doesn't exist  path=D:\Data\AI\VSCode\build\assets\icon.png
+  • path resolved   path=D:\Data\AI\VSCode\assets\icon.png outputFormat=ico
+  • found existing  path=C:\Users\banco\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0
+  • execute command  command='C:\Users\banco\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0\rcedit-x64.exe' 'D:\Data\AI\VSCode\dist\win-unpacked\Yaong Tools.exe' --set-version-string FileDescription 'Yaong Tools - 통합 자동화 허브' --set-version-string ProductName 'Yaong Tools' --set-version-string LegalCopyright 'Copyright © 2026 Samsung Research' --set-file-version 1.0.0 --set-product-version 1.0.0.0 --set-version-string InternalName 'Yaong Tools' --set-version-string OriginalFilename '' --set-version-string CompanyName 'Samsung Research' --set-icon 'D:\Data\AI\VSCode\dist\.icon-ico\icon.ico'
+                     workingDirectory=
+  • command executed  executable=C:\Users\banco\AppData\Local\electron-builder\Cache\winCodeSign\winCodeSign-2.6.0\rcedit-x64.exe
+  • signing with signtool.exe  path=dist\win-unpacked\Yaong Tools.exe
+  • no signing info identified, signing is skipped  signHook=false cscInfo=null
+  • signing with signtool.exe  path=dist\win-unpacked\resources\app.asar.unpacked\node_modules\ssh2\util\pagent.exe
+  • no signing info identified, signing is skipped  signHook=false cscInfo=null
+  • building        target=nsis file=dist\yaong-tools-1.0.0-win-x64.exe archs=x64 oneClick=false perMachine=false
+  • found existing  path=C:\Users\banco\AppData\Local\electron-builder\Cache\nsis\nsis-3.0.4.1
+  • signing with signtool.exe  path=dist\win-unpacked\resources\elevate.exe
+  • no signing info identified, signing is skipped  signHook=false cscInfo=null
+  • found existing  path=C:\Users\banco\AppData\Local\electron-builder\Cache\nsis\nsis-resources-3.4.1
+  • signing with signtool.exe  path=dist\__uninstaller-nsis-yaong-tools.exe
+  • no signing info identified, signing is skipped  signHook=false cscInfo=null
+  • signing with signtool.exe  path=dist\yaong-tools-1.0.0-win-x64.exe
+  • no signing info identified, signing is skipped  signHook=false cscInfo=null
+  • building block map  blockMapFile=dist\yaong-tools-1.0.0-win-x64.exe.blockmap
+  • building        target=portable file=dist\yaong-tools-portable-1.0.0-win-x64.exe archs=x64
+  • signing with signtool.exe  path=dist\yaong-tools-portable-1.0.0-win-x64.exe
+  • no signing info identified, signing is skipped  signHook=false cscInfo=null
