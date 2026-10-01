@@ -32,10 +32,12 @@ const server = http.createServer((req, res) => {
     let ps = '';
     req.on('data', c => { ps += c; });
     req.on('end', () => {
-      const encoded = Buffer.from(ps, 'utf8').toString('base64');
-      exec('powershell -ExecutionPolicy Bypass -EncodedCommand ' + encoded, { encoding: 'utf8' }, (err, stdout, stderr) => {
+      const fullCmd = ps + ' | Out-String';
+      const encoded = Buffer.from(fullCmd, 'utf8').toString('base64');
+      exec('powershell -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand ' + encoded, { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
         res.writeHead(err ? 500 : 200);
-        res.end(err ? (stderr || err.message) : stdout.trim());
+        const output = stdout || stderr || '';
+        res.end(output.trim());
       });
     });
   } else if (req.url === '/api/open-folder') {

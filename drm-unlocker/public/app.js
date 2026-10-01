@@ -61,14 +61,19 @@ function browseFile() {
   };
   var filter = extMap[selectedDocType] + extMap.all;
   console.log('📁 필터:', filter);
-  var ps = 'Add-Type -AssemblyName System.Windows.Forms; $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = "' + filter + '"; $ofd.InitialDirectory = [Environment]::GetFolderPath("Desktop"); if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ofd.FileName }';
+  
+  var ps = `Add-Type -AssemblyName System.Windows.Forms; $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = '` + filter + `'; $ofd.InitialDirectory = [Environment]::GetFolderPath("Desktop"); if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $ofd.FileName }`;
+  console.log('📁 PowerShell:', ps);
+  
   fetch('/api/browse', { method: 'POST', body: ps })
     .then(function(r) { return r.text(); })
     .then(function(p) { 
       console.log('📁 선택된 파일:', p);
-      if (p && p.trim()) {
+      if (p && p.trim() && !p.includes('오류') && !p.includes('Error')) {
         filePathInput.value = p.trim();
         log('📁 파일 선택: ' + p.trim(), 'info');
+      } else {
+        log('❌ 파일 선택 실패: ' + p, 'error');
       }
     })
     .catch(function(e) { log('❌ 오류: ' + e.message, 'error'); });
