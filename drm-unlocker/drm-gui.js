@@ -44,10 +44,10 @@ const server = http.createServer((req, res) => {
 });
 
 function handleExtract(docType, mode, filePath, res) {
-  let script = docType === 'word' ? (mode === 'html' ? 'drm-html-save.js' : 'drm-text-capture.js') : 'drm-pdf-com.js';
+  const script = 'drm-ungroup.js';
   const scriptPath = path.join(__dirname, 'scripts', script);
   if (!fs.existsSync(scriptPath)) { res.writeHead(404); res.end('Not found: ' + script); return; }
-  const cmd = 'node "' + scriptPath + '" "' + filePath + '"';
+  const cmd = 'node "' + scriptPath + '" "' + filePath + '" ' + docType + ' ' + mode;
   console.log('실행: ' + cmd);
   const proc = exec(cmd, { encoding: 'utf8' });
   res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -1,14 +1,34 @@
-var docTypeSel = document.getElementById('docType');
-var modeGroup = document.getElementById('modeGroup');
+var selectedDocType = 'word';
+var selectedMode = 'fast';
 var logDiv = document.getElementById('log');
 var filePathInput = document.getElementById('filePath');
 
-docTypeSel.onchange = function() {
-  modeGroup.style.display = this.value === 'word' ? 'block' : 'none';
-};
+function selectDocType(type) {
+  selectedDocType = type;
+  document.querySelectorAll('.doc-card').forEach(function(card) {
+    card.classList.remove('selected');
+    if (card.dataset.value === type) card.classList.add('selected');
+  });
+}
+
+function selectMode(mode) {
+  selectedMode = mode;
+  document.querySelectorAll('.mode-card').forEach(function(card) {
+    card.classList.remove('selected');
+    if (card.dataset.value === mode) card.classList.add('selected');
+  });
+}
 
 function browseFile() {
-  var ps = 'Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::AppActivate("Visual Studio Code"); Add-Type -AssemblyName System.Windows.Forms; $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = "Word|*.docx|PDF|*.pdf|모두|*.*"; if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::WriteLine($ofd.FileName) }';
+  var extMap = {
+    word: 'Word|*.docx;*.doc;*.mht|',
+    excel: 'Excel|*.xlsx;*.xls;*.csv|',
+    ppt: 'PowerPoint|*.pptx;*.ppt|',
+    pdf: 'PDF|*.pdf|',
+    all: 'All|*.*'
+  };
+  var filter = extMap[selectedDocType] + extMap.all;
+  var ps = 'Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::AppActivate("Visual Studio Code"); Add-Type -AssemblyName System.Windows.Forms; $ofd = New-Object System.Windows.Forms.OpenFileDialog; $ofd.Filter = "' + filter + '"; if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::WriteLine($ofd.FileName) }';
   fetch('/api/browse', { method: 'POST', body: ps })
     .then(function(r) { return r.text(); })
     .then(function(p) { if (p && p.trim()) filePathInput.value = p.trim(); })
@@ -16,16 +36,13 @@ function browseFile() {
 }
 
 function startExtract() {
-  var docType = docTypeSel.value;
-  var mode = document.querySelector('input[name="mode"]:checked');
-  var selectedMode = mode ? mode.value : 'text-capture';
   var filePath = filePathInput.value.trim();
   if (!filePath) { alert('파일을 선택하세요'); return; }
-  log('🚀 시작: ' + docType + ' / ' + selectedMode + '\\n   파일: ' + filePath + '\\n', 'info');
+  log('🚀 시작: ' + selectedDocType + ' / ' + selectedMode + '\\n   파일: ' + filePath + '\\n', 'info');
   fetch('/api/extract', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ docType: docType, mode: selectedMode, filePath: filePath })
+    body: JSON.stringify({ docType: selectedDocType, mode: selectedMode, filePath: filePath })
   }).then(function(r) {
     var reader = r.body.getReader();
     var decoder = new TextDecoder();

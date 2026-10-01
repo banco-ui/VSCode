@@ -7,19 +7,45 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Malgun Gothic', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
-    .container { max-width: 800px; margin: 0 auto; }
+    .container { max-width: 900px; margin: 0 auto; }
     h1 { color: white; text-align: center; margin-bottom: 30px; font-size: 2.5em; }
     .card { background: white; border-radius: 12px; padding: 30px; margin-bottom: 20px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
     .form-group { margin-bottom: 20px; }
     label { display: block; font-weight: bold; margin-bottom: 8px; color: #333; }
+    
+    /* 문서 종류 카드 */
+    .doc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 10px; }
+    .doc-card { 
+      border: 2px solid #e0e0e0; 
+      border-radius: 10px; 
+      padding: 16px; 
+      cursor: pointer; 
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .doc-card:hover { border-color: #667eea; background: #f8f9ff; }
+    .doc-card.selected { border-color: #667eea; background: #f0f4ff; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); }
+    .doc-icon { font-size: 32px; margin-bottom: 8px; }
+    .doc-name { font-weight: bold; color: #333; margin-bottom: 4px; }
+    .doc-ext { font-size: 11px; color: #666; }
+    
+    /* 처리 방식 카드 */
+    .mode-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 10px; }
+    .mode-card { 
+      border: 2px solid #e0e0e0; 
+      border-radius: 10px; 
+      padding: 20px; 
+      cursor: pointer; 
+      transition: all 0.2s;
+    }
+    .mode-card:hover { border-color: #667eea; background: #f8f9ff; }
+    .mode-card.selected { border-color: #667eea; background: #f0f4ff; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); }
+    .mode-icon { font-size: 28px; margin-bottom: 8px; }
+    .mode-title { font-weight: bold; color: #333; margin-bottom: 8px; }
+    .mode-desc { font-size: 12px; color: #666; line-height: 1.6; }
+    .mode-desc ul { padding-left: 16px; margin-top: 4px; }
+    
     select, input[type="text"] { width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 15px; }
-    .radio-group { display: flex; gap: 15px; }
-    .radio-option { flex: 1; }
-    .radio-option input[type="radio"] { display: none; }
-    .radio-option label { display: block; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; cursor: pointer; }
-    .radio-option input:checked + label { border-color: #667eea; background: #f0f4ff; }
-    .radio-title { font-weight: bold; display: block; margin-bottom: 3px; }
-    .radio-desc { font-size: 12px; color: #666; }
     .btn-group { display: flex; gap: 10px; margin-top: 20px; }
     button { flex: 1; padding: 14px; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
     .btn-primary { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
@@ -33,28 +59,56 @@
     <h1>🔓 DRM 문서 풀기</h1>
     <div class="card">
       <div class="form-group">
-        <label for="docType">📄 문서 종류</label>
-        <select id="docType">
-          <option value="word">Word 문서 (.docx)</option>
-          <option value="pdf">PDF (.pdf)</option>
-        </select>
-      </div>
-      <div class="form-group" id="modeGroup">
-        <label>🔧 처리 방식</label>
-        <div class="radio-group">
-          <div class="radio-option">
-            <input type="radio" id="modeTextCapture" name="mode" value="text-capture" checked>
-            <label for="modeTextCapture">
-              <span class="radio-title">📝 텍스트 + 캡처</span>
-              <span class="radio-desc">텍스트 + 스크린샷</span>
-            </label>
+        <label>📄 문서 종류 선택</label>
+        <div class="doc-grid">
+          <div class="doc-card selected" data-value="word" onclick="selectDocType('word')">
+            <div class="doc-icon">📄</div>
+            <div class="doc-name">Word 문서</div>
+            <div class="doc-ext">.docx, .doc, .mht</div>
           </div>
-          <div class="radio-option">
-            <input type="radio" id="modeHtml" name="mode" value="html">
-            <label for="modeHtml">
-              <span class="radio-title">🌐 HTML 저장</span>
-              <span class="radio-desc">통합 HTML</span>
-            </label>
+          <div class="doc-card" data-value="excel" onclick="selectDocType('excel')">
+            <div class="doc-icon">📊</div>
+            <div class="doc-name">Excel 스프레드시트</div>
+            <div class="doc-ext">.xlsx, .xls, .csv</div>
+          </div>
+          <div class="doc-card" data-value="ppt" onclick="selectDocType('ppt')">
+            <div class="doc-icon">📽️</div>
+            <div class="doc-name">PowerPoint 프레젠테이션</div>
+            <div class="doc-ext">.pptx, .ppt</div>
+          </div>
+          <div class="doc-card" data-value="pdf" onclick="selectDocType('pdf')">
+            <div class="doc-icon">📕</div>
+            <div class="doc-name">PDF 문서</div>
+            <div class="doc-ext">.pdf</div>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>🔧 처리 방식 선택</label>
+        <div class="mode-grid">
+          <div class="mode-card selected" data-value="fast" onclick="selectMode('fast')">
+            <div class="mode-icon">⚡</div>
+            <div class="mode-title">빠른 텍스트 추출</div>
+            <div class="mode-desc">
+              <ul>
+                <li>Word/Excel/PPT 라이브러리 사용</li>
+                <li>PDF: pdf-parse 사용</li>
+                <li>텍스트만 빠르게 추출</li>
+                <li>30 초 ~ 2 분 소요</li>
+              </ul>
+            </div>
+          </div>
+          <div class="mode-card" data-value="full" onclick="selectMode('full')">
+            <div class="mode-icon">🔍</div>
+            <div class="mode-title">완전 분석</div>
+            <div class="mode-desc">
+              <ul>
+                <li>텍스트 + 그림/표 캡처</li>
+                <li>HTML 포맷으로 저장</li>
+                <li>2 ~ 5 분 소요</li>
+                <li>Word/Excel/PPT/PDF 모두 지원</li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>
