@@ -18,7 +18,7 @@ dist-electron/index.html                   0.61 kB │ gzip:  0.42 kB
 dist-electron/assets/index-COoUrKZg.css    0.86 kB │ gzip:  0.44 kB
 dist-electron/assets/index-XWSqthRY.js   317.60 kB │ gzip: 90.52 kB
 
-[32m✓ built in 1.75s[39m
+[32m✓ built in 568ms[39m
   • electron-builder  version=25.1.8 os=10.0.26200
   • loaded configuration  file=package.json ("build" field)
   • unresolved deps  unresolved=asynckitcombined-streames-set-tostringtaghasown nodeModuleDir=D:\Data\AI\VSCode\node_modules round=0
