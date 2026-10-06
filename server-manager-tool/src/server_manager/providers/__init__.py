@@ -1,6 +1,6 @@
-"""Providers (Phase 13G-2).
+"""Providers (Phase 13G-2 + 13G-4).
 
-Provider adapter contract and raw snapshot model.
+Provider adapter contract, raw snapshot model, and Kubernetes adapter.
 """
 from .base import (
     AdapterCapability,
@@ -9,6 +9,7 @@ from .base import (
     RawProviderSnapshot,
     RawRelationshipEvidence,
 )
+from .kubernetes import KubernetesProviderAdapter
 
 __all__ = [
     "AdapterCapability",
@@ -16,4 +17,6 @@ __all__ = [
     "ProviderAdapter",
     "RawProviderSnapshot",
     "RawRelationshipEvidence",
+    # Phase 13G-4
+    "KubernetesProviderAdapter",
 ]

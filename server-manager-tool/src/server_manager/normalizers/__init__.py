@@ -14,6 +14,7 @@ from .provider_normalizer import (
     strict_int,
     strict_str,
 )
+from .kubernetes_normalizer import KubernetesProviderNormalizer
 
 __all__ = [
     "BaseNormalizer",
@@ -30,4 +31,6 @@ __all__ = [
     "strict_float",
     "strict_int",
     "strict_str",
+    # Phase 13G-4
+    "KubernetesProviderNormalizer",
 ]
