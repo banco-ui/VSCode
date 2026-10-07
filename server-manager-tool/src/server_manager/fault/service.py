@@ -136,6 +136,10 @@ class FaultDetectionService:
 
         return FaultResult(
             faults=all_faults,
+            newly_detected=newly_detected,
+            ongoing=ongoing,
+            resolved_fault_ids=resolved_ids,
+        )
 
     def _evaluate_observation(self, obs: Observation) -> list[Fault]:
         """Evaluate a single observation for fault conditions.
@@ -186,6 +190,11 @@ class FaultDetectionService:
                 source=source,
             ))
 
+        # RESOURCE_THRESHOLD — only if policy is configured
+        if self._threshold_policy.has_any_threshold:
+            faults.extend(self._check_thresholds(obs))
+
+        return faults
 
     def _check_thresholds(self, obs: Observation) -> list[Fault]:
         """Check resource utilization against configured thresholds.
@@ -246,13 +255,118 @@ class FaultDetectionService:
 
         return faults
 
-        # RESOURCE_THRESHOLD — only if policy is configured
-        if self._threshold_policy.has_any_threshold:
-            faults.extend(self._check_thresholds(obs))
+    def _evaluate_state_change(self, change: StateChange) -> list[Fault]:
+        """Evaluate a state change for fault conditions.
+
+        Only degradation transitions generate STATE_CHANGE faults.
+        Transitions to/from UNKNOWN do NOT generate faults.
+        """
+        faults: list[Fault] = []
+        detected_at = change.detected_at
+
+        if change.health_changed:
+            curr = change.current_health
+            prev = change.previous_health
+
+            if curr == HealthStatus.UNKNOWN or prev == HealthStatus.UNKNOWN:
+                pass  # UNKNOWN transitions → no fault
+            elif curr == HealthStatus.UNHEALTHY:
+                faults.append(Fault(
+                    fault_id=_make_fault_id(change.entity_id, FaultType.STATE_CHANGE),
+                    entity_id=change.entity_id,
+                    fault_type=FaultType.STATE_CHANGE,
+                    severity=Severity.CRITICAL,
+                    detected_at=detected_at,
+                    evidence={
+                        "transition": f"{prev.value} -> {curr.value}",
+                        "previous_health": prev.value,
+                        "current_health": curr.value,
+                    },
+                ))
+            elif curr == HealthStatus.DEGRADED and prev == HealthStatus.HEALTHY:
+                faults.append(Fault(
+                    fault_id=_make_fault_id(change.entity_id, FaultType.STATE_CHANGE),
+                    entity_id=change.entity_id,
+                    fault_type=FaultType.STATE_CHANGE,
+                    severity=Severity.WARNING,
+                    detected_at=detected_at,
+                    evidence={
+                        "transition": f"{prev.value} -> {curr.value}",
+                        "previous_health": prev.value,
+                        "current_health": curr.value,
+                    },
+                ))
+
+        if change.availability_changed:
+            curr_a = change.current_availability
+            prev_a = change.previous_availability
+
+            if (
+                curr_a == AvailabilityStatus.UNAVAILABLE
+                and prev_a != AvailabilityStatus.UNKNOWN
+            ):
+                if not change.health_changed:
+                    faults.append(Fault(
+                        fault_id=_make_fault_id(change.entity_id, FaultType.STATE_CHANGE),
+                        entity_id=change.entity_id,
+                        fault_type=FaultType.STATE_CHANGE,
+                        severity=Severity.CRITICAL,
+                        detected_at=detected_at,
+                        evidence={
+                            "transition": f"{prev_a.value} -> {curr_a.value}",
+                            "previous_availability": prev_a.value,
+                            "current_availability": curr_a.value,
+                        },
+                    ))
+                else:
+                    for f in faults:
+                        if f.fault_type == FaultType.STATE_CHANGE:
+                            f.evidence["previous_availability"] = prev_a.value
+                            f.evidence["current_availability"] = curr_a.value
+                            break
 
         return faults
 
-            newly_detected=newly_detected,
-            ongoing=ongoing,
-            resolved_fault_ids=resolved_ids,
-        )
+    @property
+    def active_fault_count(self) -> int:
+        return len(self._active_faults)
+
+    @property
+    def active_faults(self) -> list[Fault]:
+        return list(self._active_faults.values())
+
+
+class FaultGraphContext:
+    """Read-only graph context lookup for faults.
+
+    Uses Phase 16 GraphQuery to provide infrastructure context
+    for a detected fault. Does NOT:
+        - Create new graph edges or relationships
+        - Infer fault causality from graph relationships
+        - Modify the graph in any way
+
+    Graph relationship != fault causality.
+    The graph is used ONLY for context lookup.
+    """
+
+    def __init__(self, graph_query: GraphQuery) -> None:
+        self._query = graph_query
+
+    def get_entity_node(self, fault: Fault):
+        """Get the graph node for the fault's entity, or None."""
+        return self._query.get_node(fault.entity_id)
+
+    def get_related_entities(self, fault: Fault) -> list[str]:
+        """Get neighbor entity IDs from the graph (both directions).
+
+        This does NOT imply causality — it's context lookup only.
+        """
+        return self._query.get_neighbors(fault.entity_id)
+
+    def get_relationships(self, fault: Fault) -> list[GraphRelationship]:
+        """Get all graph relationships involving the fault's entity."""
+        return self._query.get_relationships(fault.entity_id)
+
+    def has_graph_context(self, fault: Fault) -> bool:
+        """Check if the fault's entity exists in the graph."""
+        return self._query.get_node(fault.entity_id) is not None
