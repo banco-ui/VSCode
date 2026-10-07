@@ -136,10 +136,7 @@ class PlatformDiscovery:
         if snapshot.collection_status == OrchestrationStatus.SKIPPED:
             return OrchestrationStatus.SKIPPED
 
-        if (
-            snapshot.collection_status == OrchestrationStatus.FAILED
-            and norm_result.is_empty
-        ):
+        if snapshot.collection_status == OrchestrationStatus.FAILED:
             return OrchestrationStatus.FAILED
 
         if snapshot.collection_status == OrchestrationStatus.PARTIAL:
