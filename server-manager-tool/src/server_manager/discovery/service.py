@@ -72,6 +72,10 @@ class PlatformDiscovery:
         if snapshot.collection_status == OrchestrationStatus.SKIPPED:
             return self._build_skipped_result(snapshot)
 
+        # ── Step 2b: Handle FAILED (e.g., authentication failure) ───
+        if snapshot.collection_status == OrchestrationStatus.FAILED:
+            return self._build_failed_result(snapshot)
+
         # ── Step 3: Normalize snapshot → canonical entities ────────
         norm_result = normalizer.normalize(snapshot)
 
@@ -159,4 +163,22 @@ class PlatformDiscovery:
             inventory=None,
             errors=list(snapshot.errors),
             warnings=["Discovery skipped: external preconditions not met"],
+        )
+
+    @staticmethod
+    def _build_failed_result(snapshot: RawProviderSnapshot) -> DiscoveryResult:
+        """Build a FAILED discovery result with empty inventory.
+
+        When collection itself failed (authentication, connection, etc.),
+        we do NOT run normalization — no canonical entities are produced.
+        """
+        return DiscoveryResult(
+            provider_type=snapshot.provider_type,
+            provider_id=snapshot.provider_id,
+            discovery_status=OrchestrationStatus.FAILED,
+            snapshot_id=snapshot.snapshot_id,
+            collected_at=snapshot.collected_at,
+            inventory=None,
+            errors=list(snapshot.errors),
+            warnings=["Discovery failed: collection did not complete"],
         )
