@@ -1,17 +1,14 @@
-"""Recovery / Remediation Domain Models - Phase 18.
+"""Recovery / Remediation Domain Models — Phase 18.
 
 Provider-neutral recovery action models for safely defining, evaluating,
 and executing remediation actions on canonical entities with detected faults.
 
 Key principles:
 - AUTOMATIC_RECOVERY = DISABLED by default
-- Recovery requires explicit evidence - no inference
-- UNKNOWN -> no recovery
-- Recovery != Fault Detection, != Alert, != Root Cause Analysis
-- Execution requires explicit gate: candidate + safety PASS + authorization + execution_enabled
+- Recovery requires explicit evidence — no inference
+- UNKNOWN → no recovery
 - Pod != Workload (Phase 13E policy preserved)
-- No escalation: failure does not auto-trigger other actions
-- Idempotency: same (fault_id, action_type, target_entity_id) -> no duplicate
+- Idempotency: same (fault_id, action_type, target_entity_id) → no duplicate
 """
 from __future__ import annotations
 
@@ -57,11 +54,7 @@ class RecoveryExecutionStatus(str, Enum):
 
 
 class AuthorizationLevel(str, Enum):
-    """Authorization levels for recovery operations.
-
-    Ordered: DISCOVERY < READ_ONLY < DRY_RUN < EXECUTE
-    Only EXECUTE permits actual mutation.
-    """
+    """Authorization levels for recovery operations."""
     DISCOVERY = "DISCOVERY"
     READ_ONLY = "READ_ONLY"
     DRY_RUN = "DRY_RUN"
@@ -99,6 +92,7 @@ class SafetyBlockReason(str, Enum):
     FAULT_NOT_ACTIONABLE = "FAULT_NOT_ACTIONABLE"
 
 
+
 class SafetyGateResult(BaseModel):
     """Result of safety gate evaluation."""
     result: SafetyResult
@@ -112,7 +106,7 @@ class SafetyGateResult(BaseModel):
 class RecoveryActionParameters(BaseModel):
     """Typed parameters for a recovery action.
 
-    No arbitrary provider command strings - all parameters are typed
+    No arbitrary provider command strings — all parameters are typed
     and explicitly constrained.
     """
     namespace: Optional[str] = None
@@ -155,7 +149,6 @@ class RecoveryCandidate(BaseModel):
     """A recovery candidate proposed from a fault.
 
     Candidate != Authorization, != Execution.
-    A candidate is a *proposal* - it does not execute anything.
     """
     candidate_id: str = Field(min_length=1)
     fault: Fault
@@ -171,11 +164,7 @@ class RecoveryCandidate(BaseModel):
 
 
 class RecoveryPreview(BaseModel):
-    """Preview of a recovery action without mutation.
-
-    Preview does NOT call provider mutation APIs.
-    It is deterministic: same action -> same preview.
-    """
+    """Preview of a recovery action without mutation."""
     action: RecoveryAction
     expected_effect: str = ""
     safety_result: SafetyResult = SafetyResult.BLOCKED
@@ -192,12 +181,8 @@ class RecoveryExecutionResult(BaseModel):
     """Result of executing a recovery action.
 
     NOT_EXECUTED and BLOCKED are NOT success.
-    VERIFIED requires post-action verification evidence -
-    a successful API call alone does NOT qualify as VERIFIED.
-
-    Execution != Verification:
-        EXECUTED means the action ran.
-        VERIFIED means post-action state was confirmed recovered.
+    VERIFIED requires post-action verification evidence.
+    Execution != Verification: EXECUTED means ran, VERIFIED means confirmed.
     """
     action_id: str = Field(min_length=1)
     status: RecoveryExecutionStatus = RecoveryExecutionStatus.NOT_EXECUTED
@@ -224,4 +209,3 @@ class RecoveryExecutionResult(BaseModel):
             RecoveryExecutionStatus.VERIFICATION_FAILED,
             RecoveryExecutionStatus.FAILED,
         )
-
