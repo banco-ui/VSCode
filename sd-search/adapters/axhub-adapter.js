@@ -17,6 +17,10 @@ class AxhubAdapter {
         if (this.browser) return this.browser;
         
         try {
+            // CDP 자동 실행 보장
+            const { ensureCDP } = require('../core/cdp-launcher');
+            await ensureCDP(this.cdpPort);
+
             console.log('[axhub] CDP 연결 시도...');
             this.browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
             console.log('[axhub] CDP 연결 성공');
