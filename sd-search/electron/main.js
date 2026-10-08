@@ -4,6 +4,18 @@ const path = require('path');
 let mainWindow = null;
 let serverStarted = false;
 
+// 중복 실행 방지 (포트 충돌 방지)
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+    app.quit();
+} else {
+    app.on('second-instance', () => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.focus();
+        }
+    });
+
 // Express 서버를 직접 require하여 실행 (asar 호환)
 function startServer() {
     try {
@@ -114,3 +126,5 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
     app.quit();
 });
+
+} // end of single instance lock else block

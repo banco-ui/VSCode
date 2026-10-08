@@ -228,4 +228,4 @@ try {
 
 console.log('\n실행 방법:');
 console.log(`  ${newExe}`);
-console.log('  또는 start "" "C:\\sd-search-build\\release\\win-unpacked\\SDSearch.exe"');
+console.log(`  또는 start "" "${path.join(appDir, 'SDSearch.exe').replace(/\\/g, '\\\\')}"`);
