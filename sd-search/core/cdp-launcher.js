@@ -33,15 +33,14 @@ function findChrome() {
 // ── Chrome 프로세스 실행 여부 확인 ────────────────────────────
 function isChromeRunning() {
     return new Promise((resolve) => {
-        exec('tasklist /FI "IMAGENAME eq chrome.exe" /NH', (err, stdout) => {
-            if (err) {
-                // Edge 도 확인
-                exec('tasklist /FI "IMAGENAME eq msedge.exe" /NH', (e2, s2) => {
-                    resolve(!e2 && s2 && !s2.includes('INFO: No tasks'));
-                });
+        // execFile 를 사용하여 따옴표 중첩 문제 방지
+        execFile('tasklist', ['/FI', 'IMAGENAME eq chrome.exe', '/NH', '/FO', 'CSV'], (err, stdout) => {
+            if (err || !stdout) {
+                resolve(false);
                 return;
             }
-            resolve(stdout && !stdout.includes('INFO: No tasks'));
+            // 출력에 chrome.exe 가 있으면 실행 중
+            resolve(stdout.toLowerCase().includes('chrome.exe'));
         });
     });
 }
