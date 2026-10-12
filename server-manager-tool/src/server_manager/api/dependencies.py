@@ -1,6 +1,8 @@
-"""API Dependencies (Phase 8/10C).
+"""API Dependencies (Phase 8/10C/22).
 
-Service wiring for InventoryStore, Orchestrator, DashboardQueryService, and SchedulerStore.
+Service wiring for InventoryStore, Orchestrator, DashboardQueryService,
+SchedulerStore, AlertStore, and the Phase 22 ManagementContext.
+
 Uses FastAPI dependency injection to provide service instances.
 """
 from __future__ import annotations
@@ -25,6 +27,78 @@ _alert_store: Optional[AlertStore] = None
 
 # Orchestrator factory: callers register collectors/normalizers
 _orchestrator_factory: Optional[Callable[[], Orchestrator]] = None
+
+
+# ── Phase 22: Management Context ──────────────────────────────────────
+
+class ManagementContext:
+    """Holds pipeline service instances for the Phase 22 Management API.
+
+    All services are read-only / preview-only:
+        - No provider API calls
+        - No subprocess / shell / kubectl
+        - No RecoveryExecutor.execute()
+        - No OperationService.execute()
+        - No graph / health / fault mutation
+
+    The context is populated after a discovery pipeline run and exposes
+    the resulting service objects to the Management API endpoints.
+    """
+
+    def __init__(self) -> None:
+        from ..discovery.models import DiscoveryResult
+        from ..health.models import HealthReport
+        from ..graph.service import GraphQuery
+        from ..monitoring.service import MonitoringService
+        from ..monitoring.models import MonitoringReport
+        from ..fault.models import FaultResult
+        from ..visibility.service import AlertService, OperationalVisibilityService
+        from ..operations.service import OperationService
+        from ..recovery.service import RecoveryService
+
+        self.discovery_result: Optional[DiscoveryResult] = None
+        self.health_report: Optional[HealthReport] = None
+        self.graph_query: Optional[GraphQuery] = None
+        self.monitoring_service: Optional[MonitoringService] = None
+        self.monitoring_report: Optional[MonitoringReport] = None
+        self.fault_result: Optional[FaultResult] = None
+        self.alert_service: Optional[AlertService] = None
+        self.visibility: Optional[OperationalVisibilityService] = None
+        self.operation_service: Optional[OperationService] = None
+        self.recovery_service: Optional[RecoveryService] = None
+
+    @property
+    def inventory(self):
+        """Shortcut to the CanonicalInventory from the discovery result."""
+        if self.discovery_result is not None:
+            return self.discovery_result.inventory
+        return None
+
+    @property
+    def is_configured(self) -> bool:
+        """True if at least the discovery result is available."""
+        return self.discovery_result is not None
+
+
+_management_context: Optional[ManagementContext] = None
+
+
+def get_management_context() -> ManagementContext:
+    """Get the ManagementContext singleton.
+
+    Returns a shared ManagementContext instance.
+    For tests, use app.dependency_overrides to inject a test-specific instance.
+    """
+    global _management_context
+    if _management_context is None:
+        _management_context = ManagementContext()
+    return _management_context
+
+
+def configure_management(context: ManagementContext) -> None:
+    """Set the ManagementContext instance (for programmatic configuration)."""
+    global _management_context
+    _management_context = context
 
 
 def configure(
