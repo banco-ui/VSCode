@@ -5,9 +5,11 @@ Server Manager REST API application object.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from .routes import router
 from .scheduler_routes import router as scheduler_router
@@ -38,6 +40,21 @@ def create_app() -> FastAPI:
     app.include_router(router)
     app.include_router(scheduler_router)
     app.include_router(alert_router)
+
+    # ── Dashboard UI (Phase 23) ──────────────────────────────────────
+    # Serve static HTML/CSS/JS dashboard under /dashboard
+    _ui_dir = Path(__file__).resolve().parent.parent / "dashboard" / "ui"
+    if _ui_dir.is_dir():
+        app.mount(
+            "/dashboard",
+            StaticFiles(directory=str(_ui_dir), html=True),
+            name="dashboard-ui",
+        )
+
+    @app.get("/", include_in_schema=False)
+    async def root_redirect():
+        """Redirect root to the dashboard UI."""
+        return RedirectResponse(url="/dashboard/")
 
     # ── Error handlers ────────────────────────────────────────────────
 
