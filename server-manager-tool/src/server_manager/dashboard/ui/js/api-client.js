@@ -119,6 +119,12 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+
+    // ── Discovery Run (POST — read-only exploration, no auto-repeat) ─
+    discoveryRun: () => _request('/discovery/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }),
   };
 
   global.ApiClient = ApiClient;

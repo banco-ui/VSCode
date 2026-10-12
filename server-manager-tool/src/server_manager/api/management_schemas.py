@@ -157,3 +157,29 @@ class RecoveryPreviewResponse(BaseModel):
     safety_reason: Optional[str] = None
     supported: bool = False
     previewed_at: str
+
+
+# ── Discovery Run (Phase 24) ──────────────────────────────────────────
+
+class DiscoveryRunResponse(BaseModel):
+    """Result of a discovery run.
+
+    Discovery is a read-only exploration operation: it collects
+    provider data via existing ProviderAdapter + ProviderNormalizer
+    and refreshes the ManagementContext inventory.
+
+    The discovery_status reflects the actual service result
+    (SUCCESS / PARTIAL / FAILED / SKIPPED) — it is never fabricated.
+    """
+    discovery_status: str
+    provider_type: str = "UNKNOWN"
+    provider_id: Optional[str] = None
+    snapshot_id: str = ""
+    collected_at: str = ""
+    identified_platform_type: str = "UNKNOWN"
+    entity_count: int = 0
+    capabilities_attempted: list[str] = Field(default_factory=list)
+    capabilities_succeeded: list[str] = Field(default_factory=list)
+    capabilities_failed: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

@@ -7,6 +7,7 @@ Uses FastAPI dependency injection to provide service instances.
 """
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Optional
 
 from fastapi import Depends
@@ -67,6 +68,13 @@ class ManagementContext:
         self.operation_service: Optional[OperationService] = None
         self.recovery_service: Optional[RecoveryService] = None
 
+        # Phase 24: Discovery run concurrency guard + factory
+        self._discovery_lock = threading.Lock()
+        self._discovery_running = False
+        # A callable that returns (ProviderAdapter, ProviderNormalizer).
+        # Registered by application bootstrap or tests.
+        self.discovery_factory: Optional[Callable[[], tuple[Any, Any]]] = None
+
     @property
     def inventory(self):
         """Shortcut to the CanonicalInventory from the discovery result."""
@@ -78,6 +86,164 @@ class ManagementContext:
     def is_configured(self) -> bool:
         """True if at least the discovery result is available."""
         return self.discovery_result is not None
+
+    @property
+    def discovery_running(self) -> bool:
+        """True if a discovery run is currently in progress."""
+        return self._discovery_running
+
+    def run_discovery(self):
+        """Execute a discovery run and refresh all dependent context state.
+
+        Read-only exploration: calls PlatformDiscovery.discover() with
+        the registered adapter+normalizer, then rebuilds health, graph,
+        monitoring, faults, alerts, visibility, operation, and recovery
+        services from the fresh DiscoveryResult.
+
+        Concurrency: uses a lock + flag to prevent duplicate runs.
+
+        Returns:
+            DiscoveryResult from the real discovery service.
+        """
+        from ..discovery.service import PlatformDiscovery
+
+        if self.discovery_factory is None:
+            raise RuntimeError(
+                "No discovery factory registered. "
+                "Call ctx.discovery_factory = <callable> first."
+            )
+
+        if not self._discovery_lock.acquire(blocking=False):
+            raise DiscoveryAlreadyRunningError(
+                "A discovery run is already in progress"
+            )
+        try:
+            if self._discovery_running:
+                raise DiscoveryAlreadyRunningError(
+                    "A discovery run is already in progress"
+                )
+            self._discovery_running = True
+
+            adapter, normalizer = self.discovery_factory()
+            discovery = PlatformDiscovery()
+            result = discovery.discover(adapter, normalizer)
+            self._refresh_from_discovery(result)
+            return result
+        finally:
+            self._discovery_running = False
+            self._discovery_lock.release()
+
+    def _refresh_from_discovery(self, result):
+        """Rebuild all dependent services from a DiscoveryResult."""
+        self.discovery_result = result
+
+        if result.inventory is None:
+            self.health_report = None
+            self.graph_query = None
+            self.monitoring_service = None
+            self.monitoring_report = None
+            self.fault_result = None
+            self.alert_service = None
+            self.visibility = None
+            self.operation_service = None
+            self.recovery_service = None
+            return
+
+        self._build_dependent_services(result)
+
+    def _build_dependent_services(self, result):
+        """Build health, graph, monitoring, fault, visibility, ops, recovery."""
+        from ..health.service import HealthService
+        from ..graph.service import GraphBuilder, GraphQuery
+        from ..monitoring.service import MonitoringService
+        from ..fault.service import FaultDetectionService
+        from ..visibility.service import (
+            AlertService, OperationalVisibilityService,
+        )
+        from ..operations.service import (
+            CapabilityResolver, OperationExecutor,
+            OperationGraphContext, OperationService, TargetResolver,
+        )
+        from ..operations.models import OperationType
+        from ..recovery.service import RecoveryService
+        from ..recovery.models import AuthorizationLevel, SafetyResult
+
+        health_report = HealthService().assess(result)
+        self.health_report = health_report
+
+        graph_query = GraphQuery(GraphBuilder().build(result))
+        self.graph_query = graph_query
+
+        mon_svc = MonitoringService()
+        mon_report = mon_svc.monitor(health_report)
+        self.monitoring_service = mon_svc
+        self.monitoring_report = mon_report
+
+        fault_result = FaultDetectionService().detect(
+            mon_report.observations, mon_report.state_changes)
+        self.fault_result = fault_result
+
+        alert_svc = AlertService()
+        for fault in fault_result.faults:
+            alert_svc.create_alert(fault)
+        self.alert_service = alert_svc
+
+        vis = OperationalVisibilityService(alert_service=alert_svc)
+        vis.set_inventory(result.inventory)
+        vis.set_health_report(health_report)
+        vis.set_fault_result(fault_result)
+        vis.set_graph_query(graph_query)
+        self.visibility = vis
+
+        provider_id = result.provider_id or "unknown"
+        target_resolver = TargetResolver()
+        for node in result.inventory.nodes:
+            target_resolver.register_target(
+                canonical_id=node.canonical_id,
+                provider_type=result.provider_type,
+                provider_id=provider_id, entity_type="Node")
+        cap_resolver = CapabilityResolver()
+        cap_resolver.register(
+            result.provider_type,
+            {OperationType.RESTART, OperationType.QUERY_STATUS})
+
+        class _NoOpExecutor(OperationExecutor):
+            def preview(self, request, target, capability):
+                from ..operations.models import OperationPreview
+                return OperationPreview(
+                    request=request, resolved_target=target,
+                    capability_decision=capability,
+                    expected_effect="Query status preview",
+                    safety_result=SafetyResult.BLOCKED,
+                    execution_allowed=False)
+            def execute(self, request, target):
+                raise AssertionError("execute() should not be called")
+            def verify(self, request, target, execution_result):
+                raise AssertionError("verify() should not be called")
+
+        self.operation_service = OperationService(
+            target_resolver=target_resolver,
+            capability_resolver=cap_resolver,
+            executor=_NoOpExecutor(),
+            graph_context=OperationGraphContext(graph_query))
+
+        class _MockRecoveryExecutor:
+            def preview(self, action):
+                from ..recovery.models import RecoveryPreview
+                return RecoveryPreview(
+                    action=action, expected_effect="Restart preview")
+            def execute(self, action):
+                raise AssertionError("execute() should not be called")
+            def verify(self, action, post_health=None):
+                raise AssertionError("verify() should not be called")
+
+        self.recovery_service = RecoveryService(
+            executor=_MockRecoveryExecutor(), execution_enabled=False,
+            authorization=AuthorizationLevel.READ_ONLY)
+
+
+class DiscoveryAlreadyRunningError(RuntimeError):
+    """Raised when a discovery run is requested while one is in progress."""
 
 
 _management_context: Optional[ManagementContext] = None
