@@ -31,11 +31,13 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # Register routes
+    # Register routes — management_router first so specific routes
+    # (e.g. /inventory/entities, /inventory/platforms) are matched
+    # before the catch-all /inventory/{server_id} in routes.py
+    app.include_router(management_router)
     app.include_router(router)
     app.include_router(scheduler_router)
     app.include_router(alert_router)
-    app.include_router(management_router)
 
     # ── Error handlers ────────────────────────────────────────────────
 

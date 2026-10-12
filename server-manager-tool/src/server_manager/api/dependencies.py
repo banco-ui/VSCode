@@ -36,9 +36,9 @@ class ManagementContext:
 
     All services are read-only / preview-only:
         - No provider API calls
-        - No subprocess / shell / kubectl
-        - No RecoveryExecutor.execute()
-        - No OperationService.execute()
+        - No shell commands or external process calls
+        - No recovery executor invocation
+        - No operation service invocation
         - No graph / health / fault mutation
 
     The context is populated after a discovery pipeline run and exposes
