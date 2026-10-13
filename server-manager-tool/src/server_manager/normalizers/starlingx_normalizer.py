@@ -177,6 +177,8 @@ class StarlingXProviderNormalizer(GenericProviderNormalizer):
                         "vim_progress_status": host.get("vim_progress_status", ""),
                         "clock_synchronization": host.get("clock_synchronization", ""),
                         "bm_type": host.get("bm_type", ""),
+                        "bm_ip": host.get("bm_ip"),
+                        "bm_hostname": host.get("bm_hostname"),
                         "capabilities": host.get("capabilities", {}),
                         "location": host.get("location", {}),
                         "platform_memory": host_mem,
