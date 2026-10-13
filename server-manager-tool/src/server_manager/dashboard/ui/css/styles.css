@@ -207,3 +207,16 @@ tr:hover td { background: var(--bg-tertiary); }
 .badge-failed { color: var(--status-unhealthy); }
 .badge-skipped { color: var(--status-unknown); }
 
+/* Phase 25 — Data Freshness & Refresh States */
+.btn-refresh-loading { position: relative; opacity: 0.7; }
+.btn-refresh-loading::after {
+  content: ''; display: inline-block; width: 12px; height: 12px;
+  border: 2px solid var(--border-color); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+  margin-left: var(--spacing-xs); vertical-align: middle;
+}
+.stale-indicator { color: var(--status-degraded); font-size: 0.8rem; font-weight: 600; }
+.last-refresh-stale { color: var(--status-degraded); }
+.auto-refresh-toggle input:checked ~ span { color: var(--status-healthy); }
+.auto-refresh-paused { color: var(--text-muted); font-size: 0.75rem; }
+
