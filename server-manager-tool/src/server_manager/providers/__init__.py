@@ -10,6 +10,7 @@ from .base import (
     RawRelationshipEvidence,
 )
 from .kubernetes import KubernetesProviderAdapter
+from .openstack import OpenStackProviderAdapter
 
 __all__ = [
     "AdapterCapability",
@@ -19,4 +20,6 @@ __all__ = [
     "RawRelationshipEvidence",
     # Phase 13G-4
     "KubernetesProviderAdapter",
+    # Phase 26
+    "OpenStackProviderAdapter",
 ]
