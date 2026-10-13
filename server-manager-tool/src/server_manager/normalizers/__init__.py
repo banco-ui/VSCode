@@ -1,4 +1,4 @@
-"""Normalizers (Phase 3 + 13G-3)."""
+"""Normalizers (Phase 3 + 13G-3 + 28E)."""
 from .base import BaseNormalizer
 from .redfish_normalizer import RedfishNormalizer
 from .ssh_normalizer import SSHNormalizer
@@ -15,6 +15,7 @@ from .provider_normalizer import (
     strict_str,
 )
 from .kubernetes_normalizer import KubernetesProviderNormalizer
+from .starlingx_normalizer import StarlingXProviderNormalizer
 
 __all__ = [
     "BaseNormalizer",
@@ -33,4 +34,6 @@ __all__ = [
     "strict_str",
     # Phase 13G-4
     "KubernetesProviderNormalizer",
+    # Phase 28E
+    "StarlingXProviderNormalizer",
 ]

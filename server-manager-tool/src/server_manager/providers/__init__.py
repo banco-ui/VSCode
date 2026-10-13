@@ -1,6 +1,7 @@
-"""Providers (Phase 13G-2 + 13G-4).
+"""Providers (Phase 13G-2 + 13G-4 + 28E).
 
-Provider adapter contract, raw snapshot model, and Kubernetes adapter.
+Provider adapter contract, raw snapshot model, Kubernetes adapter,
+OpenStack adapter, and StarlingX adapter.
 """
 from .base import (
     AdapterCapability,
@@ -11,6 +12,7 @@ from .base import (
 )
 from .kubernetes import KubernetesProviderAdapter
 from .openstack import OpenStackProviderAdapter
+from .starlingx import StarlingXProviderAdapter
 
 __all__ = [
     "AdapterCapability",
@@ -22,4 +24,6 @@ __all__ = [
     "KubernetesProviderAdapter",
     # Phase 26
     "OpenStackProviderAdapter",
+    # Phase 28E
+    "StarlingXProviderAdapter",
 ]
