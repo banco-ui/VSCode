@@ -2,13 +2,214 @@
 
 **Date**: 2026-10-14  
 **Project**: D:\Data\AI\VSCode\server-manager-tool  
-**Status**: **BLOCKED — 사용자 확인 필요**
+**Status**: **BLOCKED — 인증정보 및 네트워크 설정 준비 필요**
 
 ---
 
-## 1. 사전 확인 완료
+## 1. 실행 개요
 
-### 1.1 Git 상태
+### 1.1 검증 일시
+
+- **시작**: 2026-10-14
+- **완료**: 2026-10-14
+- **검증자**: Automated validation script
+
+### 1.2 승인 범위
+
+사용자가 승인한 Provider:
+- ✅ Kubernetes
+- ✅ StarlingX
+- ✅ Redfish
+
+허용 작업: 인증 확인과 승인된 읽기 전용 조회
+
+---
+
+## 2. 사전 조건 확인
+
+### 2.1 Kubernetes
+
+| 항목 | 예상 | 실제 | 상태 |
+|------|------|------|------|
+| kubectl 설치 | 필요 | ✅ 설치됨 | PASS |
+| kubeconfig 파일 | `%USERPROFILE%\.kube\config` 또는 `%KUBECONFIG%` | ❌ 없음 | **FAIL** |
+| KUBECONFIG 환경 변수 | 설정 필요 | ❌ 설정 안 됨 | **FAIL** |
+
+**판정**: **BLOCKED** — kubeconfig 파일 또는 환경 변수가 설정되지 않음
+
+### 2.2 StarlingX
+
+| 항목 | 예상 | 실제 | 상태 |
+|------|------|------|------|
+| WRCP_HOST | WRCP AIO-SX IP | ❌ 설정 안 됨 | **FAIL** |
+| KEYSTONE_TOKEN | Keystone 토큰 | ❌ 설정 안 됨 | **FAIL** |
+| OS_AUTH_URL | Keystone 인증 URL | ❌ 설정 안 됨 | **FAIL** |
+
+**판정**: **BLOCKED** — WRCP_HOST 및 토큰이 설정되지 않음
+
+### 2.3 Redfish
+
+| 항목 | 예상 | 실제 | 상태 |
+|------|------|------|------|
+| REDFISH_HOST | BMC IP | ❌ 설정 안 됨 | **FAIL** |
+| REDFISH_USERNAME | BMC 사용자명 | ❌ 설정 안 됨 | **FAIL** |
+| REDFISH_PASSWORD | BMC 비밀번호 | ❌ 설정 안 됨 | **FAIL** |
+
+**판정**: **BLOCKED** — REDFISH_HOST 및 인증정보가 설정되지 않음
+
+---
+
+## 3. Provider별 검증 결과
+
+### 3.1 Kubernetes
+
+| 검증 항목 | 결과 | 증거 |
+|----------|------|------|
+| 인증 확인 | NOT TESTED | kubeconfig 없음 |
+| API 연결 | NOT TESTED | 설정 안 됨 |
+| 읽기 전용 조회 | NOT TESTED | 설정 안 됨 |
+| TLS 검증 | NOT TESTED | 설정 안 됨 |
+
+**종합**: **BLOCKED**
+
+**사유**: kubeconfig 파일 또는 KUBECONFIG 환경 변수가 설정되지 않음. kubectl 은 설치되어 있으나 인증정보가 없음.
+
+**필요한 조치**:
+1. kubeconfig 파일 준비 (클러스터 관리자로부터)
+2. `%USERPROFILE%\.kube\config` 에 복사 또는 `%KUBECONFIG%` 환경 변수 설정
+3. TLS 인증서 검증 설정 확인 (자체 서명 인증서 포함 여부)
+
+---
+
+### 3.2 StarlingX
+
+| 검증 항목 | 결과 | 증거 |
+|----------|------|------|
+| 인증 확인 | NOT TESTED | 토큰 없음 |
+| REST API 연결 | NOT TESTED | WRCP_HOST 없음 |
+| CLI allowlist | NOT TESTED | SSH 설정 없음 |
+| TLS 검증 | NOT TESTED | HTTP 기본 (TLS 없음) |
+
+**종합**: **BLOCKED**
+
+**사유**: WRCP_HOST, KEYSTONE_TOKEN, OS_AUTH_URL 이 모두 설정되지 않음.
+
+**필요한 조치**:
+1. WRCP AIO-SX IP 주소 확인
+2. Keystone 토큰 발급 (또는 사용자명/비밀번호로 토큰 발급 스크립트)
+3. OS_AUTH_URL 설정 (기본값: `http://{WRCP_IP}:5000/v3`)
+
+---
+
+### 3.3 Redfish
+
+| 검증 항목 | 결과 | 증거 |
+|----------|------|------|
+| 인증 확인 | NOT TESTED | 인증정보 없음 |
+| BMC 연결 | NOT TESTED | REDFISH_HOST 없음 |
+| 읽기 전용 조회 | NOT TESTED | 설정 안 됨 |
+| TLS 검증 | NOT TESTED | 설정 안 됨 |
+
+**종합**: **BLOCKED**
+
+**사유**: REDFISH_HOST, REDFISH_USERNAME, REDFISH_PASSWORD 가 모두 설정되지 않음.
+
+**필요한 조치**:
+1. BMC IP 주소 확인
+2. BMC 사용자명/비밀번호 준비
+3. TLS 인증서 검증 설정 확인 (자체 서명 인증서 포함 여부)
+
+---
+
+## 4. 보안 조건 준수 확인
+
+### 4.1 TLS 인증서 검증
+
+| Provider | 설정값 | 준수 여부 |
+|----------|--------|----------|
+| Kubernetes | N/A (설정 안 됨) | N/A |
+| StarlingX | N/A (HTTP 기본) | N/A |
+| Redfish | `verify_ssl=True` (코드 기본값) | ✅ 준수 |
+
+**판단**: RedfishCollector 는 Phase 0.2 에서 `verify_ssl=True` 로 기본값이 변경됨. 실제 연결 시 자체 서명 인증서가 발견되면 BLOCKED 로 기록될 예정.
+
+### 4.2 민감정보 비노출
+
+| 항목 | 준수 여부 |
+|------|----------|
+| 비밀번호 출력 안 함 | ✅ 준수 (출력된 비밀번호 없음) |
+| 토큰 값 출력 안 함 | ✅ 준수 (출력된 토큰 없음) |
+| kubeconfig 내용 출력 안 함 | ✅ 준수 (파일 내용 확인 안 함) |
+| Authorization 헤더 출력 안 함 | ✅ 준수 (헤더 확인 안 함) |
+
+### 4.3 읽기 전용 범위
+
+| 항목 | 준수 여부 |
+|------|----------|
+| POST/PUT/PATCH/DELETE 금지 | ✅ 준수 (요청 자체를 수행 안 함) |
+| 운영 변경 명령 금지 | ✅ 준수 |
+| Discovery 파이프라인 실행 금지 | ✅ 준수 |
+| Operations/Recovery 실행 금지 | ✅ 준수 |
+
+---
+
+## 5. 종합 판정
+
+### 5.1 Provider별 결과
+
+| Provider | 판정 | 사유 |
+|----------|------|------|
+| **Kubernetes** | **BLOCKED** | kubeconfig 없음 |
+| **StarlingX** | **BLOCKED** | WRCP_HOST 및 토큰 없음 |
+| **Redfish** | **BLOCKED** | BMC IP 및 인증정보 없음 |
+
+### 5.2 실환경 검증 상태
+
+**Status**: **BLOCKED — 인증정보 및 네트워크 설정 준비 필요**
+
+모든 Provider 가 인증정보 또는 네트워크 설정이 준비되지 않아 검증을 수행하지 못했습니다.
+
+---
+
+## 6. 결론
+
+**Phase 1 — Live Provider Connection Validation** 은 모든 Provider 가 **BLOCKED**로 판정되었습니다.
+
+**사유**: 인증정보 및 네트워크 설정이 준비되지 않음.
+
+**필요한 조치**:
+1. kubeconfig 파일 준비 (Kubernetes)
+2. WRCP_HOST 및 Keystone 토큰 설정 (StarlingX)
+3. REDFISH_HOST 및 인증정보 설정 (Redfish)
+4. TLS 인증서 검증 설정 확인 (모든 Provider)
+
+위 전제조건을 준비한 후 Phase 1 을 재실행해야 합니다.
+
+---
+
+## 부록: 확인된 환경
+
+### 설치된 도구
+
+| 도구 | 상태 | 비고 |
+|------|------|------|
+| kubectl | ✅ 설치됨 | `%PATH%` 에 있음 |
+| Python | ✅ 설치됨 | 3.12.10 |
+| pytest | ✅ 설치됨 | 9.1.1 |
+
+### 설정되지 않은 환경 변수
+
+```
+KUBECONFIG=(not set)
+WRCP_HOST=(not set)
+KEYSTONE_TOKEN=(not set)
+OS_AUTH_URL=(not set)
+REDFISH_HOST=(not set)
+REDFISH_USERNAME=(not set)
+REDFISH_PASSWORD=(not set)
+```
+
+### Git 상태
 
 ```
 Branch: main
@@ -18,139 +219,6 @@ Local commits: 175 ahead of origin/main
 
 **판단**: 사용자 변경 사항 보존됨 ✅
 
-### 1.2 Phase 0.2 보안 강화 적용 확인
+### Phase 29 금지
 
-| 항목 | 적용 여부 |
-|------|----------|
-| Redfish `verify_ssl=True` 기본값 | ✅ 적용됨 |
-| StarlingX `verify=True` 기본값 | ✅ 적용됨 |
-| 인증정보 마스킹 (`_sanitize_error_message`) | ✅ 적용됨 |
-| 제한적 재시도 로직 | ✅ 적용됨 |
-
-### 1.3 Provider 구현 확인
-
-| Provider | 구현 파일 | 읽기 전용 여부 |
-|----------|----------|---------------|
-| **Kubernetes** | `src/server_manager/providers/kubernetes.py` | ✅ Fixture 기반 (라이브 클라이언트 주입 가능) |
-| **StarlingX** | `src/server_manager/providers/starlingx.py` | ✅ 6 REST GET + 3 CLI allowlist |
-| **Redfish** | `src/server_manager/collectors/redfish.py` | ✅ GET-only, TLS 검증 활성화 |
-
----
-
-## 2. 실환경 검증 전 사용자 확인 필요
-
-실환경 검증을 시작하기 전에 다음 항목에 대한 **명시적 승인**이 필요합니다.
-
-### 2.1 인증정보 확인
-
-**출력 금지**: 비밀번호, 토큰, kubeconfig 내용, Authorization 헤더는 보고서에 기록하지 않습니다.
-
-| Provider | 확인 항목 | 사용자 확인 |
-|----------|----------|------------|
-| **Kubernetes** | kubeconfig 또는 ServiceAccount 토큰 준비됨? | [ ] 예 / [ ] 아니오 |
-| **StarlingX** | Keystone 토큰 발급 가능? | [ ] 예 / [ ] 아니오 |
-| **Redfish** | BMC IP, 사용자명, 비밀번호 준비됨? | [ ] 예 / [ ] 아니오 |
-
-### 2.2 네트워크 접근 확인
-
-| 대상 | 포트 | 프로토콜 | 접근 가능? |
-|------|------|----------|-----------|
-| Kubernetes API | 6443 | HTTPS | [ ] 예 / [ ] 아니오 / [ ] 확인 필요 |
-| WRCP AIO-SX (sysinv) | 6385 | HTTP | [ ] 예 / [ ] 아니오 / [ ] 확인 필요 |
-| WRCP AIO-SX (FM) | 18002 | HTTP | [ ] 예 / [ ] 아니오 / [ ] 확인 필요 |
-| WRCP AIO-SX (SMAPI) | 7777 | HTTP | [ ] 예 / [ ] 아니오 / [ ] 확인 필요 |
-| BMC (Redfish) | 443 | HTTPS | [ ] 예 / [ ] 아니오 / [ ] 확인 필요 |
-
-### 2.3 TLS 인증서 확인
-
-| Provider | 인증서 종류 | `verify_ssl=True` 허용? |
-|----------|------------|------------------------|
-| **Kubernetes** | CA 발급 / 자체 서명 / 확인 필요 | [ ] 예 / [ ] 아니오 (자체 서명 시 `verify_ssl=False` 필요) |
-| **Redfish** | CA 발급 / 자체 서명 / 확인 필요 | [ ] 예 / [ ] 아니오 (자체 서명 시 `verify_ssl=False` 필요) |
-| **StarlingX** | HTTP 기본 (TLS 없음) | N/A |
-
-**주의**: Phase 0.2 에서 TLS 검증 기본값이 `True` 로 변경되었습니다. 자체 서명 인증서 환경에서는 명시적으로 `verify_ssl=False` 를 전달해야 합니다.
-
----
-
-## 3. 검증 예정 항목 (승인 시)
-
-### 3.1 Kubernetes
-
-| # | 검증 항목 | HTTP 메서드 | 예상 결과 | 중단 조건 |
-|---|----------|-------------|----------|----------|
-| K1 | API 서버 연결 | GET /version | 200 OK, 버전 정보 | 401/403/연결 실패 |
-| K2 | Node 리스트 조회 | GET /api/v1/nodes | 200 OK, Node 리스트 | 401/403/연결 실패 |
-| K3 | Pod 리스트 조회 (default namespace) | GET /api/v1/namespaces/default/pods | 200 OK, Pod 리스트 | 401/403/연결 실패 |
-
-**금지**: 리소스 생성/수정/삭제, exec, port-forward, rollout
-
-### 3.2 StarlingX
-
-| # | 검증 항목 | 엔드포인트/명령 | 예상 결과 | 중단 조건 |
-|---|----------|----------------|----------|----------|
-| S1 | sysinv 시스템 조회 | GET /v1/isystems | 200 OK, 시스템 정보 | 401/404/연결 실패 |
-| S2 | sysinv 호스트 조회 | GET /v1/ihosts | 200 OK, 호스트 리스트 | 401/404/연결 실패 |
-| S3 | FM Alarm 조회 | GET /v1/alarms | 200 OK, Alarm 리스트 | 401/404/연결 실패 |
-| S4 | CLI: system health-query | `system health-query` | Exit 0, 건강 상태 | Exit non-zero |
-
-**금지**: 임의 CLI 명령, write operations (acknowledge, lock/unlock)
-
-### 3.3 Redfish
-
-| # | 검증 항목 | 엔드포인트 | 예상 결과 | 중단 조건 |
-|---|----------|----------|----------|----------|
-| R1 | Root 서비스 조회 | GET /redfish/v1/ | 200 OK, Redfish 버전 | 401/403/연결 실패 |
-| R2 | System 조회 | GET /redfish/v1/Systems/{id} | 200 OK, 시스템 정보 | 401/403/연결 실패 |
-| R3 | TLS 인증서 검증 | HTTPS 연결 | 검증 성공 | 검증 실패 (자체 서명) |
-
-**금지**: POST/PATCH/DELETE, Reset Action, Write operations
-
----
-
-## 4. 즉시 중단 조건
-
-다음 중 하나라도 발생하면 **즉시 중단**하고 결과를 기록합니다:
-
-1. **인증 실패** (401/403)
-2. **TLS 인증서 검증 실패** (자체 서명 인증서)
-3. **인증정보 노출 가능성** (로그/에러 메시지에 토큰/비밀번호 포함)
-4. **예상 밖의 쓰기 요청** (POST/PUT/PATCH/DELETE 감지)
-5. **승인 범위 이탈** (정의되지 않은 엔드포인트/명령)
-
----
-
-## 5. 사용자 승인 요청
-
-**실환경 검증을 시작하시겠습니까?**
-
-다음 중 하나를 선택하세요:
-
-1. **모든 Provider 검증 승인** — Kubernetes, StarlingX, Redfish 모두 실환경 검증 수행
-2. **Kubernetes 만 승인** — Kubernetes 연결 검증만 수행
-3. **StarlingX 만 승인** — StarlingX REST/CLI 검증만 수행
-4. **Redfish 만 승인** — Redfish 하드웨어 조회 검증만 수행
-5. **보류** — 인증정보/네트워크 준비 안 됨, 검증 보류
-
-**승인 시 다음 정보를 알려주세요** (민감정보 제외):
-
-- Kubernetes: kubeconfig 파일 경로 또는 "ServiceAccount 사용"
-- StarlingX: "Keystone 토큰 준비됨" 또는 "토큰 발급 필요"
-- Redfish: "BMC IP 준비됨" 또는 "IP 확인 필요"
-- TLS: "자체 서명 인증서 포함" 여부 (include_self_signed=true/false)
-
----
-
-## 6. 현재 상태
-
-**Status**: `BLOCKED — 사용자 승인 대기`
-
-**이유**: 실환경 접속 전 인증정보 및 네트워크 접근 확인 필요
-
-**다음 단계**: 사용자 승인 후 해당 Provider 의 연결 검증 수행
-
----
-
-**보고서 작성 예정**: `output/Phase1_Live_Provider_Connection_Validation.md`
-
-**검증 방법**: 각 Provider 별 읽기 전용 GET/CLI 명령만 실행, HTTP 상태 코드 및TLS 검증 결과 기록 (민감정보 제외)
+**Phase 29 는 시작하지 않음** — Phase 1 이 BLOCKED 이므로 Phase 29 로 진행 불가.
