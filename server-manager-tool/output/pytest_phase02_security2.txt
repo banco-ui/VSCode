@@ -1,0 +1,37 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\banco\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Data\AI\VSCode\server-manager-tool
+configfile: pyproject.toml
+plugins: anyio-4.14.2
+collecting ... collected 13 items
+
+tests/test_collectors.py::TestPhase02_TLSSecurity::test_verify_ssl_default_is_true PASSED [  7%]
+tests/test_collectors.py::TestPhase02_TLSSecurity::test_verify_ssl_can_be_disabled_for_self_signed PASSED [ 15%]
+tests/test_collectors.py::TestPhase02_TLSSecurity::test_verify_ssl_explicit_true PASSED [ 23%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_retry_constants_defined PASSED [ 30%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_get_with_retry_method_exists PASSED [ 38%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_get_once_method_exists PASSED [ 46%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_401_not_retried FAILED [ 53%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_503_is_retried FAILED [ 61%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_sanitize_error_message_exists PASSED [ 69%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_mask_secrets_masks_token PASSED [ 76%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_mask_secrets_masks_password PASSED [ 84%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_mask_secrets_masks_auth_token PASSED [ 92%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_sanitize_applies_masking PASSED [100%]
+
+================================== FAILURES ===================================
+E   urllib.error.HTTPError: HTTP Error 401: Unauthorized
+
+During handling of the above exception, another exception occurred:
+E   NameError: name 'urllib' is not defined. Did you forget to import 'urllib'
+D:\Data\AI\VSCode\server-manager-tool\src\server_manager\collectors\redfish.py:142: NameError: name 'urllib' is not defined. Did you forget to import 'urllib'
+E   urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+
+During handling of the above exception, another exception occurred:
+E   NameError: name 'urllib' is not defined. Did you forget to import 'urllib'
+D:\Data\AI\VSCode\server-manager-tool\src\server_manager\collectors\redfish.py:142: NameError: name 'urllib' is not defined. Did you forget to import 'urllib'
+=========================== short test summary info ===========================
+FAILED tests/test_collectors.py::TestPhase02_RetryLogic::test_401_not_retried
+FAILED tests/test_collectors.py::TestPhase02_RetryLogic::test_503_is_retried
+======================== 2 failed, 11 passed in 4.25s =========================

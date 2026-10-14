@@ -1,0 +1,166 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\banco\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Data\AI\VSCode\server-manager-tool
+configfile: pyproject.toml
+plugins: anyio-4.14.2
+collecting ... collected 13 items
+
+tests/test_collectors.py::TestPhase02_TLSSecurity::test_verify_ssl_default_is_true PASSED [  7%]
+tests/test_collectors.py::TestPhase02_TLSSecurity::test_verify_ssl_can_be_disabled_for_self_signed PASSED [ 15%]
+tests/test_collectors.py::TestPhase02_TLSSecurity::test_verify_ssl_explicit_true PASSED [ 23%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_retry_constants_defined PASSED [ 30%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_get_with_retry_method_exists PASSED [ 38%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_get_once_method_exists PASSED [ 46%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_401_not_retried FAILED [ 53%]
+tests/test_collectors.py::TestPhase02_RetryLogic::test_503_is_retried FAILED [ 61%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_sanitize_error_message_exists PASSED [ 69%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_mask_secrets_masks_token PASSED [ 76%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_mask_secrets_masks_password PASSED [ 84%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_mask_secrets_masks_auth_token PASSED [ 92%]
+tests/test_collectors.py::TestPhase02_CredentialMasking::test_sanitize_applies_masking PASSED [100%]
+
+================================== FAILURES ===================================
+_________________ TestPhase02_RetryLogic.test_401_not_retried _________________
+
+self = <server_manager.collectors.redfish.RedfishCollector object at 0x000002509EC10F50>
+path = '/test'
+
+    def mock_get_once(self, path):
+        call_count[0] += 1
+>       raise urllib.error.HTTPError(
+            url=f"http://test/{path}",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},
+            fp=None,
+        )
+E       urllib.error.HTTPError: HTTP Error 401: Unauthorized
+
+tests\test_collectors.py:473: HTTPError
+
+During handling of the above exception, another exception occurred:
+
+self = <test_collectors.TestPhase02_RetryLogic object at 0x000002509EC10830>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002509EC11730>
+
+    def test_401_not_retried(self, monkeypatch):
+        """P0.2: 401 authentication errors should not be retried."""
+        import urllib.error
+        call_count = [0]
+    
+        def mock_get_once(self, path):
+            call_count[0] += 1
+            raise urllib.error.HTTPError(
+                url=f"http://test/{path}",
+                code=401,
+                msg="Unauthorized",
+                hdrs={},
+                fp=None,
+            )
+    
+        monkeypatch.setattr(
+            "server_manager.collectors.redfish.RedfishCollector._get_once",
+            mock_get_once,
+        )
+    
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+>       result = coll._get_with_retry("/test")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_collectors.py:487: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <server_manager.collectors.redfish.RedfishCollector object at 0x000002509EC10F50>
+path = '/test'
+
+    def _get_with_retry(self, path: str) -> Optional[dict[str, Any]]:
+        """Make a GET request with limited retry on transient errors.
+    
+        Phase 0.2: Retry only on connection errors, timeouts, and 5xx server errors.
+        Never retry on 401/403/4xx client errors or TLS verification failures.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return self._get_once(path)
+>           except urllib.error.HTTPError as e:
+                   ^^^^^^
+E           NameError: name 'urllib' is not defined. Did you forget to import 'urllib'
+
+src\server_manager\collectors\redfish.py:142: NameError
+_________________ TestPhase02_RetryLogic.test_503_is_retried __________________
+
+self = <server_manager.collectors.redfish.RedfishCollector object at 0x000002509EC108C0>
+path = '/test'
+
+    def mock_get_once(self, path):
+        call_count[0] += 1
+        if call_count[0] < 2:
+>           raise urllib.error.HTTPError(
+                url=f"http://test/{path}",
+                code=503,
+                msg="Service Unavailable",
+                hdrs={},
+                fp=None,
+            )
+E           urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+
+tests\test_collectors.py:501: HTTPError
+
+During handling of the above exception, another exception occurred:
+
+self = <test_collectors.TestPhase02_RetryLogic object at 0x000002509EC10CE0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002509EC10D70>
+
+    def test_503_is_retried(self, monkeypatch):
+        """P0.2: 503 server errors should be retried."""
+        import urllib.error
+        call_count = [0]
+    
+        def mock_get_once(self, path):
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise urllib.error.HTTPError(
+                    url=f"http://test/{path}",
+                    code=503,
+                    msg="Service Unavailable",
+                    hdrs={},
+                    fp=None,
+                )
+            return {"success": True}
+    
+        monkeypatch.setattr(
+            "server_manager.collectors.redfish.RedfishCollector._get_once",
+            mock_get_once,
+        )
+    
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+>       result = coll._get_with_retry("/test")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_collectors.py:516: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <server_manager.collectors.redfish.RedfishCollector object at 0x000002509EC108C0>
+path = '/test'
+
+    def _get_with_retry(self, path: str) -> Optional[dict[str, Any]]:
+        """Make a GET request with limited retry on transient errors.
+    
+        Phase 0.2: Retry only on connection errors, timeouts, and 5xx server errors.
+        Never retry on 401/403/4xx client errors or TLS verification failures.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return self._get_once(path)
+>           except urllib.error.HTTPError as e:
+                   ^^^^^^
+E           NameError: name 'urllib' is not defined. Did you forget to import 'urllib'
+
+src\server_manager\collectors\redfish.py:142: NameError
+=========================== short test summary info ===========================
+FAILED tests/test_collectors.py::TestPhase02_RetryLogic::test_401_not_retried
+FAILED tests/test_collectors.py::TestPhase02_RetryLogic::test_503_is_retried
+======================== 2 failed, 11 passed in 4.24s =========================
