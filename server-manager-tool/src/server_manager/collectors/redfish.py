@@ -5,11 +5,21 @@ Collects hardware inventory data via Redfish API.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional
 
 from .base import BaseCollector
 
 logger = logging.getLogger(__name__)
+
+# Phase 0.2: Retry configuration for resilient GET calls.
+# Only idempotent GET requests are retried, and only on transient errors
+# (connection errors, timeouts, 5xx server errors). 401/403/4xx and TLS
+# verification failures are never retried.
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 1.0  # seconds
+RETRY_BACKOFF_MAX = 10.0  # cap for a single backoff sleep
+RETRYABLE_STATUS_CODES = frozenset({500, 502, 503, 504})
 
 
 class RedfishCollector(BaseCollector):
@@ -22,7 +32,7 @@ class RedfishCollector(BaseCollector):
         username: str = "",
         password: str = "",
         use_ssl: bool = True,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,  # Phase 0.2: Default to True for security
         timeout: int = 30,
     ) -> None:
         super().__init__(host, port, username, password)
@@ -119,8 +129,56 @@ class RedfishCollector(BaseCollector):
 
         return data
 
-    def _get(self, path: str) -> Optional[dict[str, Any]]:
-        """Make a GET request to the Redfish API."""
+    def _get_with_retry(self, path: str) -> Optional[dict[str, Any]]:
+        """Make a GET request with limited retry on transient errors.
+
+        Phase 0.2: Retry only on connection errors, timeouts, and 5xx server errors.
+        Never retry on 401/403/4xx client errors or TLS verification failures.
+        """
+        last_exc: Optional[Exception] = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return self._get_once(path)
+            except urllib.error.HTTPError as e:
+                # Don't retry client errors (401/403/4xx) or TLS errors
+                if e.code < 500:
+                    logger.error("Redfish GET %s failed with %d (no retry)", path, e.code)
+                    return None
+                # Retry 5xx server errors
+                if e.code in RETRYABLE_STATUS_CODES:
+                    if attempt < MAX_RETRIES - 1:
+                        backoff = min(RETRY_BACKOFF_BASE * (2 ** attempt), RETRY_BACKOFF_MAX)
+                        logger.warning(
+                            "Redfish GET %s failed with %d, retrying in %.1fs (attempt %d/%d)",
+                            path, e.code, backoff, attempt + 1, MAX_RETRIES
+                        )
+                        time.sleep(backoff)
+                    else:
+                        logger.error("Redfish GET %s failed with %d after %d retries", path, e.code, MAX_RETRIES)
+                        return None
+                else:
+                    logger.error("Redfish GET %s failed with %d (no retry)", path, e.code)
+                    return None
+            except (TimeoutError, ConnectionError, OSError) as e:
+                # Retry connection errors and timeouts
+                if attempt < MAX_RETRIES - 1:
+                    backoff = min(RETRY_BACKOFF_BASE * (2 ** attempt), RETRY_BACKOFF_MAX)
+                    logger.warning(
+                        "Redfish GET %s connection error, retrying in %.1fs (attempt %d/%d)",
+                        path, backoff, attempt + 1, MAX_RETRIES
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.error("Redfish GET %s failed after %d retries: %s", path, MAX_RETRIES, e)
+                    return None
+            except Exception as e:
+                # Unknown errors: don't retry, just log and return None
+                logger.error("Redfish GET %s failed: %s", path, e)
+                return None
+        return None
+
+    def _get_once(self, path: str) -> Optional[dict[str, Any]]:
+        """Make a single GET request without retry."""
         import base64
         import urllib.request
 
@@ -142,9 +200,16 @@ class RedfishCollector(BaseCollector):
             with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
                 import json
                 return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            logger.error("Redfish GET %s failed: %s", path, e)
+            raise
         except Exception as e:
             logger.error("Redfish GET %s failed: %s", path, e)
-            return None
+            raise
+
+    def _get(self, path: str) -> Optional[dict[str, Any]]:
+        """Make a GET request to the Redfish API (with retry)."""
+        return self._get_with_retry(path)
 
     def _get_collection(self, parent: dict, key: str) -> Optional[dict]:
         """Get a collection reference from a parent object."""
