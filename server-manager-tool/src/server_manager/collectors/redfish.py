@@ -35,11 +35,13 @@ class RedfishCollector(BaseCollector):
         use_ssl: bool = True,
         verify_ssl: bool = True,  # Phase 0.2: Default to True for security
         timeout: int = 30,
+        ca_bundle: Optional[str] = None,  # Phase 1-RF.4: Optional CA bundle path
     ) -> None:
         super().__init__(host, port, username, password)
         self.use_ssl = use_ssl
         self.verify_ssl = verify_ssl
         self.timeout = timeout
+        self.ca_bundle = ca_bundle  # Phase 1-RF.4: Store CA bundle path
 
     @property
     def source_name(self) -> str:
@@ -181,6 +183,7 @@ class RedfishCollector(BaseCollector):
     def _get_once(self, path: str) -> Optional[dict[str, Any]]:
         """Make a single GET request without retry."""
         import base64
+        import os
         import urllib.request
 
         url = f"{self.base_url}{path}"
@@ -191,9 +194,22 @@ class RedfishCollector(BaseCollector):
             creds = base64.b64encode(f"{self.username}:{self._password}".encode()).decode()
             req.add_header("Authorization", f"Basic {creds}")
 
+        # Phase 1-RF.4: TLS context with optional CA bundle
         import ssl
         ctx = ssl.create_default_context()
-        if not self.verify_ssl:
+        
+        # Phase 1-RF.4: Load CA bundle if specified
+        if self.ca_bundle:
+            if not os.path.exists(self.ca_bundle):
+                raise FileNotFoundError(f"CA bundle not found: {self.ca_bundle}")
+            if not os.path.isfile(self.ca_bundle):
+                raise ValueError(f"CA bundle path is not a file: {self.ca_bundle}")
+            try:
+                ctx.load_verify_locations(cafile=self.ca_bundle)
+            except ssl.SSLError as e:
+                raise ValueError(f"Invalid CA bundle file: {self.ca_bundle} - {e}")
+        elif not self.verify_ssl:
+            # Phase 0.2: Disable TLS verification only if verify_ssl=False and no CA bundle
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
