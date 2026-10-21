@@ -137,7 +137,14 @@ class RedfishCollector(BaseCollector):
 
         Phase 0.2: Retry only on connection errors, timeouts, and 5xx server errors.
         Never retry on 401/403/4xx client errors or TLS verification failures.
+
+        Phase 1-RF.4.2: Explicitly exclude CA bundle errors (FileNotFoundError,
+        ValueError) and TLS/SSL errors from retry. Check URLError.reason for
+        wrapped SSL errors.
         """
+        import ssl
+        import json
+
         last_exc: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -162,6 +169,36 @@ class RedfishCollector(BaseCollector):
                 else:
                     logger.error("Redfish GET %s failed with %d (no retry)", path, e.code)
                     return None
+            except urllib.error.URLError as e:
+                # Phase 1-RF.4.2: Check if URLError wraps an SSL error
+                if isinstance(e.reason, (ssl.SSLError, ssl.SSLCertVerificationError)):
+                    logger.error("Redfish GET %s TLS error (no retry): %s", path, e.reason)
+                    return None
+                # URLError with other reasons (DNS, connection refused) -> retry
+                if attempt < MAX_RETRIES - 1:
+                    backoff = min(RETRY_BACKOFF_BASE * (2 ** attempt), RETRY_BACKOFF_MAX)
+                    logger.warning(
+                        "Redfish GET %s connection error, retrying in %.1fs (attempt %d/%d)",
+                        path, backoff, attempt + 1, MAX_RETRIES
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.error("Redfish GET %s failed after %d retries: %s", path, MAX_RETRIES, e.reason)
+                    return None
+            except (ssl.SSLError, ssl.SSLCertVerificationError) as e:
+                # Phase 1-RF.4.2: Direct SSL errors - never retry
+                logger.error("Redfish GET %s TLS error (no retry): %s", path, e)
+                return None
+            except json.JSONDecodeError as e:
+                # Phase 1-RF.9: Malformed response body — JSON parse error,
+                # not a retryable condition. Must precede the ValueError
+                # branch (JSONDecodeError subclasses ValueError).
+                logger.error("Redfish GET %s JSON parse error (no retry): %s", path, e)
+                return None
+            except (FileNotFoundError, ValueError) as e:
+                # Phase 1-RF.4.2: CA bundle config errors - never retry
+                logger.error("Redfish GET %s CA bundle error (no retry): %s", path, e)
+                return None
             except (TimeoutError, ConnectionError, OSError) as e:
                 # Retry connection errors and timeouts
                 if attempt < MAX_RETRIES - 1:
@@ -260,11 +297,33 @@ class RedfishCollector(BaseCollector):
         """Get all members of a collection."""
         members = collection.get("Members", [])
         results = []
+        # P1-RF.12: collection identifier for skip warnings. The collection's
+        # own @odata.id is a standard Redfish URI — safe to log. Member payload
+        # is never logged (could contain sensitive attributes).
+        collection_id = collection.get("@odata.id", "unknown collection")
         for m in members:
             if isinstance(m, dict) and "@odata.id" in m:
                 data = self._get(m["@odata.id"])
                 if data:
                     results.append(data)
+                else:
+                    # P1-RF.15: A falsy fetch result (e.g. 404/TLS/JSON error —
+                    # _get_with_retry returns None) is skipped (unchanged) but
+                    # now warned. Logs standard Redfish URIs only — never
+                    # member payload, serials or credentials.
+                    logger.warning(
+                        "Redfish collection %s: failed to fetch member %s",
+                        collection_id,
+                        m.get("@odata.id"),
+                    )
+            else:
+                # A member without @odata.id cannot be fetched — skipped
+                # (unchanged behavior). Warn so the skip is traceable without
+                # exposing member data.
+                logger.warning(
+                    "Redfish collection %s: skipping member without @odata.id",
+                    collection_id,
+                )
         return results
 
     def _collect_storage(self, storage_collection: dict) -> list[dict]:

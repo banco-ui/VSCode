@@ -88,7 +88,7 @@ class CPU(BaseModel):
 
 class MemoryModule(BaseModel):
     slot: str = ""
-    capacity_gb: float = 0.0
+    capacity_gb: Optional[float] = None  # P1-RF.18: None = missing/unparseable; 0.0 = real zero
     type: str = ""
     speed_mhz: int = 0
     manufacturer: str = ""
@@ -145,7 +145,7 @@ class StorageController(BaseModel):
 class PhysicalDisk(BaseModel):
     name: str = ""
     model: str = ""
-    capacity_gb: float = 0.0
+    capacity_gb: Optional[float] = None  # P1-RF.18: None = missing/unparseable; 0.0 = real zero
     media_type: MediaType = MediaType.Unknown
     protocol: Optional[str] = None
     health: HealthStatus = HealthStatus.UNKNOWN
@@ -156,7 +156,7 @@ class PhysicalDisk(BaseModel):
 class VirtualDisk(BaseModel):
     name: str = ""
     raid_type: Optional[str] = None
-    capacity_gb: float = 0.0
+    capacity_gb: Optional[float] = None  # P1-RF.18: None = missing/unparseable; 0.0 = real zero
     health: HealthStatus = HealthStatus.UNKNOWN
 
     model_config = {"extra": "forbid"}

@@ -133,6 +133,13 @@ class TestServerInventory:
         assert inv.hardware.memory.total_gb == 0.0
         assert inv.health.system == HealthStatus.UNKNOWN
 
+    def test_optional_capacity_serialization(self):
+        """P1-RF.18: Missing capacity serializes as null; real zero as 0.0."""
+        disk = PhysicalDisk(name="D0")
+        assert disk.model_dump()["capacity_gb"] is None
+        disk_zero = PhysicalDisk(name="D1", capacity_gb=0.0)
+        assert disk_zero.model_dump()["capacity_gb"] == 0.0
+
     def test_inventory_with_cpu(self):
         inv = ServerInventory(
             hardware=Hardware(
