@@ -24,6 +24,12 @@ dist-electron/
 *.bak
 ~$*
 
+# Python 캐시/바이너리 (자동 생성 파일 - 커밋 대상 아님)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
 # 대용량 바이너리 파일 (GitHub 푸시 실패 방지)
 *.blob
 *.mht
