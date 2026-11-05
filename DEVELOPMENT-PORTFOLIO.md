@@ -88,7 +88,7 @@
 
 ---
 
-## 3. Skill 인벤토리 (총 11개)
+## 3. Skill 인벤토리 (총 12개)
 
 ### .claude/skills (프로젝트 자동화, 9개)
 | Skill | 용도 |
@@ -103,11 +103,12 @@
 | `drm-document-reader.md` | DRM 문서 텍스트 추출 |
 | `mini-pc-monitor.md` | 미니 PC 상태 모니터링 대시보드 |
 
-### .cline/skills (인프라/운영, 2개)
+### .cline/skills (인프라/운영, 3개)
 | Skill | 용도 |
 |-------|------|
 | `github-push-proxy/SKILL.md` | 사내망 프록시(168.219.61.252:8080) 우회 GitHub push |
 | `samsung-github-usage/SKILL.md` | 삼성 사내 GitHub 산출물 공유 가이드 |
+| `batch-push/SKILL.md` | 프록시 403 시 소규모 분할 push + 자동 재시도 (`scripts/batch-push.ps1`) |
 
 ---
 
