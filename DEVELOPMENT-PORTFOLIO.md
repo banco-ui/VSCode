@@ -122,25 +122,29 @@
 ### 4-2. 현재 동기화 상태 (2026-11-05 기준)
 ```
 로컬 main    : 최신 (2026-10-15 커밋까지)
-origin/main  : 로컬보다 183 커밋 뒤쳐짐  → PUSH 필요
-upstream/main: 로컬보다 185 커밋 뒤쳐짐 → PUSH 필요
+origin/main  : 로컬보다 185 커밋 뒤쳐짐  → PUSH 필요
+upstream/main: 로컬보다 186 커밋 뒤쳐짐 → PUSH 필요
+전송 팩 크기  : 57MB → 5.9MB (Electron 빌드 산출물 히스토리 제거 완료)
 ```
 - 백업을 위해서는 **로컬 → origin, upstream 양쪽 모두 push**가 필요합니다.
 - 자동 커밋 스케줄러(`scripts/git-auto-commit.ps1` + `setup-git-auto-scheduler.ps1`)가 30분 간격 로컬 커밋은 유지 중.
 
 ### 4-3. 동기화 명령
 ```powershell
-# origin(내 GitHub) 백업
-git push origin main
-
-# upstream(연계 GitHub) 동기화 — 프록시 차단 시 .cline/skills/github-push-proxy 참조
-git push upstream main
+cd d:\Data\AI\VSCode     # 반드시 저장소로 이동 후 실행
+git push origin main     # 내 GitHub 백업 (shoutsky0705)
+git push upstream main   # 연계 GitHub 동기화 (banco-ui)
 ```
+> ⚠️ 2026-11-05 진단: 사내 프록시가 GitHub **push(POST) 전체를 차단** 중.
+> 1커밋·유효 토큰·소형 팩(5.9MB) 모두 403. fetch(읽기)는 정상.
+> **외부망(테더링/집 네트워크)에서 위 명령 실행이 유일한 확실한 방법.**
+> 참고: gh CLI 로그인 계정은 banco-ui이므로, origin(shoutsky0705) push 시
+> 외부망에서 자격 증명 프롬프트가 뜨면 개인 계정으로 로그인할 것.
 
 ### 4-4. 관리 권장 사항
-1. `.gitignore`에 Python 캐시(`__pycache__/`, `*.pyc`, `.pytest_cache/`) 항목 추가 완료(본 문서 작성 시 반영).
-2. 대용량 바이너리(docx/pdf/exe 등)는 이미 ignore 처리되어 있어 push 안정성 확보됨.
-3. 사내 프록시로 push가 403이면 github-push-proxy skill 절차 사용.
+1. `.gitignore`에 Python 캐시(`__pycache__/`, `*.pyc`, `.pytest_cache/`)와 Electron 빌드 산출물(`sd-search/release/`, `win-unpacked/`) 추가 완료.
+2. `git filter-repo`로 미푸시 186개 커밋에서 `sd-search/release/`(DLL 등 51MB) 히스토리 제거 완료 — 이제 push 팩이 5.9MB에 불과.
+3. 사내 프록시로 push가 403이면 외부망에서 실행 (본 섹션 참조).
 
 ---
 
