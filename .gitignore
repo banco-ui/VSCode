@@ -20,6 +20,10 @@ config/credentials.json
 dist/
 dist-electron/
 
+# Electron 빌드 산출물 (DLL/패키징 결과 - 절대 커밋 금지)
+sd-search/release/
+win-unpacked/
+
 # 임시 파일
 *.bak
 ~$*
