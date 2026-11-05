@@ -117,35 +117,38 @@
 ### 4-1. 리모트 구성
 | 리모트 | 저장소 | 용도 |
 |--------|--------|------|
-| `origin` | `https://github.com/shoutsky0705/VSCode.git` | 내 백업 저장소 |
-| `upstream` | `https://github.com/banco-ui/VSCode.git` | 연계 GitHub (동기 대상) |
+| `upstream` | `https://github.com/banco-ui/VSCode.git` | ⭐ **주 백업 저장소** (사내망에서 push 대상, gh 토큰 = banco-ui 계정 사용) |
+| `origin` | `https://github.com/shoutsky0705/VSCode.git` | 개인 계정 — **회사에서 push 금지**, 외부망에서만 선택적 push |
 
 ### 4-2. 현재 동기화 상태 (2026-11-05 기준)
 ```
-로컬 main    : 최신 (2026-10-15 커밋까지)
-origin/main  : 로컬보다 185 커밋 뒤쳐짐  → PUSH 필요
-upstream/main: 로컬보다 186 커밋 뒤쳐짐 → PUSH 필요
-전송 팩 크기  : 57MB → 5.9MB (Electron 빌드 산출물 히스토리 제거 완료)
+로컬 main     : 최신
+upstream/main : 로컬보다 187 커밋 뒤쳐짐 → 주 백업 대상 (batch-push.ps1 자동 진행 중)
+origin/main   : 동기화 안 함 (회사 정책 — 개인 계정)
+전송 팩 크기   : 57MB → 5.9MB (Electron 빌드 산출물 히스토리 제거 완료)
 ```
-- 백업을 위해서는 **로컬 → origin, upstream 양쪽 모두 push**가 필요합니다.
-- 자동 커밋 스케줄러(`scripts/git-auto-commit.ps1` + `setup-git-auto-scheduler.ps1`)가 30분 간격 로컬 커밋은 유지 중.
+- 자동 커밋 스케줄러(`scripts/git-auto-commit.ps1`)가 30분 간격 로컬 커밋 유지 중.
 
 ### 4-3. 동기화 명령
 ```powershell
-cd d:\Data\AI\VSCode     # 반드시 저장소로 이동 후 실행
-git push origin main     # 내 GitHub 백업 (shoutsky0705)
-git push upstream main   # 연계 GitHub 동기화 (banco-ui)
+# ① 사내망: 자동 분할 push (1커밋씩 재시도, 최대 4시간)
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\batch-push.ps1
+Get-Content .git\batch-push.log -Tail 20 -Wait    # 진행 모니터링
+New-Item .git\batch-push.stop -Force              # 중단
+
+# ② 외부망(테더링/집): 확실한 수동 push
+cd d:\Data\AI\VSCode
+git push upstream main     # ⭐ 주 백업 (banco-ui/VSCode)
+# git push origin main     # 개인 계정 — 회사에서는 하지 않음
 ```
 > ⚠️ 2026-11-05 진단: 사내 프록시가 GitHub **push(POST) 전체를 차단** 중.
 > 1커밋·유효 토큰·소형 팩(5.9MB) 모두 403. fetch(읽기)는 정상.
-> **외부망(테더링/집 네트워크)에서 위 명령 실행이 유일한 확실한 방법.**
-> 참고: gh CLI 로그인 계정은 banco-ui이므로, origin(shoutsky0705) push 시
-> 외부망에서 자격 증명 프롬프트가 뜨면 개인 계정으로 로그인할 것.
+> batch-push.ps1이 프록시 허용 창을 계속 노리며, 열리면 자동으로 전부 밀어 올림.
 
 ### 4-4. 관리 권장 사항
 1. `.gitignore`에 Python 캐시(`__pycache__/`, `*.pyc`, `.pytest_cache/`)와 Electron 빌드 산출물(`sd-search/release/`, `win-unpacked/`) 추가 완료.
-2. `git filter-repo`로 미푸시 186개 커밋에서 `sd-search/release/`(DLL 등 51MB) 히스토리 제거 완료 — 이제 push 팩이 5.9MB에 불과.
-3. 사내 프록시로 push가 403이면 외부망에서 실행 (본 섹션 참조).
+2. `git filter-repo`로 미푸시 187개 커밋에서 `sd-search/release/`(DLL 등 51MB) 히스토리 제거 완료 — push 팩 5.9MB.
+3. push 방법론: `.cline/skills/batch-push/SKILL.md` 참조 (사내망 → batch-push.ps1, 실패 시 외부망).
 
 ---
 

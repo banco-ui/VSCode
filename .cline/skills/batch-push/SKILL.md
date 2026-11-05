@@ -11,6 +11,10 @@
 
 ## 방법 요약
 
+> **주 백업 정책 (2026-11-05 확정)**: push 대상은 **upstream(banco-ui/VSCode)만**.
+> origin(shoutsky0705, 개인 계정)은 회사 정책상 사내망에서 push하지 않음.
+> 인증은 gh CLI 토큰(banco-ui 계정)을 upstream URL에 임시 적용 후 복원.
+
 1. **대용량 파일 먼저 제거** — push 실패의 1차 원인은 팩 크기다.
    - `git rev-list --objects <remote>/main..main | git cat-file --batch-check` 로 미푸시 커밋 내 대형 blob 확인
    - 빌드 산출물(win-unpacked, dist, DLL 등)은 `.gitignore` 추가 + `git filter-repo`로 미푸시 히스토리에서 제거
@@ -27,7 +31,7 @@
 ## 자동 실행 (권장)
 
 ```powershell
-# 백그라운드 상시 재시도 루프 (origin + upstream 모두, 최대 4시간)
+# 백그라운드 상시 재시도 루프 — upstream(banco-ui) 전용, 최대 4시간
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\batch-push.ps1
 
 # 진행 상황 확인
@@ -37,8 +41,8 @@ Get-Content .git\batch-push.log -Tail 20 -Wait
 New-Item .git\batch-push.stop -Force
 ```
 
-- `scripts/batch-push.ps1`: 1커밋씩 origin/upstream 순차 push, 10회 재시도 후 60초 대기 재라운드.
-  로그: `.git\batch-push.log`, 성공 시 `OK   <remote> <n>/<total> -> <sha>` 기록.
+- `scripts/batch-push.ps1` (v5): 1커밋씩 upstream 순차 push, 10회 재시도 후 60초 대기 재라운드.
+  gh 토큰(banco-ui)으로 인증, 종료 시 remote URL 자동 복원. 로그: `.git\batch-push.log`.
 
 ## 체크리스트 (효과 순)
 
@@ -46,10 +50,11 @@ New-Item .git\batch-push.stop -Force
 2. `git -c http.version=HTTP/1.1 push ...` 시도 (프록시 HTTP/2 처리 문제 회피, 효과 없을 수 있음)
 3. `gh auth token` 으로 토큰 URL push — 단, 토큰 계정이 대상 저장소 소유자여야 함
 4. 1커밋 단위 분할 push 반복 (batch-push.ps1)
-5. 그래도 안 되면 외부망(테더링/집)에서 `git push origin main && git push upstream main` — 확실
+5. 그래도 안 되면 외부망(테더링/집)에서 `cd d:\Data\AI\VSCode && git push upstream main` — 확실
 
 ## 주의
 
+- **push 대상은 upstream(banco-ui)만. origin(개인 계정)은 회사에서 push하지 않음.**
 - `filter-repo`는 **미푸시 커밋에만** 사용 (이미 push된 커밋을 재작성하면 force-push 필요)
 - 토큰 URL push 후 반드시 `git remote set-url <remote> <원래 URL>` 로 복원
 - PowerShell에서 토큰 URL 문자열 연결은 `("https://user:" + $t + "@...")` 형태로
@@ -57,5 +62,7 @@ New-Item .git\batch-push.stop -Force
 
 ## 실적 기록
 
-- 2026-11-05: 57MB 팩 → filter-repo로 빌드 산출물 제거 → 5.9MB. 사내망에서 1커밋 push도
-  프록시가 전면 차단 중이라 batch-push.ps1 상시 루프로 대기 중. 외부망 push가 가장 확실.
+- 2026-11-05: 주 백업 저장소를 upstream(banco-ui/VSCode)으로 확정. origin은 개인 계정으로
+  사내 push 금지. batch-push.ps1 v5 = upstream 전용 + gh 토큰(banco-ui) 인증.
+  당일 사내 프록시가 1커밋 push도 전면 차단(403)하여 상시 재시도 루프로 대기 중.
+  외부망 push가 가장 확실.
