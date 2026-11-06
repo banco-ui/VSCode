@@ -1,0 +1,567 @@
+"""Kubernetes Live/Mock Adapter Contract Tests — Phase 13G-8.
+
+Verifies that a CoreV1Api-compatible mock client can be injected into
+KubernetesProviderAdapter, producing a RawProviderSnapshot that feeds
+directly into KubernetesProviderNormalizer — the SAME path as fixture mode.
+
+Flow:
+
+    Mock CoreV1Api-compatible client
+        ↓
+    KubernetesProviderAdapter(client=mock)
+        ↓
+    RawProviderSnapshot
+        ↓
+    KubernetesProviderNormalizer
+        ↓
+    NormalizationResult (Canonical Domain Model)
+
+Key principles:
+    - sanitize_for_serialization() is used ONLY at the adapter boundary
+    - Normalizer never sees K8s client objects
+    - Same adapter → snapshot → normalizer path for fixture/mock/live
+    - No Workload inference, no Accelerator inference
+    - No mutation (read-only API calls only)
+    - No persistence
+
+Live tests are SKIPPED when credentials are unavailable.
+"""
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+from server_manager.models.canonical import (
+    ExecutionEnvironmentType,
+    NetworkType,
+    PlatformType,
+    ProviderType,
+    RelationshipEvidenceType,
+    StorageType,
+)
+from server_manager.normalizers.kubernetes_normalizer import (
+    KubernetesProviderNormalizer,
+)
+from server_manager.normalizers.provider_normalizer import NormalizationResult
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability,
+    KubernetesProviderAdapter,
+    RawProviderSnapshot,
+)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MOCK K8s API OBJECTS
+#  Simulate the structure of kubernetes.client API response objects.
+#  These mimic the real objects that sanitize_for_serialization() converts.
+# ════════════════════════════════════════════════════════════════════════
+
+
+class MockK8sObject:
+    """Minimal mock of a kubernetes.client model object.
+
+    Real K8s API objects have openapi attributes and are converted by
+    ApiClient.sanitize_for_serialization() to dicts. Our mock provides
+    a to_dict() method that mimics that conversion, and also works
+    with the adapter's fallback serializer.
+    """
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self._data = data
+
+    def to_dict(self) -> dict[str, Any]:
+        return self._data
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self._data.get(name)
+
+
+class MockK8sListResponse:
+    """Mock of K8s list response (V1NodeList, V1PodList, etc.).
+
+    Real K8s list responses have an `items` attribute.
+    """
+
+    def __init__(self, items: list[MockK8sObject]) -> None:
+        self.items = items
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"items": [item.to_dict() for item in self.items]}
+
+
+class MockVersionResponse:
+    """Mock of K8s VersionApi response (VersionInfo)."""
+
+    def __init__(self, git_version: str = "v1.28.0") -> None:
+        self.git_version = git_version
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"gitVersion": self.git_version}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MOCK DATA BUILDERS
+# ════════════════════════════════════════════════════════════════════════
+
+
+def make_mock_node(name: str, uid: str | None = None) -> MockK8sObject:
+    return MockK8sObject({
+        "apiVersion": "v1",
+        "kind": "Node",
+        "metadata": {
+            "name": name,
+            "uid": uid or f"uid-node-{name}",
+            "labels": {"kubernetes.io/hostname": name},
+        },
+        "spec": {},
+        "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}},
+    })
+
+
+def make_mock_pod(
+    name: str,
+    uid: str | None = None,
+    namespace: str = "default",
+    node_name: str | None = None,
+    containers: list[dict] | None = None,
+) -> MockK8sObject:
+    spec: dict[str, Any] = {}
+    if node_name:
+        spec["nodeName"] = node_name
+    spec["containers"] = containers or [{"name": "main", "image": "nginx:1.21"}]
+    return MockK8sObject({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name, "uid": uid or f"uid-pod-{name}", "namespace": namespace},
+        "spec": spec,
+        "status": {"phase": "Running"},
+    })
+
+
+def make_mock_service(name: str, uid: str | None = None) -> MockK8sObject:
+    return MockK8sObject({
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": name, "uid": uid or f"uid-svc-{name}", "namespace": "default"},
+        "spec": {"type": "ClusterIP", "clusterIP": "10.96.0.1"},
+    })
+
+
+def make_mock_pv(name: str, uid: str | None = None) -> MockK8sObject:
+    return MockK8sObject({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+        "spec": {"capacity": {"storage": "10Gi"}},
+    })
+
+
+def make_mock_pvc(name: str, uid: str | None = None) -> MockK8sObject:
+    return MockK8sObject({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}", "namespace": "default"},
+        "spec": {"resources": {"requests": {"storage": "5Gi"}}},
+    })
+
+
+def make_mock_namespace(name: str) -> MockK8sObject:
+    return MockK8sObject({
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {"name": name, "uid": f"uid-ns-{name}"},
+    })
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MOCK COREV1API CLIENT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class MockCoreV1Api:
+    """Mock CoreV1Api-compatible client for adapter injection.
+
+    Implements only read-only list methods. No create/update/delete.
+    Returns MockK8sListResponse objects with items.
+    """
+
+    def __init__(
+        self,
+        nodes: list[MockK8sObject] | None = None,
+        pods: list[MockK8sObject] | None = None,
+        namespaces: list[MockK8sObject] | None = None,
+        services: list[MockK8sObject] | None = None,
+        persistent_volumes: list[MockK8sObject] | None = None,
+        persistent_volume_claims: list[MockK8sObject] | None = None,
+        version: str = "v1.28.0",
+    ) -> None:
+        self._nodes = nodes or []
+        self._pods = pods or []
+        self._namespaces = namespaces or []
+        self._services = services or []
+        self._pvs = persistent_volumes or []
+        self._pvcs = persistent_volume_claims or []
+        self._version = version
+
+    def get_api_version(self) -> MockVersionResponse:
+        return MockVersionResponse(self._version)
+
+    def list_namespace(self) -> MockK8sListResponse:
+        return MockK8sListResponse(self._namespaces)
+
+    def list_node(self) -> MockK8sListResponse:
+        return MockK8sListResponse(self._nodes)
+
+    def list_pod_for_all_namespaces(self) -> MockK8sListResponse:
+        return MockK8sListResponse(self._pods)
+
+    def list_service_for_all_namespaces(self) -> MockK8sListResponse:
+        return MockK8sListResponse(self._services)
+
+    def list_persistent_volume(self) -> MockK8sListResponse:
+        return MockK8sListResponse(self._pvs)
+
+    def list_persistent_volume_claim_for_all_namespaces(self) -> MockK8sListResponse:
+        return MockK8sListResponse(self._pvcs)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE BUILDER
+# ════════════════════════════════════════════════════════════════════════
+
+
+def make_full_mock_topology() -> MockCoreV1Api:
+    """Build a mock client with a full multi-layer topology.
+
+    Topology:
+        Cluster (mock-cluster)
+          └── Node (node-01)
+               └── Pod (dmp-pod)
+                    ├── Container (dmp)
+                    └── Container (sidecar)
+          └── Service (dmp-service)
+          └── PV (dmp-pv)
+          └── PVC (dmp-pvc)
+          └── Namespace (ran)
+    """
+    return MockCoreV1Api(
+        nodes=[make_mock_node("node-01")],
+        pods=[make_mock_pod(
+            name="dmp-pod", uid="uid-pod-dmp", namespace="ran",
+            node_name="node-01",
+            containers=[
+                {"name": "dmp", "image": "dmp:1.0"},
+                {"name": "sidecar", "image": "busybox:1.35"},
+            ],
+        )],
+        namespaces=[make_mock_namespace("ran")],
+        services=[make_mock_service("dmp-service")],
+        persistent_volumes=[make_mock_pv("dmp-pv")],
+        persistent_volume_claims=[make_mock_pvc("dmp-pvc")],
+        version="v1.28.0",
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8-01 MOCK CLIENT INJECTION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMockClientInjection:
+    """G8-01: Mock CoreV1Api can be injected into the adapter."""
+
+    def test_adapter_accepts_client_parameter(self):
+        """Adapter accepts a client parameter without error."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(
+            provider_id="mock-cluster", client=mock)
+        assert adapter is not None
+
+    def test_collect_with_mock_client_returns_snapshot(self):
+        """collect() with mock client returns a RawProviderSnapshot."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(
+            provider_id="mock-cluster", client=mock)
+        snapshot = adapter.collect()
+        assert isinstance(snapshot, RawProviderSnapshot)
+
+    def test_mock_snapshot_provider_type_is_kubernetes(self):
+        """Snapshot from mock client has KUBERNETES provider type."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        assert snapshot.provider_type == ProviderType.KUBERNETES
+
+    def test_mock_snapshot_collection_status_success(self):
+        """Full mock topology → SUCCESS collection status."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        assert snapshot.collection_status == OrchestrationStatus.SUCCESS
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8-02 SERIALIZATION (API object → dict)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestSerialization:
+    """G8-02: K8s API objects are serialized to dicts at the adapter boundary."""
+
+    def test_mock_node_serialized_to_dict(self):
+        """Mock K8s Node object is serialized to a plain dict in payload."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        nodes = snapshot.payload.get("nodes", [])
+        assert len(nodes) == 1
+        assert isinstance(nodes[0], dict)
+        assert nodes[0]["metadata"]["name"] == "node-01"
+
+    def test_mock_pod_serialized_to_dict(self):
+        """Mock K8s Pod object is serialized to a plain dict in payload."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        pods = snapshot.payload.get("pods", [])
+        assert len(pods) == 1
+        assert isinstance(pods[0], dict)
+        assert pods[0]["metadata"]["name"] == "dmp-pod"
+
+    def test_mock_service_serialized_to_dict(self):
+        """Mock K8s Service object is serialized to a plain dict."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        services = snapshot.payload.get("services", [])
+        assert len(services) == 1
+        assert isinstance(services[0], dict)
+        assert services[0]["metadata"]["name"] == "dmp-service"
+
+    def test_cluster_version_from_mock_client(self):
+        """Cluster version is obtained from mock client's get_api_version."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        cluster = snapshot.payload.get("cluster", {})
+        assert cluster.get("version") == "v1.28.0"
+
+    def test_all_payload_values_are_plain_dicts(self):
+        """All payload items are plain dicts, not K8s client objects."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        for key in ["nodes", "pods", "services", "namespaces",
+                     "persistent_volumes", "persistent_volume_claims"]:
+            items = snapshot.payload.get(key, [])
+            for item in items:
+                assert isinstance(item, dict), f"{key} item is not a dict"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8-03 RAW SNAPSHOT (mock → RawProviderSnapshot)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMockRawSnapshot:
+    """G8-03: Mock client produces a valid RawProviderSnapshot."""
+
+    def test_snapshot_has_snapshot_id(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        assert snapshot.snapshot_id.startswith("snap-k8s-")
+
+    def test_snapshot_has_capability_results(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        cap_types = {cr.capability for cr in snapshot.capability_results}
+        assert AdapterCapability.PLATFORM in cap_types
+        assert AdapterCapability.NODE in cap_types
+        assert AdapterCapability.EXECUTION_ENVIRONMENT in cap_types
+
+    def test_snapshot_has_source_evidence(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(
+            provider_id="mock-cluster", client=mock)
+        snapshot = adapter.collect()
+        assert snapshot.source_evidence is not None
+        assert snapshot.source_evidence.provider_id == "mock-cluster"
+        assert snapshot.source_evidence.raw_data_ref == snapshot.snapshot_id
+
+    def test_snapshot_has_relationship_evidence(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        direct = [e for e in snapshot.relationship_evidence
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        derived = [e for e in snapshot.relationship_evidence
+                   if e.evidence_type == RelationshipEvidenceType.DERIVED]
+        assert len(direct) == 1  # Pod → Node
+        assert direct[0].relationship_type == "runs_on"
+        assert len(derived) == 2  # Pod → 2 Containers
+        assert all(e.relationship_type == "contains" for e in derived)
+
+    def test_snapshot_payload_preserves_all_resources(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        assert len(snapshot.payload["nodes"]) == 1
+        assert len(snapshot.payload["pods"]) == 1
+        assert len(snapshot.payload["services"]) == 1
+        assert len(snapshot.payload["persistent_volumes"]) == 1
+        assert len(snapshot.payload["persistent_volume_claims"]) == 1
+        assert len(snapshot.payload["namespaces"]) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8-04 MOCK SNAPSHOT → NORMALIZER (same path as fixture)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMockSnapshotToNormalizer:
+    """G8-04: Mock snapshot feeds directly into existing normalizer."""
+
+    def test_normalize_accepts_mock_snapshot(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        assert isinstance(result, NormalizationResult)
+
+    def test_mock_e2e_produces_expected_entities(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        assert len(result.platforms) == 1
+        assert result.platforms[0].platform_type == PlatformType.KUBERNETES
+        assert len(result.clusters) == 1
+        assert len(result.nodes) == 1
+        assert result.nodes[0].name == "node-01"
+        # 1 Pod + 2 Containers = 3 EEs
+        assert len(result.execution_environments) == 3
+        assert len(result.networks) == 1
+        assert result.networks[0].network_type == NetworkType.VIRTUAL
+        assert len(result.storages) == 2
+
+    def test_mock_e2e_no_physical_os_workload_accelerator(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        assert len(result.physicals) == 0
+        assert len(result.os_entities) == 0
+        assert len(result.workloads) == 0
+        assert len(result.accelerators) == 0
+
+    def test_mock_e2e_no_manual_translation(self):
+        """Snapshot from mock goes directly to normalizer — no conversion."""
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        # Direct pass to normalizer — no intermediate manipulation
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        assert result.snapshot_id == snapshot.snapshot_id
+        assert result.provider_type == snapshot.provider_type
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8-05 RELATIONSHIP EVIDENCE (mock → canonical)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMockRelationshipEvidence:
+    """G8-05: Relationship evidence is preserved from mock to canonical."""
+
+    def test_direct_pod_to_node_preserved(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        direct = [e for e in result.relationship_evidence
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        assert len(direct) == 1
+        assert direct[0].relationship_type == "runs_on"
+
+    def test_derived_pod_to_container_preserved(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        derived = [e for e in result.relationship_evidence
+                   if e.evidence_type == RelationshipEvidenceType.DERIVED]
+        assert len(derived) == 2
+        assert all(e.relationship_type == "contains" for e in derived)
+
+    def test_no_inferred_evidence(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        for ev in result.relationship_evidence:
+            assert ev.evidence_type != "INFERRED"
+            assert ev.evidence_type != "UNKNOWN"
+
+    def test_pod_node_ref_resolved_to_canonical_id(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        node = result.nodes[0]
+        pod_ee = next(
+            ee for ee in result.execution_environments
+            if ee.ee_type == ExecutionEnvironmentType.POD)
+        assert pod_ee.node_ref == node.canonical_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8-06 PROVENANCE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMockProvenance:
+    """G8-06: Provenance is preserved from mock snapshot to canonical entities."""
+
+    def test_all_entities_have_source_evidence(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(
+            provider_id="mock-cluster", client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        all_entities = (
+            result.platforms + result.clusters + result.nodes
+            + result.execution_environments + result.networks + result.storages
+        )
+        for entity in all_entities:
+            assert entity.source_evidence is not None
+            assert entity.source_evidence.provider_type == ProviderType.KUBERNETES
+            assert entity.source_evidence.provider_id == "mock-cluster"
+
+    def test_source_evidence_raw_data_ref_matches_snapshot(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        for node in result.nodes:
+            assert node.source_evidence.raw_data_ref == snapshot.snapshot_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8-07 IDENTITY STABILITY
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMockIdentityStability:
+    """G8-07: Canonical IDs are deterministic across mock normalizations."""
+
+    def test_same_mock_same_canonical_ids(self):
+        mock1 = make_full_mock_topology()
+        snap1 = KubernetesProviderAdapter(client=mock1).collect()
+        result1 = KubernetesProvide

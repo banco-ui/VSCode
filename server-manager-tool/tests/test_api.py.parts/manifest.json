@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/tests/test_api.py",
+  "originalSize": 17876,
+  "sha256": "e268aa5800cb0ca8f111459a6925eab3fc6a59e05019171727aeb8dbcf8f62a8",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_api.py\""
+}

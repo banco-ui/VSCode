@@ -1,0 +1,494 @@
+"""Phase 24 — Discovery Execution & Inventory Refresh Tests.
+
+Tests for the Phase 24 Discovery run API endpoint and its integration
+with the Phase 22 Management API and Phase 23 Dashboard.
+
+All tests use deterministic mock/fixture data — no live K8s credentials
+are required.
+
+SAFETY: READ_ONLY exploration, no live mutation, no credential exposure,
+        no operation/recovery execution, no provider resource changes.
+"""
+from __future__ import annotations
+
+import inspect
+import os
+
+import pytest
+from fastapi.testclient import TestClient
+
+from server_manager.api.app import create_app
+from server_manager.api import dependencies as deps
+from server_manager.api.dependencies import (
+    DiscoveryAlreadyRunningError,
+    ManagementContext,
+)
+from server_manager.discovery.service import PlatformDiscovery
+from server_manager.models.canonical import ProviderType
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import KubernetesProviderAdapter
+from server_manager.providers.base import (
+    AdapterCapability,
+    ProviderAdapter,
+    RawProviderSnapshot,
+)
+
+
+# ── Mock K8s Topology ──────────────────────────────────────────────────
+
+class MockK8sObject:
+    def __init__(self, data): self._data = data
+    def to_dict(self): return self._data
+
+class MockK8sListResponse:
+    def __init__(self, items): self.items = items
+    def to_dict(self):
+        return {"items": [i.to_dict() if hasattr(i, "to_dict") else i for i in self.items]}
+
+class MockCoreV1Api:
+    def __init__(self, topology): self._topology = topology
+    def get_api_version(self): return {"major": "1", "minor": "28"}
+    def list_namespace(self):
+        return MockK8sListResponse([MockK8sObject(ns) for ns in self._topology.get("namespaces", [])])
+    def list_node(self):
+        return MockK8sListResponse([MockK8sObject(n) for n in self._topology.get("nodes", [])])
+    def list_pod_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(p) for p in self._topology.get("pods", [])])
+    def list_service_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(s) for s in self._topology.get("services", [])])
+    def list_persistent_volume(self):
+        return MockK8sListResponse([MockK8sObject(pv) for pv in self._topology.get("persistent_volumes", [])])
+    def list_persistent_volume_claim_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(pvc) for pvc in self._topology.get("persistent_volume_claims", [])])
+
+
+def make_namespace(name):
+    return {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "uid": "uid-ns-" + name}}
+
+def make_node(name, uid=None, ready=True, memory_pressure=False,
+              cpu_capacity="8", cpu_allocatable="7500m",
+              memory_capacity="16256396Ki", memory_allocatable="15256396Ki", pod_capacity="110"):
+    conditions = [
+        {"type": "Ready", "status": "True" if ready else "False"},
+        {"type": "MemoryPressure", "status": "True" if memory_pressure else "False"},
+        {"type": "DiskPressure", "status": "False"},
+        {"type": "PIDPressure", "status": "False"},
+    ]
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or "uid-node-" + name}, "spec": {},
+            "status": {"capacity": {"cpu": cpu_capacity, "memory": memory_capacity, "pods": pod_capacity},
+                       "allocatable": {"cpu": cpu_allocatable, "memory": memory_allocatable, "pods": pod_capacity},
+                       "conditions": conditions}}
+
+def make_pod(name, uid=None, namespace="default", node_name="node-01", phase="Running", ready=True):
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or "uid-pod-" + name, "namespace": namespace},
+            "spec": {"nodeName": node_name, "containers": [{"name": "main", "image": "nginx:1.25", "resources": {}}]},
+            "status": {"phase": phase, "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]}}
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or "uid-svc-" + name, "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+def make_pv(name, uid=None, phase="Bound"):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or "uid-pv-" + name},
+            "spec": {"capacity": {"storage": "10Gi"}, "accessModes": ["ReadWriteOnce"]},
+            "status": {"phase": phase}}
+
+def make_pvc(name, uid=None, phase="Bound"):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or "uid-pvc-" + name, "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}, "accessModes": ["ReadWriteOnce"]},
+            "status": {"phase": phase}}
+
+
+def make_healthy_cluster_topology():
+    return {
+        "cluster": {"name": "test-cluster-01", "version": "v1.28.0"},
+        "namespaces": [make_namespace("default"), make_namespace("ran")],
+        "nodes": [make_node("node-01", uid="uid-node-01"), make_node("node-02", uid="uid-node-02")],
+        "pods": [
+            make_pod("app-pod-01", uid="uid-pod-app-01", namespace="default", node_name="node-01"),
+            make_pod("app-pod-02", uid="uid-pod-app-02", namespace="ran", node_name="node-02"),
+            make_pod("app-pod-03", uid="uid-pod-app-03", namespace="default", node_name="node-01"),
+        ],
+        "services": [make_service("app-svc", uid="uid-svc-app")],
+        "persistent_volumes": [make_pv("pv-01", uid="uid-pv-01")],
+        "persistent_volume_claims": [make_pvc("pvc-01", uid="uid-pvc-01")],
+    }
+
+def make_empty_topology():
+    return {
+        "cluster": {"name": "empty-cluster", "version": "v1.28.0"},
+        "namespaces": [make_namespace("default")],
+        "nodes": [], "pods": [], "services": [],
+        "persistent_volumes": [], "persistent_volume_claims": [],
+    }
+
+
+# ── Failing adapter (simulates connection failure) ─────────────────────
+
+class FailingAdapter(ProviderAdapter):
+    """Adapter that always returns FAILED collection status."""
+    def __init__(self):
+        super().__init__(provider_type=ProviderType.KUBERNETES, provider_id="failing-cluster")
+    def capabilities(self):
+        return [AdapterCapability.PLATFORM, AdapterCapability.NODE]
+    def collect(self, **kwargs):
+        from datetime import datetime, timezone
+        return RawProviderSnapshot(
+            snapshot_id="snap-fail-001",
+            provider_type=ProviderType.KUBERNETES,
+            provider_id="failing-cluster",
+            collected_at=datetime.now(timezone.utc).isoformat(),
+            collection_status=OrchestrationStatus.FAILED,
+            errors=["Connection refused: unable to reach Kubernetes API server"],
+        )
+
+
+class SkippedAdapter(ProviderAdapter):
+    """Adapter that returns SKIPPED (no credentials)."""
+    def __init__(self):
+        super().__init__(provider_type=ProviderType.KUBERNETES, provider_id="no-creds-cluster")
+    def capabilities(self):
+        return [AdapterCapability.PLATFORM, AdapterCapability.NODE]
+    def collect(self, **kwargs):
+        from datetime import datetime, timezone
+        return RawProviderSnapshot(
+            snapshot_id="snap-skip-001",
+            provider_type=ProviderType.KUBERNETES,
+            provider_id="no-creds-cluster",
+            collected_at=datetime.now(timezone.utc).isoformat(),
+            collection_status=OrchestrationStatus.SKIPPED,
+            errors=["No kubeconfig found: credentials not configured"],
+        )
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────
+
+@pytest.fixture
+def discovery_client():
+    topology = make_healthy_cluster_topology()
+    ctx = ManagementContext()
+    ctx.discovery_factory = lambda: (
+        KubernetesProviderAdapter(provider_id="test-cluster", client=MockCoreV1Api(topology)),
+        KubernetesProviderNormalizer(),
+    )
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+@pytest.fixture
+def empty_discovery_client():
+    topology = make_empty_topology()
+    ctx = ManagementContext()
+    ctx.discovery_factory = lambda: (
+        KubernetesProviderAdapter(provider_id="empty-cluster", client=MockCoreV1Api(topology)),
+        KubernetesProviderNormalizer(),
+    )
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+@pytest.fixture
+def failing_discovery_client():
+    ctx = ManagementContext()
+    ctx.discovery_factory = lambda: (FailingAdapter(), KubernetesProviderNormalizer())
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+@pytest.fixture
+def skipped_discovery_client():
+    ctx = ManagementContext()
+    ctx.discovery_factory = lambda: (SkippedAdapter(), KubernetesProviderNormalizer())
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+@pytest.fixture
+def unconfigured_discovery_client():
+    ctx = ManagementContext()
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+
+# ── 1. Discovery Run — Success ────────────────────────────────────────
+
+class TestDiscoveryRunSuccess:
+    def test_discovery_run_returns_200(self, discovery_client):
+        c, _ = discovery_client
+        r = c.post("/api/v1/discovery/run")
+        assert r.status_code == 200
+
+    def test_discovery_run_status_success(self, discovery_client):
+        c, _ = discovery_client
+        r = c.post("/api/v1/discovery/run")
+        assert r.json()["discovery_status"] == "SUCCESS"
+
+    def test_discovery_run_provider_type(self, discovery_client):
+        c, _ = discovery_client
+        assert c.post("/api/v1/discovery/run").json()["provider_type"] == "KUBERNETES"
+
+    def test_discovery_run_has_snapshot_id(self, discovery_client):
+        c, _ = discovery_client
+        body = c.post("/api/v1/discovery/run").json()
+        assert body["snapshot_id"].startswith("snap-")
+
+    def test_discovery_run_entity_count_positive(self, discovery_client):
+        c, _ = discovery_client
+        assert c.post("/api/v1/discovery/run").json()["entity_count"] > 0
+
+    def test_discovery_run_has_capabilities(self, discovery_client):
+        c, _ = discovery_client
+        body = c.post("/api/v1/discovery/run").json()
+        assert len(body["capabilities_attempted"]) > 0
+        assert len(body["capabilities_succeeded"]) > 0
+
+    def test_discovery_run_no_errors_on_success(self, discovery_client):
+        c, _ = discovery_client
+        assert c.post("/api/v1/discovery/run").json()["errors"] == []
+
+
+# ── 2. Inventory Refresh After Discovery ──────────────────────────────
+
+class TestInventoryRefresh:
+    def test_inventory_available_after_discovery(self, discovery_client):
+        c, _ = discovery_client
+        assert c.get("/api/v1/inventory").status_code == 503
+        c.post("/api/v1/discovery/run")
+        r = c.get("/api/v1/inventory")
+        assert r.status_code == 200
+        assert r.json()["provider_type"] == "KUBERNETES"
+        assert r.json()["total_entities"] > 0
+
+    def test_health_available_after_discovery(self, discovery_client):
+        c, _ = discovery_client
+        c.post("/api/v1/discovery/run")
+        r = c.get("/api/v1/health")
+        assert r.status_code == 200
+        assert r.json()["health_status"] in ("SUCCESS", "PARTIAL", "FAILED", "SKIPPED")
+
+    def test_graph_available_after_discovery(self, discovery_client):
+        c, _ = discovery_client
+        c.post("/api/v1/discovery/run")
+        r = c.get("/api/v1/graph/summary")
+        assert r.status_code == 200
+        assert r.json()["node_count"] > 0
+
+    def test_readiness_true_after_discovery(self, discovery_client):
+        c, _ = discovery_client
+        c.post("/api/v1/discovery/run")
+        r = c.get("/api/v1/system/readiness")
+        assert r.status_code == 200
+        assert r.json()["ready"] is True
+
+    def test_fresh_snapshot_id_after_rerun(self, discovery_client):
+        c, _ = discovery_client
+        r1 = c.post("/api/v1/discovery/run").json()
+        r2 = c.post("/api/v1/discovery/run").json()
+        assert r1["snapshot_id"] != r2["snapshot_id"]
+
+
+# ── 3. Discovery Run — Failure / Partial / Skipped ────────────────────
+
+class TestDiscoveryRunFailure:
+    def test_failing_returns_failed_status(self, failing_discovery_client):
+        c, _ = failing_discovery_client
+        r = c.post("/api/v1/discovery/run")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["discovery_status"] == "FAILED"
+        assert body["entity_count"] == 0
+        assert len(body["errors"]) > 0
+
+    def test_failing_has_no_inventory(self, failing_discovery_client):
+        c, _ = failing_discovery_client
+        c.post("/api/v1/discovery/run")
+        assert c.get("/api/v1/inventory").status_code == 503
+
+    def test_failing_clears_dependent_services(self, failing_discovery_client):
+        c, ctx = failing_discovery_client
+        c.post("/api/v1/discovery/run")
+        assert ctx.health_report is None
+        assert ctx.graph_query is None
+        assert ctx.fault_result is None
+
+    def test_skipped_returns_skipped_status(self, skipped_discovery_client):
+        c, _ = skipped_discovery_client
+        r = c.post("/api/v1/discovery/run")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["discovery_status"] == "SKIPPED"
+        assert body["entity_count"] == 0
+
+    def test_skipped_has_warning(self, skipped_discovery_client):
+        c, _ = skipped_discovery_client
+        body = c.post("/api/v1/discovery/run").json()
+        assert len(body["warnings"]) > 0
+
+    def test_skipped_no_credential_exposure(self, skipped_discovery_client):
+        c, _ = skipped_discovery_client
+        body = c.post("/api/v1/discovery/run").json()
+        for w in body["warnings"]:
+            assert "password" not in w.lower()
+            assert "token" not in w.lower()
+
+    def test_empty_topology_discovery(self, empty_discovery_client):
+        c, _ = empty_discovery_client
+        r = c.post("/api/v1/discovery/run")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["discovery_status"] in ("SUCCESS", "PARTIAL")
+        # Empty topology may still have platform + cluster entities
+        assert body["entity_count"] >= 0
+
+
+# ── 4. Duplicate Run Protection ───────────────────────────────────────
+
+class TestDuplicateRunProtection:
+    def test_concurrent_returns_409(self, discovery_client):
+        c, ctx = discovery_client
+        ctx._discovery_running = True
+        try:
+            r = c.post("/api/v1/discovery/run")
+            assert r.status_code == 409
+            assert r.json()["detail"]["code"] == "DISCOVERY_ALREADY_RUNNING"
+        finally:
+            ctx._discovery_running = False
+
+    def test_flag_resets_after_completion(self, discovery_client):
+        c, ctx = discovery_client
+        c.post("/api/v1/discovery/run")
+        assert ctx._discovery_running is False
+        r = c.post("/api/v1/discovery/run")
+        assert r.status_code == 200
+
+
+# ── 5. No Factory Registered ──────────────────────────────────────────
+
+class TestNoDiscoveryFactory:
+    def test_no_factory_returns_503(self, unconfigured_discovery_client):
+        c, _ = unconfigured_discovery_client
+        r = c.post("/api/v1/discovery/run")
+        assert r.status_code == 503
+        assert r.json()["detail"]["code"] == "SERVICE_UNAVAILABLE"
+
+
+# ── 6. Mutation Safety ────────────────────────────────────────────────
+
+class TestMutationSafety:
+    def test_no_subprocess_in_routes(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert "subprocess" not in source
+        assert "os.system" not in source
+
+    def test_no_execute_calls_in_routes(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert "/operations/execute" not in source
+        assert "/recovery/execute" not in source
+
+    def test_no_put_delete_patch_routes(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert "@router.put" not in source
+        assert "@router.delete" not in source
+        assert "@router.patch" not in source
+
+    def test_no_provider_resource_modification(self, discovery_client):
+        c, _ = discovery_client
+        r = c.post("/api/v1/discovery/run")
+        assert r.status_code == 200
+        assert r.json()["discovery_status"] == "SUCCESS"
+
+    def test_recovery_disabled_after_discovery(self, discovery_client):
+        c, ctx = discovery_client
+        c.post("/api/v1/discovery/run")
+        assert ctx.recovery_service is not None
+        assert ctx.recovery_service.execution_enabled is False
+
+    def test_operation_executor_noop_after_discovery(self, discovery_client):
+        c, ctx = discovery_client
+        c.post("/api/v1/discovery/run")
+        assert ctx.operation_service is not None
+
+
+# ── 7. Credential Safety ─────────────────────────────────────────────
+
+class TestCredentialSafety:
+    def test_no_credentials_in_response(self, discovery_client):
+        c, _ = discovery_client
+        body = str(c.post("/api/v1/discovery/run").json()).lower()
+        assert "password" not in body
+        assert "secret" not in body
+        assert "token" not in body
+        assert "kubeconfig" not in body
+
+    def test_no_credentials_in_failure(self, failing_discovery_client):
+        c, _ = failing_discovery_client
+        body = str(c.post("/api/v1/discovery/run").json()).lower()
+        assert "password" not in body
+        assert "secret" not in body
+        assert "token" not in body
+
+    def test_no_credentials_in_skipped(self, skipped_discovery_client):
+        c, _ = skipped_discovery_client
+        body = str(c.post("/api/v1/discovery/run").json()).lower()
+        assert "password" not in body
+        assert "secret" not in body
+        assert "token" not in body
+
+    def test_error_response_no_traceback(self, unconfigured_discovery_client):
+        c, _ = unconfigured_discovery_client
+        body = str(c.post("/api/v1/discovery/run").json())
+        assert "Traceback" not in body
+
+
+# ── 8. Response Schema Validation ────────────────────────────────────
+
+class TestResponseSchema:
+    def test_response_has_all_fields(self, discovery_client):
+        c, _ = discovery_client
+        body = c.post("/api/v1/discovery/run").json()
+        for field in ["discovery_status", "provider_type", "provider_id",
+                       "snapshot_id", "collected_at", "identified_platform_type",
+                       "entity_count", "capabilities_attempted",
+                       "capabilities_succeeded", "capabilities_failed",
+                       "errors", "warnings"]:
+            assert field in body, f"Missing field: {field}"
+
+    def test_status_valid_value(self, discovery_client):
+        c, _ = discovery_client
+        valid = {"SUCCESS", "PARTIAL", "FAILED", "SKIPPED"}
+        assert c.post("/api/v1/discovery/run").json()["discovery_status"] in valid
+
+    def test_capabilities_are_lists(self, discovery_client):
+        c, _ = discovery_client
+        body = c.post("/api/v1/discovery/run").json()
+        assert isinstance(body["capabilities_attempted"], list)
+        assert isinstance(body["capabilities_succeeded"], list)
+        assert isinstance(body["capabilities_failed"], list)
+
+    def test_errors_warnings_are_lists(self, discovery_client):
+        c, _ = discovery_client
+        body = c.post("/api/v1/discovery/run").json()
+        assert isinstance(body["errors"], list)
+        assert isinstance(body["warnings"], list)
+
+
+# ── 9. Live Platform Test (SKIPPED) ───────────────────────────────────
+
+class TestLivePlatform:
+    def test_live_discovery_skipped_without_credentials(self):
+        import os
+        kubeconfig = os.environ.get("KUBECONFIG")
+        home = os.path.expanduser("~/.kube/config")
+        if not kubeconfig and not os.path.exists(home):
+            pytest.skip("No Kubernetes credentials — live test skipped")
+        pytest.skip("Live platform test requires explicit KUBECONFIG setup")

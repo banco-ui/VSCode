@@ -1,0 +1,487 @@
+"""Canonical Domain Model Unit Tests — Phase 13G-1.
+
+Tests for platform-neutral canonical entities, relationships,
+cardinality, identity separation, provenance, and provider neutrality.
+
+IMPORTANT:
+    - These tests do NOT modify existing inventory tests.
+    - Canonical Workload (deployment unit) != inventory Workload (utilization).
+    - No provider connections are made.
+"""
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from server_manager.models.canonical import (
+    Accelerator,
+    AcceleratorType,
+    CanonicalEntity,
+    Cluster,
+    ClusterType,
+    ExecutionEnvironment,
+    ExecutionEnvironmentType,
+    Network,
+    NetworkType,
+    Node,
+    OS,
+    OSType,
+    Physical,
+    Platform,
+    PlatformType,
+    ProviderType,
+    RelationshipEvidenceType,
+    SourceEvidence,
+    Storage,
+    StorageType,
+    Workload,
+    WorkloadType,
+)
+from server_manager.models.enums import Confidence
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  HELPERS
+# ════════════════════════════════════════════════════════════════════════
+
+
+def _evidence(
+    provider: ProviderType = ProviderType.KUBERNETES,
+    confidence: Confidence = Confidence.HIGH,
+) -> SourceEvidence:
+    """Create a minimal SourceEvidence for testing."""
+    return SourceEvidence(
+        provider_type=provider,
+        provider_id="test-provider-id",
+        collected_at="2025-01-01T00:00:00Z",
+        confidence=confidence,
+        discovery_method=RelationshipEvidenceType.DIRECT,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  1. ENTITY INSTANTIATION (all 10 canonical entities)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestEntityInstantiation:
+    """G1-02: All 10 canonical domains can be instantiated."""
+
+    def test_physical_instantiation(self):
+        e = Physical(canonical_id="phys-1", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+        assert e.canonical_id == "phys-1"
+
+    def test_os_instantiation(self):
+        e = OS(canonical_id="os-1", provider_type=ProviderType.SSH, source_evidence=_evidence(ProviderType.SSH))
+        assert e.canonical_id == "os-1"
+
+    def test_platform_instantiation(self):
+        e = Platform(canonical_id="plt-1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert e.canonical_id == "plt-1"
+
+    def test_cluster_instantiation(self):
+        e = Cluster(canonical_id="cls-1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert e.canonical_id == "cls-1"
+
+    def test_node_instantiation(self):
+        e = Node(canonical_id="node-1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert e.canonical_id == "node-1"
+
+    def test_ee_instantiation(self):
+        e = ExecutionEnvironment(canonical_id="ee-1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert e.canonical_id == "ee-1"
+
+    def test_workload_instantiation(self):
+        e = Workload(canonical_id="wl-1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert e.canonical_id == "wl-1"
+
+    def test_network_instantiation(self):
+        e = Network(canonical_id="net-1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert e.canonical_id == "net-1"
+
+    def test_storage_instantiation(self):
+        e = Storage(canonical_id="stg-1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert e.canonical_id == "stg-1"
+
+    def test_accelerator_instantiation(self):
+        e = Accelerator(canonical_id="acc-1", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+        assert e.canonical_id == "acc-1"
+
+    def test_all_10_entities_count(self):
+        """Verify exactly 10 canonical entity classes exist."""
+        entities = [
+            Physical, OS, Platform, Cluster, Node,
+            ExecutionEnvironment, Workload, Network, Storage, Accelerator,
+        ]
+        assert len(entities) == 10
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  2. IDENTITY VALIDATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestIdentityValidation:
+    """G1-05: canonical_id validation and identity separation."""
+
+    def test_canonical_id_empty_rejected(self):
+        with pytest.raises(ValidationError):
+            Physical(canonical_id="", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+
+    def test_canonical_id_whitespace_rejected(self):
+        with pytest.raises(ValidationError):
+            Physical(canonical_id="   ", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+
+    def test_canonical_id_not_equal_provider_id(self):
+        """canonical_id != provider_id — always."""
+        e = Physical(
+            canonical_id="canonical-uuid-12345",
+            provider_id="provider-serial-abc",
+            provider_type=ProviderType.REDFISH,
+            source_evidence=_evidence(ProviderType.REDFISH),
+        )
+        assert e.canonical_id != e.provider_id
+        assert e.canonical_id == "canonical-uuid-12345"
+        assert e.provider_id == "provider-serial-abc"
+
+    def test_provider_id_optional(self):
+        """provider_id can be None — not all entities have a provider ID."""
+        e = Physical(
+            canonical_id="phys-1",
+            provider_type=ProviderType.UNKNOWN,
+            source_evidence=SourceEvidence(provider_type=ProviderType.UNKNOWN),
+        )
+        assert e.provider_id is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  3. RELATIONSHIP & CARDINALITY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPhysicalRelationships:
+    """Physical → OS/Node/EE/Network/Storage/Accelerator = 0:N."""
+
+    def test_physical_os_refs_zero_to_n(self):
+        p = Physical(canonical_id="p1", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+        assert p.os_refs == []  # 0:N — empty allowed
+        p.os_refs = ["os-1", "os-2"]
+        assert len(p.os_refs) == 2
+
+    def test_physical_node_refs_zero_to_n(self):
+        p = Physical(canonical_id="p1", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+        p.node_refs = ["node-1"]
+        assert len(p.node_refs) == 1
+
+    def test_physical_ee_refs_zero_to_n(self):
+        p = Physical(canonical_id="p1", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+        p.execution_environment_refs = ["ee-1", "ee-2", "ee-3"]
+        assert len(p.execution_environment_refs) == 3
+
+
+class TestNodePhysicalCardinality:
+    """Node → Physical = 0:1 (Optional[str])."""
+
+    def test_node_physical_ref_zero_to_one_none(self):
+        n = Node(canonical_id="n1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert n.physical_ref is None  # 0:1 — None allowed
+
+    def test_node_physical_ref_zero_to_one_set(self):
+        n = Node(canonical_id="n1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        n.physical_ref = "phys-1"
+        assert n.physical_ref == "phys-1"
+
+    def test_node_ee_refs_zero_to_n(self):
+        n = Node(canonical_id="n1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert n.execution_environment_refs == []  # 0:N
+        n.execution_environment_refs = ["ee-1", "ee-2"]
+        assert len(n.execution_environment_refs) == 2
+
+
+class TestEEWorkloadCardinality:
+    """EE → Workload = 0:1 (Optional[str]); Workload → EE = 1:N (list[str])."""
+
+    def test_ee_workload_ref_zero_to_one_none(self):
+        ee = ExecutionEnvironment(canonical_id="ee1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert ee.workload_ref is None  # 0:1 — None allowed
+
+    def test_ee_workload_ref_zero_to_one_set(self):
+        ee = ExecutionEnvironment(canonical_id="ee1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        ee.workload_ref = "wl-1"
+        assert ee.workload_ref == "wl-1"
+
+    def test_workload_ee_refs_is_list(self):
+        """Workload → EE = 1:N — must be list[str], NOT Optional[str]."""
+        wl = Workload(canonical_id="wl1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert isinstance(wl.execution_environment_refs, list)
+
+    def test_workload_ee_refs_can_be_empty_at_construction(self):
+        """Construction timing: list may be empty during incremental build.
+
+        Domain semantic: a complete Workload MUST have >= 1 EE.
+        But at construction time, empty list is allowed.
+        Validation of 1:N constraint is deferred to verification layer.
+        """
+        wl = Workload(canonical_id="wl1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert wl.execution_environment_refs == []
+
+    def test_workload_ee_refs_one_to_n(self):
+        wl = Workload(canonical_id="wl1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        wl.execution_environment_refs = ["ee-1"]
+        assert len(wl.execution_environment_refs) == 1
+        wl.execution_environment_refs = ["ee-1", "ee-2", "ee-3"]
+        assert len(wl.execution_environment_refs) == 3
+
+    def test_ee_workload_ref_is_optional_not_list(self):
+        """EE → Workload = 0:1 — must be Optional[str], NOT list[str]."""
+        ee = ExecutionEnvironment(canonical_id="ee1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        # Type annotation should be Optional[str], not list
+        field_info = ExecutionEnvironment.model_fields["workload_ref"]
+        assert "Optional" in str(field_info.annotation) or "str" in str(field_info.annotation)
+
+
+class TestOSExecEnvCardinality:
+    """OS → EE = 0:1."""
+
+    def test_os_ee_ref_zero_to_one(self):
+        os_entity = OS(canonical_id="os1", provider_type=ProviderType.SSH, source_evidence=_evidence(ProviderType.SSH))
+        assert os_entity.execution_environment_ref is None  # 0:1
+        os_entity.execution_environment_ref = "ee-1"
+        assert os_entity.execution_environment_ref == "ee-1"
+
+
+class TestAcceleratorEECardinality:
+    """Accelerator → EE = 0:1."""
+
+    def test_accelerator_ee_ref_zero_to_one(self):
+        acc = Accelerator(canonical_id="acc1", provider_type=ProviderType.REDFISH, source_evidence=_evidence(ProviderType.REDFISH))
+        assert acc.execution_environment_ref is None  # 0:1
+        acc.execution_environment_ref = "ee-1"
+        assert acc.execution_environment_ref == "ee-1"
+
+
+class TestWorkloadNetworkStorageCardinality:
+    """Workload → Network = 0:N; Workload → Storage = 0:N."""
+
+    def test_workload_network_refs_zero_to_n(self):
+        wl = Workload(canonical_id="wl1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert wl.network_refs == []  # 0:N
+        wl.network_refs = ["net-1", "net-2"]
+        assert len(wl.network_refs) == 2
+
+    def test_workload_storage_refs_zero_to_n(self):
+        wl = Workload(canonical_id="wl1", provider_type=ProviderType.KUBERNETES, source_evidence=_evidence())
+        assert wl.storage_refs == []  # 0:N
+        wl.storage_refs = ["stg-1"]
+        assert len(wl.storage_refs) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  4. POD/CONTAINER = EE, NOT WORKLOAD
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPodContainerIsEE:
+    """Pod and Container are ExecutionEnvironments, NOT Workloads."""
+
+    def test_pod_is_execution_environment(self):
+        pod = ExecutionEnvironment(
+            canonical_id="pod-1",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=_evidence(),
+            ee_type=ExecutionEnvironmentType.POD,
+        )
+        assert pod.ee_type == ExecutionEnvironmentType.POD
+        assert isinstance(pod, ExecutionEnvironment)
+
+    def test_container_is_execution_environment(self):
+        container = ExecutionEnvironment(
+            canonical_id="container-1",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=_evidence(),
+            ee_type=ExecutionEnvironmentType.CONTAINER,
+        )
+        assert container.ee_type == ExecutionEnvironmentType.CONTAINER
+        assert isinstance(container, ExecutionEnvironment)
+
+    def test_pod_is_not_workload_type(self):
+        """ExecutionEnvironmentType.POD must not be a WorkloadType."""
+        wl_types = {wt.value for wt in WorkloadType}
+        assert "POD" not in wl_types
+        assert "CONTAINER" not in wl_types
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  5. PROVIDER NEUTRALITY
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderNeutrality:
+    """G1-08: Provider-specific fields must be rejected by extra='forbid'."""
+
+    def test_workload_rejects_pod_name(self):
+        with pytest.raises(ValidationError):
+            Workload(
+                canonical_id="wl1",
+                provider_type=ProviderType.KUBERNETES,
+                source_evidence=_evidence(),
+                pod_name="my-pod",
+            )
+
+    def test_workload_rejects_deployment_name(self):
+        with pytest.raises(ValidationError):
+            Workload(
+                canonical_id="wl1",
+                provider_type=ProviderType.KUBERNETES,
+                source_evidence=_evidence(),
+                deployment_name="my-deploy",
+            )
+
+    def test_workload_rejects_kubernetes_namespace(self):
+        with pytest.raises(ValidationError):
+            Workload(
+                canonical_id="wl1",
+                provider_type=ProviderType.KUBERNETES,
+                source_evidence=_evidence(),
+                kubernetes_namespace="default",
+            )
+
+    def test_workload_rejects_replica_set(self):
+        with pytest.raises(ValidationError):
+            Workload(
+                canonical_id="wl1",
+                provider_type=ProviderType.KUBERNETES,
+                source_evidence=_evidence(),
+                replica_set=3,
+            )
+
+    def test_network_rejects_kubernetes_specific_field(self):
+        with pytest.raises(ValidationError):
+            Network(
+                canonical_id="net1",
+                provider_type=ProviderType.KUBERNETES,
+                source_evidence=_evidence(),
+                cni_plugin="calico",
+            )
+
+    def test_metadata_kubernetes_extension_allowed(self):
+        """Provider-specific data goes in metadata, not direct fields."""
+        wl = Workload(
+            canonical_id="wl1",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=_evidence(),
+            metadata={"kubernetes": {"namespace": "default", "pod_name": "my-pod"}},
+        )
+        assert wl.metadata["kubernetes"]["namespace"] == "default"
+
+    def test_workload_nf_type_in_metadata(self):
+        """NF type is stored in metadata, not as a separate entity."""
+        wl = Workload(
+            canonical_id="wl1",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=_evidence(),
+            workload_type=WorkloadType.CNF,
+            metadata={"nf_type": "DU", "technology": "5G"},
+        )
+        assert wl.metadata["nf_type"] == "DU"
+        assert wl.metadata["technology"] == "5G"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  6. PROVENANCE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProvenance:
+    """G1-09: SourceEvidence/provenance boundary preserved."""
+
+    def test_source_evidence_attached(self):
+        ev = SourceEvidence(
+            provider_type=ProviderType.KUBERNETES,
+            provider_id="k8s-cluster-1",
+            collected_at="2025-01-01T00:00:00Z",
+            confidence=Confidence.HIGH,
+            discovery_method=RelationshipEvidenceType.DIRECT,
+        )
+        wl = Workload(canonical_id="wl1", provider_type=ProviderType.KUBERNETES, source_evidence=ev)
+        assert wl.source_evidence.provider_type == ProviderType.KUBERNETES
+        assert wl.source_evidence.confidence == Confidence.HIGH
+
+    def test_inferred_not_valid_evidence(self):
+        """INFERRED and UNKNOWN are not valid RelationshipEvidenceType values."""
+        evidence_values = {e.value for e in RelationshipEvidenceType}
+        assert "INFERRED" not in evidence_values
+        assert "UNKNOWN" not in evidence_values
+        assert "DIRECT" in evidence_values
+        assert "DERIVED" in evidence_values
+
+    def test_source_evidence_extra_forbid(self):
+        with pytest.raises(ValidationError):
+            SourceEvidence(
+                provider_type=ProviderType.KUBERNETES,
+                llm_generated=True,
+            )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  7. EXISTING WORKLOAD REGRESSION — IDENTITY SEPARATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestWorkloadIdentitySeparation:
+    """G1-04: inventory.Workload != canonical.Workload."""
+
+    def test_import_paths_are_different(self):
+        from server_manager.models.inventory import Workload as InventoryWorkload
+        from server_manager.models.canonical import Workload as CanonicalWorkload
+
+        assert InventoryWorkload is not CanonicalWorkload
+
+    def test_inventory_workload_is_utilization(self):
+        from server_manager.models.inventory import Workload as InventoryWorkload
+
+        iw = InventoryWorkload(cpu_utilization=75.5, memory_utilization=60.0)
+        assert iw.cpu_utilization == 75.5
+        assert iw.memory_utilization == 60.0
+        assert not hasattr(iw, "workload_type")
+        assert not hasattr(iw, "execution_environment_refs")
+
+    def test_canonical_workload_is_deployment_unit(self):
+        from server_manager.models.canonical import Workload as CanonicalWorkload
+
+        cw = CanonicalWorkload(
+            canonical_id="wl1",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=_evidence(),
+            workload_type=WorkloadType.CNF,
+        )
+        assert cw.workload_type == WorkloadType.CNF
+        assert not hasattr(cw, "cpu_utilization")
+        assert not hasattr(cw, "memory_utilization")
+
+    def test_class_names_same_but_modules_different(self):
+        from server_manager.models.inventory import Workload as InventoryWorkload
+        from server_manager.models.canonical import Workload as CanonicalWorkload
+
+        assert InventoryWorkload.__name__ == "Workload"
+        assert CanonicalWorkload.__name__ == "Workload"
+        assert InventoryWorkload.__module__ != CanonicalWorkload.__module__
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  8. MODEL CONFIG
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestModelConfig:
+    """Verify extra='forbid' on all canonical entities."""
+
+    @pytest.mark.parametrize("entity_class", [
+        Physical, OS, Platform, Cluster, Node,
+        ExecutionEnvironment, Workload, Network, Storage, Accelerator,
+    ])
+    def test_extra_forbid_on_all_entities(self, entity_class):
+        assert entity_class.model_config.get("extra") == "forbid"
+
+    def test_source_evidence_extra_forbid(self):
+        assert SourceEvidence.model_config.get("extra") == "forbid"

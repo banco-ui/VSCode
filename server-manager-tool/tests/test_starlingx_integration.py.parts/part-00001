@@ -1,0 +1,579 @@
+"""StarlingX Health, Fault & Alert Integration Validation — Phase 28F.
+
+Validates that the Phase 28E StarlingX Provider integrates correctly with
+the existing Health, Fault Detection, Alert, Visibility, and Management API
+pipeline.
+
+Pipeline under test:
+    StarlingXProviderAdapter.collect(fixture)
+        -> RawProviderSnapshot
+        -> StarlingXProviderNormalizer.normalize()
+        -> CanonicalInventory
+        -> HealthService.assess()  (StarlingXHealthExtractor)
+        -> HealthReport
+        -> MonitoringService.monitor()
+        -> MonitoringReport (Observations + StateChanges)
+        -> FaultDetectionService.detect()
+        -> FaultResult (Faults with lifecycle)
+        -> AlertService.create_alert(fault)
+        -> Alerts (OPEN)
+        -> OperationalVisibilityService.get_summary()
+
+All fixtures are synthetic/in-memory. No live connection.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.discovery import PlatformDiscovery
+from server_manager.fault import (
+    FaultDetectionService,
+    FaultStatus,
+    FaultType,
+    Severity,
+)
+from server_manager.health import (
+    AvailabilityStatus,
+    HealthService,
+    HealthStatus,
+)
+from server_manager.monitoring.service import MonitoringService
+from server_manager.normalizers.starlingx_normalizer import (
+    StarlingXProviderNormalizer,
+)
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.models.canonical import ProviderType
+from server_manager.providers.starlingx import StarlingXProviderAdapter
+from server_manager.visibility.models import AlertStatus
+from server_manager.visibility.service import AlertService
+
+SYSTEM_UUID = "f3c8a1b2-1234-5678-9abc-def012345678"
+HOST_UUID = "a7aa8774-c383-4641-ba1d-dc13c1dee91d"
+ALARM_UUID = "fe7e9b1e-4a8e-4f76-9d6a-8c2c1a3b4c5d"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE BUILDERS
+# ════════════════════════════════════════════════════════════════════════
+
+
+def _make_base_fixture(
+    *,
+    host_availability: str = "available",
+    host_operational: str = "enabled",
+    fm_alarms: list[dict[str, Any]] | None = None,
+    fm_event_log: list[dict[str, Any]] | None = None,
+    platform_memory_used: float | None = 90.26,
+    system_health: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a StarlingX fixture with configurable health states."""
+    if fm_alarms is None:
+        fm_alarms = []
+    if fm_event_log is None:
+        fm_event_log = []
+    if system_health is None:
+        system_health = {"System Health": "OK"}
+
+    mem_entry: dict[str, Any] = {
+        "platform_reserved_mib": 10000,
+        "platform_total_mib": 16384,
+    }
+    if platform_memory_used is not None:
+        mem_entry["platform_used_percent"] = platform_memory_used
+
+    return {
+        "sysinv_isystems": [{
+            "uuid": SYSTEM_UUID, "name": "wrcp-ctrlr",
+            "sw_version": "24.09", "system_mode": "simplex",
+            "system_type": "All-in-one", "timezone": "UTC",
+        }],
+        "sysinv_ihosts": [{
+            "uuid": HOST_UUID, "hostname": "controller-0",
+            "personality": "controller", "administrative": "unlocked",
+            "operational": host_operational,
+            "availability": host_availability,
+            "subfunctions": "controller,worker,lowlatency",
+            "uptime": 15244220, "reboot_needed": False,
+            "bm_type": "none", "capabilities": {},
+            "location": {"locn": "samsung"},
+        }],
+        "sysinv_imemorys": {HOST_UUID: [mem_entry]},
+        "fm_alarms": fm_alarms,
+        "fm_event_log": fm_event_log,
+        "smapi_nodes": [{
+            "id": 1, "name": "controller-0",
+            "administrative_state": "unlocked",
+            "operational_state": "enabled",
+            "availability_status": "available",
+        }],
+        "system_health": system_health,
+        "software_list": [{"release": "wrcp-24.09.0", "state": "deployed"}],
+    }
+
+
+def _critical_alarm(
+    alarm_id: str = "100.103",
+    uuid: str = ALARM_UUID,
+    entity: str = "host=controller-0",
+) -> dict[str, Any]:
+    return {
+        "uuid": uuid, "alarm_id": alarm_id, "severity": "critical",
+        "entity_instance_id": entity,
+        "reason_text": f"{alarm_id} threshold exceeded",
+    }
+
+
+def _warning_alarm(
+    alarm_id: str = "200.001",
+    uuid: str = "aaa-bbb-ccc",
+    entity: str = "host=controller-0",
+) -> dict[str, Any]:
+    return {
+        "uuid": uuid, "alarm_id": alarm_id, "severity": "warning",
+        "entity_instance_id": entity,
+        "reason_text": f"{alarm_id} warning condition",
+    }
+
+
+def _run_pipeline(fixture: dict[str, Any]):
+    """Run full StarlingX pipeline. Returns (discovery, health, fault)."""
+    adapter = StarlingXProviderAdapter(fixture=fixture)
+    normalizer = StarlingXProviderNormalizer()
+    discovery = PlatformDiscovery()
+    dr = discovery.discover(adapter, normalizer)
+
+    hp = HealthService().assess(dr)
+    mon = MonitoringService().monitor(hp)
+    fr = FaultDetectionService().detect(
+        mon.observations, mon.state_changes)
+
+    return dr, hp, fr
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  1. HEALTH_VALIDATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestHealthValidation:
+    """Validate Health results for normal, DEGRADED, Critical, UNKNOWN,
+    and collection failure fixtures."""
+
+    def test_healthy_node(self):
+        fixture = _make_base_fixture(
+            host_availability="available", host_operational="enabled",
+            fm_alarms=[], fm_event_log=[], platform_memory_used=50.0)
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert len(node) == 1
+        assert node[0].status == HealthStatus.HEALTHY
+        assert node[0].availability == AvailabilityStatus.AVAILABLE
+
+    def test_degraded_node(self):
+        fixture = _make_base_fixture(
+            host_availability="degraded", platform_memory_used=50.0)
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert node[0].status == HealthStatus.DEGRADED
+
+    def test_critical_from_fm_alarm(self):
+        fixture = _make_base_fixture(
+            fm_alarms=[_critical_alarm()], platform_memory_used=50.0)
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert node[0].status == HealthStatus.UNHEALTHY
+
+    def test_warning_alarm_degraded(self):
+        fixture = _make_base_fixture(
+            fm_alarms=[_warning_alarm()], platform_memory_used=50.0)
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert node[0].status == HealthStatus.DEGRADED
+
+    def test_unknown_availability(self):
+        fixture = _make_base_fixture(
+            host_availability="some-future-state",
+            platform_memory_used=None, fm_alarms=[])
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert node[0].status == HealthStatus.UNKNOWN
+        assert node[0].availability == AvailabilityStatus.UNKNOWN
+
+    def test_offline_node_unhealthy(self):
+        fixture = _make_base_fixture(
+            host_availability="offline",
+            platform_memory_used=None, fm_alarms=[])
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert node[0].status == HealthStatus.UNHEALTHY
+
+    def test_operational_disabled_degrades(self):
+        fixture = _make_base_fixture(
+            host_availability="available", host_operational="disabled",
+            platform_memory_used=50.0, fm_alarms=[])
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert node[0].status == HealthStatus.DEGRADED
+
+    def test_collection_failure_not_healthy(self):
+        adapter = StarlingXProviderAdapter()
+        snapshot = adapter.collect()
+        assert snapshot.collection_status == OrchestrationStatus.FAILED
+        assert len(snapshot.errors) > 0
+
+    def test_platform_critical_from_event_log(self):
+        fixture = _make_base_fixture(
+            fm_event_log=[{"event_log_id": "evt-1", "severity": "critical"}],
+            platform_memory_used=50.0)
+        _, hp, _ = _run_pipeline(fixture)
+        plat = [r for r in hp.results if r.entity_type == "Platform"]
+        assert len(plat) == 1
+        assert plat[0].status == HealthStatus.UNHEALTHY
+
+    def test_memory_threshold_degrades(self):
+        fixture = _make_base_fixture(
+            host_availability="available",
+            platform_memory_used=95.0, fm_alarms=[])
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert node[0].status == HealthStatus.DEGRADED
+        assert any("95.0%" in w or "memory" in w.lower()
+                   for w in node[0].warnings)
+
+    def test_overall_health_report_partial(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, hp, _ = _run_pipeline(fixture)
+
+# ════════════════════════════════════════════════════════════════════════
+#  2. FAULT_SEPARATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFaultSeparation:
+    """FM Alarm 100.103 and Redfish PDB/interconnect Critical remain
+    separate fault/alert entities."""
+
+    def test_fm_alarm_produces_health_failure_fault(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        hf = [f for f in fr.faults
+              if f.fault_type == FaultType.HEALTH_FAILURE]
+        assert len(hf) >= 1
+        assert all(f.severity == Severity.CRITICAL for f in hf)
+
+    def test_multiple_fm_alarms_one_fault(self):
+        """Multiple critical alarms on same node -> one HEALTH_FAILURE fault
+        (deterministic dedup by entity_id + fault_type)."""
+        fixture = _make_base_fixture(fm_alarms=[
+            _critical_alarm(alarm_id="100.103", uuid="u1"),
+            _critical_alarm(alarm_id="100.104", uuid="u2"),
+        ])
+        _, _, fr = _run_pipeline(fixture)
+        hf = [f for f in fr.faults
+              if f.fault_type == FaultType.HEALTH_FAILURE]
+        assert len(hf) == 1
+
+    def test_fm_and_availability_different_faults(self):
+        """FM critical + offline -> separate faults."""
+        fixture = _make_base_fixture(
+            host_availability="offline", fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        hf = [f for f in fr.faults
+              if f.fault_type == FaultType.HEALTH_FAILURE]
+        af = [f for f in fr.faults
+              if f.fault_type == FaultType.AVAILABILITY_FAILURE]
+        assert len(hf) >= 1
+        assert len(af) >= 1
+        assert {f.fault_id for f in hf}.isdisjoint({f.fault_id for f in af})
+
+    def test_fm_fault_on_node_not_physical(self):
+        """StarlingX fault entity_id is Node, never Physical."""
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        for fault in fr.faults:
+            assert "physical" not in fault.entity_id.lower()
+
+    def test_separate_alerts_for_different_faults(self):
+        """FM critical + offline -> separate faults -> separate alerts."""
+        fixture = _make_base_fixture(
+            host_availability="offline", fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        svc = AlertService()
+        for f in fr.faults:
+            svc.create_alert(f)
+        alerts = svc.get_alerts()
+        # Different fault_ids -> different alert_ids
+        assert len({a.alert_id for a in alerts}) >= 2
+        assert len({a.fault_id for a in alerts}) >= 2
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  3. DUPLICATE_HANDLING (REST + CLI merge)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestDuplicateHandling:
+    """Same FM alarm from REST and CLI -> logical dedup,
+    SourceEvidence preserved via _sources."""
+
+    def test_rest_cli_merge_no_duplicate(self):
+        rest = [_critical_alarm()]
+        cli = {ALARM_UUID: {"alarm_state": "set", "alarm_type": "equipment"}}
+        merged = StarlingXProviderAdapter._merge_alarm_data(rest, cli)
+        assert len(merged) == 1
+
+    def test_sources_preserved(self):
+        rest = [_critical_alarm()]
+        cli = {ALARM_UUID: {"alarm_state": "set"}}
+        merged = StarlingXProviderAdapter._merge_alarm_data(rest, cli)
+        assert merged[0]["_sources"] == ["rest", "cli"]
+
+    def test_cli_fields_supplement_rest(self):
+        rest = [{"uuid": ALARM_UUID, "alarm_id": "100.103",
+                 "severity": "critical"}]
+        cli = {ALARM_UUID: {"alarm_state": "set",
+                            "probable_cause": "thresholdCrossed",
+                            "severity": "warning"}}
+        merged = StarlingXProviderAdapter._merge_alarm_data(rest, cli)
+        assert merged[0]["severity"] == "critical"
+        assert merged[0]["alarm_state"] == "set"
+
+    def test_rest_only_sources(self):
+        rest = [_critical_alarm()]
+        merged = StarlingXProviderAdapter._merge_alarm_data(rest, {})
+        assert merged[0]["_sources"] == ["rest"]
+
+    def test_cli_only_alarm(self):
+        cli = {"uuid-only-cli": {"alarm_state": "set"}}
+        merged = StarlingXProviderAdapter._merge_alarm_data([], cli)
+        assert len(merged) == 1
+        assert merged[0]["_sources"] == ["cli"]
+        assert merged[0]["uuid"] == "uuid-only-cli"
+
+    def test_normalizer_preserves_alarms(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+
+# ════════════════════════════════════════════════════════════════════════
+#  4. ALERT_LIFECYCLE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestAlertLifecycle:
+    """Alarm occurrence, update, resolution follow existing
+    fault/alert lifecycle rules."""
+
+    def test_fault_detected_on_first_cycle(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        assert fr.has_faults
+        assert len(fr.newly_detected) >= 1
+        for f in fr.newly_detected:
+            assert f.status == FaultStatus.DETECTED
+
+    def test_fault_ongoing_on_second_cycle(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+        normalizer = StarlingXProviderNormalizer()
+        discovery = PlatformDiscovery()
+        dr = discovery.discover(adapter, normalizer)
+        hp = HealthService().assess(dr)
+        mon = MonitoringService().monitor(hp)
+        svc = FaultDetectionService()
+        r1 = svc.detect(mon.observations, mon.state_changes)
+        r2 = svc.detect(mon.observations, mon.state_changes)
+        assert len(r1.newly_detected) >= 1
+        assert len(r2.ongoing) >= 1
+        assert all(f.status == FaultStatus.ONGOING for f in r2.ongoing)
+
+    def test_fault_resolved_when_alarm_cleared(self):
+        fixture_alarm = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        adapter1 = StarlingXProviderAdapter(fixture=fixture_alarm)
+        normalizer = StarlingXProviderNormalizer()
+        discovery = PlatformDiscovery()
+        dr1 = discovery.discover(adapter1, normalizer)
+        hp1 = HealthService().assess(dr1)
+        mon1 = MonitoringService().monitor(hp1)
+        svc = FaultDetectionService()
+        svc.detect(mon1.observations, mon1.state_changes)
+
+        fixture_no = _make_base_fixture(
+            fm_alarms=[], platform_memory_used=50.0)
+        adapter2 = StarlingXProviderAdapter(fixture=fixture_no)
+        dr2 = discovery.discover(adapter2, normalizer)
+        hp2 = HealthService().assess(dr2)
+        mon2 = MonitoringService().monitor(hp2)
+        r2 = svc.detect(mon2.observations, mon2.state_changes)
+        assert len(r2.resolved_fault_ids) >= 1
+
+    def test_alert_open_from_fault(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        svc = AlertService()
+        for f in fr.faults:
+            res = svc.create_alert(f)
+            assert res.created
+            assert res.alert.status == AlertStatus.OPEN
+
+    def test_no_duplicate_alert_same_fault(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        svc = AlertService()
+        for f in fr.faults:
+            svc.create_alert(f)
+        for f in fr.faults:
+            res = svc.create_alert(f)
+            assert not res.created
+        assert len(svc.get_alerts()) == len(fr.faults)
+
+    def test_no_alert_for_unknown_health(self):
+        fixture = _make_base_fixture(
+            host_availability="unknown-state",
+            platform_memory_used=None, fm_alarms=[])
+        _, _, fr = _run_pipeline(fixture)
+        assert not fr.has_faults
+
+    def test_alert_acknowledge_and_resolve(self):
+        fixture = _make_base_fixture(
+            fm_alarms=[_critical_alarm()], host_availability="offline")
+        _, _, fr = _run_pipeline(fixture)
+        svc = AlertService()
+        for f in fr.faults:
+            svc.create_alert(f)
+        alerts = svc.get_alerts()
+        assert len(alerts) >= 1
+        first = alerts[0]
+        ack = svc.acknowledge(first.alert_id, "operator")
+        assert ack.status == AlertStatus.ACKNOWLEDGED
+        resolved = svc.resolve(first.alert_id, "issue fixed")
+        assert resolved.status == AlertStatus.RESOLVED
+
+# ════════════════════════════════════════════════════════════════════════
+#  5. API_ERROR_HANDLING
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestApiErrorHandling:
+    """API errors, auth failure, timeout, partial collection
+    must NOT be converted to empty results or HEALTHY."""
+
+    def test_auth_error_not_healthy(self):
+        fixture = _make_base_fixture()
+        fixture["errors"] = {"fm_alarms": "Auth expired (401)"}
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+        snapshot = adapter.collect()
+        assert snapshot.collection_status == OrchestrationStatus.PARTIAL
+        assert any("Auth" in e or "401" in e for e in snapshot.errors)
+
+    def test_partial_collection_has_errors(self):
+        fixture = _make_base_fixture()
+        fixture["errors"] = {
+            "fm_alarms": "Connection refused",
+            "smapi_nodes": "Timeout",
+        }
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+        snapshot = adapter.collect()
+        assert len(snapshot.errors) >= 2
+        assert snapshot.collection_status == OrchestrationStatus.PARTIAL
+
+    def test_all_endpoints_failed(self):
+        fixture = {
+            "sysinv_isystems": [], "sysinv_ihosts": [],
+            "fm_alarms": [], "fm_event_log": [], "smapi_nodes": [],
+            "errors": {
+                "sysinv_isystems": "Connection refused",
+                "sysinv_ihosts": "Connection refused",
+                "fm_alarms": "Connection refused",
+                "fm_event_log": "Connection refused",
+                "smapi_nodes": "Connection refused",
+            },
+        }
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+        snapshot = adapter.collect()
+        assert snapshot.collection_status == OrchestrationStatus.FAILED
+
+    def test_empty_inventory_no_entities(self):
+        fixture = {
+            "sysinv_isystems": [], "sysinv_ihosts": [],
+            "fm_alarms": [], "fm_event_log": [], "smapi_nodes": [],
+        }
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+        snapshot = adapter.collect()
+        result = StarlingXProviderNormalizer().normalize(snapshot)
+        assert len(result.platforms) == 0
+        assert len(result.nodes) == 0
+
+    def test_timeout_error_in_errors(self):
+        fixture = _make_base_fixture()
+        fixture["errors"] = {"sysinv_isystems": "Timeout after 30s"}
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+        snapshot = adapter.collect()
+        assert any("Timeout" in e for e in snapshot.errors)
+
+    def test_missing_fm_alarms_key(self):
+        """Missing fm_alarms key -> empty list, not None."""
+        fixture = _make_base_fixture()
+        del fixture["fm_alarms"]
+        adapter = StarlingXProviderAdapter(fixture=fixture)
+        snapshot = adapter.collect()
+
+# ════════════════════════════════════════════════════════════════════════
+#  6. API_DASHBOARD_INTEGRATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestApiDashboardIntegration:
+    """Management API and Dashboard can query StarlingX data
+    while preserving existing Kubernetes/OpenStack behavior."""
+
+    def test_inventory_has_starlingx(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        dr, _, _ = _run_pipeline(fixture)
+        assert dr.inventory is not None
+        assert len(dr.inventory.platforms) == 1
+        assert len(dr.inventory.nodes) == 1
+        assert dr.provider_type == ProviderType.WRCP
+
+    def test_entity_counts(self):
+        """Entity counts reflect StarlingX entities."""
+        fixture = _make_base_fixture()
+        dr, _, _ = _run_pipeline(fixture)
+        inv = dr.inventory
+        assert len(inv.physicals) == 0  # bm_type=none
+        assert len(inv.platforms) == 1
+        assert len(inv.clusters) == 1
+        assert len(inv.nodes) == 1
+
+    def test_health_report_has_starlingx(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, hp, _ = _run_pipeline(fixture)
+        types = {r.entity_type for r in hp.results}
+        assert "Platform" in types
+        assert "Node" in types
+
+    def test_fault_result_has_starlingx(self):
+        fixture = _make_base_fixture(fm_alarms=[_critical_alarm()])
+        _, _, fr = _run_pipeline(fixture)
+        assert fr.has_faults
+        assert any(f.severity == Severity.CRITICAL for f in fr.faults)
+
+    def test_visibility_summary_includes_starlingx(self):
+        from server_manager.visibility.service import (
+            OperationalVisibilityService,
+        )
+        fixture = _make_base_fixture(
+            fm_alarms=[_critical_alarm()], host_availability="offline")
+        dr, hp, fr = _run_pipeline(fixture)
+        svc = AlertService()
+        for f in fr.faults:
+            svc.create_alert(f)
+        vis = OperationalVisibilityService(alert_service=svc)
+        vis.set_inventory(dr.inventory)
+        vis.set_health_report(hp)
+        vis.set_fault_result(fr)
+        summary = vis.get_summary()
+        assert summary.infrastructure.platforms >= 1
+        assert summary.infrastructure.nodes >= 1
+   

@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_starlingx_asset_identity.py",
+  "originalSize": 25250,
+  "sha256": "d74d2541dbfcbb025dd9fa275651eb7efae1e4a4ca821eea277c0fdf4d72f774",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_starlingx_asset_identity.py\""
+}

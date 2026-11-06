@@ -1,0 +1,319 @@
+esource_statuses=resource_statuses,
+            capacity_infos=capacity_infos,
+        )
+
+    # ── ExecutionEnvironment (Server/VM) ────────────────────────────
+
+    def _assess_execution_environment(
+        self, ee: ExecutionEnvironment,
+    ) -> HealthResult:
+        """Assess OpenStack Server (VM) health from status."""
+        raw = self._get_raw(ee)
+        status_val = raw.get("status", "") if isinstance(raw, dict) else ""
+
+        health_status = HealthStatus.UNKNOWN
+        availability = AvailabilityStatus.UNKNOWN
+
+        if status_val:
+            status_upper = str(status_val).upper()
+            if status_upper == "ACTIVE":
+                health_status = HealthStatus.HEALTHY
+                availability = AvailabilityStatus.AVAILABLE
+            elif status_upper in ("SHUTOFF", "STOPPED"):
+                health_status = HealthStatus.DEGRADED
+                availability = AvailabilityStatus.UNAVAILABLE
+            elif status_upper == "ERROR":
+                health_status = HealthStatus.UNHEALTHY
+                availability = AvailabilityStatus.UNAVAILABLE
+            elif status_upper in ("BUILD", "REBOOT", "HARD_REBOOT"):
+                health_status = HealthStatus.DEGRADED
+                availability = AvailabilityStatus.UNKNOWN
+            elif status_upper == "PAUSED":
+                health_status = HealthStatus.DEGRADED
+                availability = AvailabilityStatus.AVAILABLE
+            elif status_upper == "SUSPENDED":
+                health_status = HealthStatus.DEGRADED
+                availability = AvailabilityStatus.UNAVAILABLE
+
+        return HealthResult(
+            entity_id=ee.canonical_id,
+            entity_type="EXECUTION_ENVIRONMENT",
+            status=health_status,
+            availability=availability,
+            source_evidence=ee.source_evidence,
+        )
+
+    # ── Storage (Volume) ───────────────────────────────────────────
+
+    def _assess_storage(self, storage: Storage) -> HealthResult:
+        """Assess OpenStack Volume health from status and size."""
+        raw = self._get_raw(storage)
+        status_val = raw.get("status", "") if isinstance(raw, dict) else ""
+
+        health_status = HealthStatus.UNKNOWN
+        availability = AvailabilityStatus.UNKNOWN
+
+        if status_val:
+            status_upper = str(status_val).upper()
+            if status_upper in ("AVAILABLE", "IN-USE"):
+                health_status = HealthStatus.HEALTHY
+                availability = AvailabilityStatus.AVAILABLE
+            elif status_upper in ("CREATING", "ATTACHING"):
+                health_status = HealthStatus.DEGRADED
+                availability = AvailabilityStatus.UNKNOWN
+            elif status_upper in ("ERROR", "ERROR_DELETING", "ERROR_RESTORING"):
+                health_status = HealthStatus.UNHEALTHY
+                availability = AvailabilityStatus.UNAVAILABLE
+            elif status_upper == "DELETING":
+                health_status = HealthStatus.DEGRADED
+                availability = AvailabilityStatus.UNAVAILABLE
+
+        resource_statuses: list[ResourceStatus] = []
+        capacity_infos: list[CapacityInfo] = []
+
+        if isinstance(raw, dict):
+            size = raw.get("size")
+            if size is not None:
+                capacity_infos.append(CapacityInfo(
+                    resource_type=ResourceType.STORAGE,
+                    capacity=str(size),
+                    allocatable=None,
+                    unit="GB",
+                    source_evidence=storage.source_evidence,
+                ))
+                resource_statuses.append(ResourceStatus(
+                    resource_type=ResourceType.STORAGE,
+                    total=str(size),
+                    used=None,
+                    available=None,
+                    utilization=None,
+                    unit="GB",
+                    source_evidence=storage.source_evidence,
+                ))
+
+        return HealthResult(
+            entity_id=storage.canonical_id,
+            entity_type="STORAGE",
+            status=health_status,
+            availability=availability,
+            source_evidence=storage.source_evidence,
+            resource_statuses=resource_statuses,
+            capacity_infos=capacity_infos,
+        )
+
+    # ── Network ─────────────────────────────────────────────────────
+
+    def _assess_network(self, network: Network) -> HealthResult:
+        """Assess OpenStack Network health from status."""
+        raw = self._get_raw(network)
+        status_val = raw.get("status", "") if isinstance(raw, dict) else ""
+
+        health_status = HealthStatus.UNKNOWN
+        availability = AvailabilityStatus.UNKNOWN
+
+        if status_val:
+            status_upper = str(status_val).upper()
+            if status_upper == "ACTIVE":
+                health_status = HealthStatus.HEALTHY
+                availability = AvailabilityStatus.AVAILABLE
+            elif status_upper == "DOWN":
+                health_status = HealthStatus.UNHEALTHY
+                availability = AvailabilityStatus.UNAVAILABLE
+            elif status_upper == "ERROR":
+                health_status = HealthStatus.UNHEALTHY
+                availability = AvailabilityStatus.UNAVAILABLE
+
+        return HealthResult(
+            entity_id=network.canonical_id,
+            entity_type="NETWORK",
+            status=health_status,
+            availability=availability,
+            source_evidence=network.source_evidence,
+        )
+
+    # ── Platform ────────────────────────────────────────────────────
+
+    def _assess_platform(self, platform: Platform) -> HealthResult:
+        """Assess platform health from API accessibility."""
+        return HealthResult(
+            entity_id=platform.canonical_id,
+            entity_type="PLATFORM",
+            status=HealthStatus.UNKNOWN,
+            availability=AvailabilityStatus.AVAILABLE,
+            source_evidence=platform.source_evidence,
+            warnings=["Platform health derived from API accessibility"],
+        )
+
+    # ── Cluster (Availability Zone) ─────────────────────────────────
+
+    def _assess_cluster(self, cluster: Cluster) -> HealthResult:
+        """Assess cluster (AZ) health from API accessibility."""
+        return HealthResult(
+            entity_id=cluster.canonical_id,
+            entity_type="CLUSTER",
+            status=HealthStatus.UNKNOWN,
+            availability=AvailabilityStatus.AVAILABLE,
+            source_evidence=cluster.source_evidence,
+            warnings=["Cluster health derived from API accessibility"],
+        )
+
+    # ── Helper ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _get_raw(entity: Any) -> dict[str, Any]:
+        """Extract OpenStack raw data from canonical entity metadata.
+
+        The normalizer preserves OpenStack raw objects in:
+            metadata["openstack"]["raw"]
+        """
+        metadata = getattr(entity, "metadata", None)
+        if not isinstance(metadata, dict):
+            return {}
+        os_meta = metadata.get("openstack", {})
+        if not isinstance(os_meta, dict):
+            return {}
+        raw = os_meta.get("raw", {})
+        if not isinstance(raw, dict):
+            return {}
+        return raw
+
+
+class HealthService:
+    """Provider-neutral health assessment service.
+
+    Takes a Phase 14 DiscoveryResult and produces a HealthReport.
+
+    The service delegates provider-specific health extraction to
+    HealthExtractor implementations, selected by provider_type.
+    New providers add a new extractor — the core service does not
+    need modification.
+
+    READ_ONLY: No mutation, no monitoring, no alert, no recovery.
+
+    Usage:
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+    """
+
+    _EXTRACTORS: dict[ProviderType, type[HealthExtractor]] = {
+        ProviderType.KUBERNETES: KubernetesHealthExtractor,
+        ProviderType.OPENSTACK: OpenStackHealthExtractor,
+    }
+
+    def assess(self, discovery_result: DiscoveryResult) -> HealthReport:
+        """Assess health from a discovery result.
+
+        Args:
+            discovery_result: Phase 14 discovery output.
+
+        Returns:
+            HealthReport with per-entity health results.
+        """
+        checked_at = datetime.now(timezone.utc).isoformat()
+
+        # ── SKIPPED: no credentials → health assessment skipped ─────
+        if discovery_result.is_skipped:
+            return HealthReport(
+                provider_type=discovery_result.provider_type,
+                provider_id=discovery_result.provider_id,
+                health_status=OrchestrationStatus.SKIPPED,
+                checked_at=checked_at,
+                errors=list(discovery_result.errors),
+                warnings=["Health assessment skipped: discovery was skipped"],
+            )
+
+        # ── FAILED: discovery failed → cannot assess health ─────────
+        if discovery_result.is_failed:
+            return HealthReport(
+                provider_type=discovery_result.provider_type,
+                provider_id=discovery_result.provider_id,
+                health_status=OrchestrationStatus.FAILED,
+                checked_at=checked_at,
+                errors=list(discovery_result.errors),
+                warnings=["Health assessment failed: discovery failed"],
+            )
+
+        # ── No inventory → cannot assess ───────────────────────────
+        if discovery_result.inventory is None:
+            return HealthReport(
+                provider_type=discovery_result.provider_type,
+                provider_id=discovery_result.provider_id,
+                health_status=OrchestrationStatus.FAILED,
+                checked_at=checked_at,
+                errors=["No inventory available for health assessment"],
+            )
+
+        # ── Get provider-specific extractor ────────────────────────
+        extractor_class = self._EXTRACTORS.get(discovery_result.provider_type)
+        if extractor_class is None:
+            return HealthReport(
+                provider_type=discovery_result.provider_type,
+                provider_id=discovery_result.provider_id,
+                health_status=OrchestrationStatus.SKIPPED,
+                checked_at=checked_at,
+                warnings=[
+                    f"No health extractor for provider "
+                    f"{discovery_result.provider_type.value}"
+                ],
+            )
+
+        extractor = extractor_class()
+        results = extractor.extract_health(discovery_result.inventory)
+
+        # ── Derive overall health status ───────────────────────────
+        health_status = self._derive_overall_status(results)
+
+        return HealthReport(
+            provider_type=discovery_result.provider_type,
+            provider_id=discovery_result.provider_id,
+            health_status=health_status,
+            checked_at=checked_at,
+            results=results,
+            errors=list(discovery_result.errors),
+            warnings=list(discovery_result.warnings),
+        )
+
+    @staticmethod
+    def _derive_overall_status(
+        results: list[HealthResult],
+    ) -> OrchestrationStatus:
+        """Derive overall health status from per-entity results.
+
+        - No results → SUCCESS (empty is not failure)
+        - Any UNHEALTHY → PARTIAL
+        - Any DEGRADED → PARTIAL
+        - All HEALTHY/UNKNOWN → SUCCESS
+        """
+        if not results:
+            return OrchestrationStatus.SUCCESS
+
+        has_unhealthy = any(r.status == HealthStatus.UNHEALTHY for r in results)
+        has_degraded = any(r.status == HealthStatus.DEGRADED for r in results)
+        has_unavailable = any(
+            r.availability == AvailabilityStatus.UNAVAILABLE for r in results
+        )
+
+        if has_unhealthy or has_unavailable:
+            return OrchestrationStatus.PARTIAL
+        if has_degraded:
+            return OrchestrationStatus.PARTIAL
+        return OrchestrationStatus.SUCCESS
+
+    @classmethod
+    def register_extractor(
+        cls, provider_type: ProviderType, extractor_class: type[HealthExtractor]
+    ) -> None:
+        """Register a health extractor for a provider type.
+
+        This allows extending health assessment to new providers
+        without modifying the core service.
+        """
+        cls._EXTRACTORS[provider_type] = extractor_class
+
+
+# ── Phase 28E: Register StarlingX health extractor ───────────────────────
+# Deferred import to avoid circular dependency (starlingx_extractor imports
+# HealthExtractor from this module).
+from .starlingx_extractor import StarlingXHealthExtractor  # noqa: E402
+
+HealthService.register_extractor(ProviderType.WRCP, StarlingXHealthExtractor)

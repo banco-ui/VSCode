@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_starlingx_integration.py",
+  "originalSize": 29892,
+  "sha256": "2b766d0977d1f2a751646fc4cfdbf260ca039c6076c452a09c6759a4e67032b4",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_starlingx_integration.py\""
+}

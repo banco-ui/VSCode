@@ -1,0 +1,574 @@
+"""InventoryStore — SQLite, append-only (Phase 6).
+
+P1 fix: cursor.rowcount check in save_snapshot() to prevent
+        silent duplicate overwrites.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from ..models.enums import ServerLifecycle
+from ..models.inventory import ServerInventory
+from .models import (
+    EndpointRef,
+    InventorySnapshot,
+    ManagementEndpoints,
+    ServerRegistryEntry,
+    VerificationRecord,
+)
+
+logger = logging.getLogger(__name__)
+
+SCHEMA_SQL = """
+-- Server registry: one row per managed server
+CREATE TABLE IF NOT EXISTS server_registry (
+    server_id              TEXT PRIMARY KEY,
+    display_name           TEXT NOT NULL,
+    hardware_identity      TEXT,
+    vendor                 TEXT NOT NULL DEFAULT 'Unknown',
+    model                  TEXT NOT NULL DEFAULT '',
+    lifecycle_state        TEXT NOT NULL DEFAULT 'ACTIVE',
+    endpoints_json         TEXT,
+    current_snapshot_id    TEXT,
+    registered_at          TEXT NOT NULL,
+    last_collected_at      TEXT,
+    last_collection_status TEXT,
+    notes                  TEXT
+);
+
+-- Inventory snapshots: append-only
+CREATE TABLE IF NOT EXISTS inventory_snapshots (
+    snapshot_id            TEXT PRIMARY KEY,
+    server_id              TEXT NOT NULL,
+    orchestration_run_id   TEXT NOT NULL,
+    collected_at           TEXT NOT NULL,
+    schema_version         TEXT NOT NULL DEFAULT '1.0',
+    inventory_json         TEXT NOT NULL,
+    canonical_source       TEXT,
+    source_results_summary TEXT,
+    FOREIGN KEY (server_id) REFERENCES server_registry(server_id)
+);
+
+-- Verification history: append-only
+CREATE TABLE IF NOT EXISTS verification_history (
+    verification_id        TEXT PRIMARY KEY,
+    server_id              TEXT NOT NULL,
+    snapshot_id            TEXT NOT NULL,
+    run_id                 TEXT NOT NULL,
+    verified_at            TEXT NOT NULL,
+    result_json            TEXT NOT NULL,
+    summary_json           TEXT NOT NULL,
+    FOREIGN KEY (server_id) REFERENCES server_registry(server_id),
+    FOREIGN KEY (snapshot_id) REFERENCES inventory_snapshots(snapshot_id)
+);
+
+-- Orchestration runs: append-only
+CREATE TABLE IF NOT EXISTS orchestration_runs (
+    run_id                 TEXT PRIMARY KEY,
+    server_id              TEXT NOT NULL,
+    status                 TEXT NOT NULL,
+    started_at             TEXT NOT NULL,
+    completed_at           TEXT,
+    total_duration_ms      INTEGER NOT NULL DEFAULT 0,
+    result_json            TEXT NOT NULL,
+    errors_json            TEXT NOT NULL DEFAULT '[]',
+    warnings_json          TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY (server_id) REFERENCES server_registry(server_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_server_id ON inventory_snapshots(server_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_collected_at ON inventory_snapshots(collected_at);
+CREATE INDEX IF NOT EXISTS idx_verification_server_id ON verification_history(server_id);
+CREATE INDEX IF NOT EXISTS idx_runs_server_id ON orchestration_runs(server_id);
+"""
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class InventoryStore:
+    """SQLite-backed inventory store with append-only snapshots."""
+
+    def __init__(self, db_path: str | Path = ":memory:") -> None:
+        self.db_path = str(db_path)
+        self._conn: Optional[sqlite3.Connection] = None
+        self.init()
+
+    # ── Connection management ──────────────────────────────────────
+
+    def init(self) -> None:
+        """Initialize database connection and create tables."""
+        self._conn = sqlite3.connect(self.db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.executescript(SCHEMA_SQL)
+        self._conn.commit()
+
+    def close(self) -> None:
+        """Close the database connection."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized. Call init() first.")
+        return self._conn
+
+    # ── Server Registry ─────────────────────────────────────────────
+
+    def register_server(self, entry: ServerRegistryEntry) -> None:
+        """Register a new server or update an existing one."""
+        if not entry.registered_at:
+            entry.registered_at = _utc_now()
+
+        endpoints_json = entry.endpoints.model_dump_json()
+        self.conn.execute(
+            """
+            INSERT INTO server_registry
+                (server_id, display_name, hardware_identity, vendor, model,
+                 lifecycle_state, endpoints_json, current_snapshot_id,
+                 registered_at, last_collected_at, last_collection_status, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(server_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                hardware_identity = excluded.hardware_identity,
+                vendor = excluded.vendor,
+                model = excluded.model,
+                endpoints_json = excluded.endpoints_json,
+                notes = excluded.notes
+            """,
+            (
+                entry.server_id,
+                entry.display_name,
+                entry.hardware_identity,
+                entry.vendor.value,
+                entry.model,
+                entry.lifecycle_state.value,
+                endpoints_json,
+                entry.current_snapshot_id,
+                entry.registered_at,
+                entry.last_collected_at,
+                entry.last_collection_status,
+                entry.notes,
+            ),
+        )
+        self.conn.commit()
+
+    def get_server(self, server_id: str) -> Optional[ServerRegistryEntry]:
+        """Retrieve a server by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM server_registry WHERE server_id = ?", (server_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_entry(row)
+
+    def list_servers(self) -> list[ServerRegistryEntry]:
+        """List all registered servers."""
+        rows = self.conn.execute(
+            "SELECT * FROM server_registry ORDER BY registered_at"
+        ).fetchall()
+        return [self._row_to_entry(r) for r in rows]
+
+    def update_server_lifecycle(self, server_id: str, state: ServerLifecycle) -> None:
+        """Update a server's lifecycle state."""
+        self.conn.execute(
+            "UPDATE server_registry SET lifecycle_state = ? WHERE server_id = ?",
+            (state.value, server_id),
+        )
+        self.conn.commit()
+
+    def update_server_metadata(
+        self,
+        server_id: str,
+        *,
+        hardware_identity: Optional[str] = None,
+        vendor: Optional[str] = None,
+        model: Optional[str] = None,
+        last_collected_at: Optional[str] = None,
+        last_collection_status: Optional[str] = None,
+        current_snapshot_id: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        """Update server metadata fields."""
+        updates: list[str] = []
+        params: list[Any] = []
+        for field_name, value in [
+            ("hardware_identity", hardware_identity),
+            ("vendor", vendor),
+            ("model", model),
+            ("last_collected_at", last_collected_at),
+            ("last_collection_status", last_collection_status),
+            ("current_snapshot_id", current_snapshot_id),
+            ("notes", notes),
+        ]:
+            if value is not None:
+                updates.append(f"{field_name} = ?")
+                params.append(value)
+
+        if not updates:
+            return
+
+        params.append(server_id)
+        self.conn.execute(
+            f"UPDATE server_registry SET {', '.join(updates)} WHERE server_id = ?",
+            params,
+        )
+        self.conn.commit()
+
+    # ── Snapshots (append-only) ────────────────────────────────────
+
+    def save_snapshot(self, snapshot: InventorySnapshot) -> bool:
+        """Save a snapshot. Returns True if inserted, False if already exists.
+
+        P1 fix: Uses cursor.rowcount to check if INSERT actually happened,
+        preventing silent duplicate overwrites.
+        """
+        cursor = self.conn.execute(
+            """
+            INSERT OR IGNORE INTO inventory_snapshots
+                (snapshot_id, server_id, orchestration_run_id, collected_at,
+                 schema_version, inventory_json, canonical_source,
+                 source_results_summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot.snapshot_id,
+                snapshot.server_id,
+                snapshot.orchestration_run_id,
+                snapshot.collected_at,
+                snapshot.schema_version,
+                snapshot.inventory.model_dump_json(by_alias=True),
+                snapshot.canonical_source,
+                json.dumps(snapshot.source_results_summary),
+            ),
+        )
+        self.conn.commit()
+
+        # P1 fix: Check rowcount to determine if the insert actually happened
+        if cursor.rowcount == 0:
+            logger.warning(
+                "Snapshot %s already exists, skipping (P1 fix)",
+                snapshot.snapshot_id,
+            )
+            return False
+
+        # Update current_snapshot_id on the server registry
+        self.conn.execute(
+            "UPDATE server_registry SET current_snapshot_id = ?, last_collected_at = ? WHERE server_id = ?",
+            (snapshot.snapshot_id, snapshot.collected_at, snapshot.server_id),
+        )
+        self.conn.commit()
+        return True
+
+    def get_snapshot(self, snapshot_id: str) -> Optional[InventorySnapshot]:
+        """Retrieve a snapshot by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM inventory_snapshots WHERE snapshot_id = ?", (snapshot_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_snapshot(row)
+
+    def get_current_snapshot(self, server_id: str) -> Optional[InventorySnapshot]:
+        """Get the current (latest) snapshot for a server."""
+        row = self.conn.execute(
+            """
+            SELECT * FROM inventory_snapshots
+            WHERE server_id = ?
+            ORDER BY collected_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (server_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_snapshot(row)
+
+    def list_snapshots(self, server_id: str, limit: int = 10) -> list[InventorySnapshot]:
+        """List recent snapshots for a server."""
+        rows = self.conn.execute(
+            """
+            SELECT * FROM inventory_snapshots
+            WHERE server_id = ?
+            ORDER BY collected_at DESC
+            LIMIT ?
+            """,
+            (server_id, limit),
+        ).fetchall()
+        return [self._row_to_snapshot(r) for r in rows]
+
+    # ── Verification ─────────────────────────────────────────────────
+
+    def save_verification(self, record: VerificationRecord) -> bool:
+        """Save a verification record. Returns True if inserted."""
+        cursor = self.conn.execute(
+            """
+            INSERT OR IGNORE INTO verification_history
+                (verification_id, server_id, snapshot_id, run_id,
+                 verified_at, result_json, summary_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.verification_id,
+                record.server_id,
+                record.snapshot_id,
+                record.run_id,
+                record.verified_at,
+                json.dumps(record.result.model_dump() if hasattr(record.result, 'model_dump') else record.result),
+                json.dumps(record.summary),
+            ),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def list_verifications(self, server_id: str, limit: int = 10) -> list[VerificationRecord]:
+        """List recent verification records for a server."""
+        rows = self.conn.execute(
+            """
+            SELECT * FROM verification_history
+            WHERE server_id = ?
+            ORDER BY verified_at DESC
+            LIMIT ?
+            """,
+            (server_id, limit),
+        ).fetchall()
+        return [self._row_to_verification(r) for r in rows]
+
+    # ── Orchestration Runs ──────────────────────────────────────────
+
+    def save_run(self, result: Any) -> bool:
+        """Save an orchestration run result. Returns True if inserted."""
+        run_id = result.run_id
+        errors = getattr(result, "errors", [])
+        warnings = getattr(result, "warnings", [])
+        cursor = self.conn.execute(
+            """
+            INSERT OR IGNORE INTO orchestration_runs
+                (run_id, server_id, status, started_at, completed_at,
+                 total_duration_ms, result_json, errors_json, warnings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                result.server_id,
+                result.status.value,
+                result.started_at,
+                result.completed_at or "",
+                result.total_duration_ms,
+                result.model_dump_json(),
+                json.dumps(errors),
+                json.dumps(warnings),
+            ),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def get_run(self, run_id: str) -> Optional[dict]:
+        """Retrieve a run by ID."""
+        row = self.conn.execute(
+            "SELECT * FROM orchestration_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def save_orchestration_result(self, result: Any) -> bool:
+        """Save full orchestration result: snapshot + verification + run.
+
+        This is the main entry point for persisting collection results.
+        """
+        success = False
+
+        # 1. Save snapshot
+        if result.canonical_inventory:
+            snapshot = InventorySnapshot(
+                snapshot_id=f"snap-{result.run_id}",
+                server_id=result.server_id,
+                orchestration_run_id=result.run_id,
+                collected_at=result.completed_at or result.started_at,
+                inventory=result.canonical_inventory,
+                canonical_source=result.canonical_source,
+                source_results_summary={
+                    sr.source: {
+                        "collection_success": sr.collection_success,
+                        "normalization_success": sr.normalization_success,
+                        "duration_ms": sr.duration_ms,
+                    }
+                    for sr in result.source_results
+                },
+            )
+            success = self.save_snapshot(snapshot)
+
+        # 2. Save verification
+        if result.verification:
+            record = VerificationRecord(
+                verification_id=f"verif-{result.run_id}",
+                server_id=result.server_id,
+                snapshot_id=f"snap-{result.run_id}",
+                run_id=result.run_id,
+                verified_at=result.completed_at or result.started_at,
+                result=result.verification,
+                summary={
+                    "total_fields": result.verification.total_fields,
+                    "discrepancy_count": result.verification.discrepancy_count,
+                    "verified_count": result.verification.verified_count,
+                },
+            )
+            self.save_verification(record)
+
+        # 3. Save run
+        self.save_run(result)
+
+        return success
+
+    # ── Backup / Restore ────────────────────────────────────────────
+
+    def backup(self, backup_path: str | Path) -> bool:
+        """Backup the database to a file."""
+        try:
+            backup_path = str(backup_path)
+            # Use SQLite backup API (works for :memory: and file DBs)
+            dest = sqlite3.connect(backup_path)
+            with dest:
+                self.conn.backup(dest)
+            dest.close()
+            return True
+        except Exception as e:
+            logger.error("Backup failed: %s", e)
+            return False
+
+    def restore(self, backup_path: str | Path) -> bool:
+        """Restore the database from a backup file."""
+        try:
+            backup_path = str(backup_path)
+            src = sqlite3.connect(backup_path)
+            self.close()
+            # Restore to file path if using file DB, otherwise use temp
+            if self.db_path == ":memory:":
+                self.init()
+                with self._conn:
+                    src.backup(self._conn)
+            else:
+                src.backup(sqlite3.connect(self.db_path))
+                self.init()
+            src.close()
+            return True
+        except Exception as e:
+            logger.error("Restore failed: %s", e)
+            # Re-init to ensure we have a working connection
+            self.init()
+            return False
+
+    # ── Legacy Migration ────────────────────────────────────────────
+
+    def migrate_legacy_json(self, legacy_data: dict[str, Any], server_id: str = "") -> bool:
+        """Migrate a legacy JSON inventory to the new schema."""
+        try:
+            if not server_id:
+                server_id = legacy_data.get("identity", {}).get("server_id", "legacy-001")
+
+            # Register server if not exists
+            existing = self.get_server(server_id)
+            if existing is None:
+                vendor_str = legacy_data.get("identity", {}).get("vendor", "Unknown")
+                entry = ServerRegistryEntry(
+                    server_id=server_id,
+                    display_name=legacy_data.get("identity", {}).get("hostname", server_id),
+                    vendor=vendor_str if isinstance(vendor_str, str) else "Unknown",
+                    model=legacy_data.get("identity", {}).get("model", ""),
+                    lifecycle_state=ServerLifecycle.ACTIVE,
+                    registered_at=_utc_now(),
+                )
+                self.register_server(entry)
+
+            # Create inventory from legacy data
+            inventory = ServerInventory.model_validate(legacy_data)
+            snapshot = InventorySnapshot(
+                snapshot_id=f"snap-migrate-{server_id}-{int(datetime.now(timezone.utc).timestamp())}",
+                server_id=server_id,
+                orchestration_run_id=f"run-migrate-{server_id}",
+                collected_at=_utc_now(),
+                inventory=inventory,
+            )
+            self.save_snapshot(snapshot)
+            return True
+        except Exception as e:
+            logger.error("Legacy migration failed: %s", e)
+            return False
+
+    # ── Row converters ──────────────────────────────────────────────
+
+    def _row_to_entry(self, row: sqlite3.Row) -> ServerRegistryEntry:
+        """Convert a database row to ServerRegistryEntry."""
+        endpoints = ManagementEndpoints()
+        if row["endpoints_json"]:
+            try:
+                endpoints = ManagementEndpoints.model_validate_json(row["endpoints_json"])
+            except Exception:
+                pass
+
+        from ..models.enums import Vendor as VendorEnum
+
+        vendor_val = row["vendor"]
+        try:
+            vendor = VendorEnum(vendor_val)
+        except ValueError:
+            vendor = VendorEnum.Unknown
+
+        return ServerRegistryEntry(
+            server_id=row["server_id"],
+            display_name=row["display_name"],
+            hardware_identity=row["hardware_identity"],
+            vendor=vendor,
+            model=row["model"],
+            lifecycle_state=ServerLifecycle(row["lifecycle_state"]),
+            endpoints=endpoints,
+            current_snapshot_id=row["current_snapshot_id"],
+            registered_at=row["registered_at"],
+            last_collected_at=row["last_collected_at"],
+            last_collection_status=row["last_collection_status"],
+            notes=row["notes"],
+        )
+
+    def _row_to_snapshot(self, row: sqlite3.Row) -> InventorySnapshot:
+        """Convert a database row to InventorySnapshot."""
+        summary = {}
+        if row["source_results_summary"]:
+            try:
+                summary = json.loads(row["source_results_summary"])
+            except json.JSONDecodeError:
+                pass
+
+        return InventorySnapshot(
+            snapshot_id=row["snapshot_id"],
+            server_id=row["server_id"],
+            orchestration_run_id=row["orchestration_run_id"],
+            collected_at=row["collected_at"],
+            schema_version=row["schema_version"],
+            inventory=ServerInventory.model_validate_json(row["inventory_json"]),
+            canonical_source=row["canonical_source"],
+            source_results_summary=summary,
+        )
+
+    def _row_to_verification(self, row: sqlite3.Row) -> VerificationRecord:
+        """Convert a database row to VerificationRecord."""
+        result_data = json.loads(row["result_json"]) if row["result_json"] else {}
+        summary = json.loads(row["summary_json"]) if row["summary_json"] else {}
+
+        return VerificationRecord(
+            verification_id=row["verification_id"],
+            server_id=row["server_id"],
+            snapshot_id=row["snapshot_id"],
+            run_id=row["run_id"],
+            verified_at=row["verified_at"],
+            result=result_data,
+            summary=summary,
+        )

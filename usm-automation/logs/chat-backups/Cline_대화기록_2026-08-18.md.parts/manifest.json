@@ -1,0 +1,26 @@
+{
+  "originalPath": "usm-automation/logs/chat-backups/Cline_대화기록_2026-08-18.md",
+  "originalSize": 383752,
+  "sha256": "36fca10d036e8d14b03ec731c4225026591e06a46e3651bf2cd0ae7dcb478451",
+  "partSize": 25000,
+  "partCount": 16,
+  "parts": [
+    "part-00001",
+    "part-00002",
+    "part-00003",
+    "part-00004",
+    "part-00005",
+    "part-00006",
+    "part-00007",
+    "part-00008",
+    "part-00009",
+    "part-00010",
+    "part-00011",
+    "part-00012",
+    "part-00013",
+    "part-00014",
+    "part-00015",
+    "part-00016"
+  ],
+  "restore": "node scripts/restore-split.js \"usm-automation/logs/chat-backups/Cline_대화기록_2026-08-18.md\""
+}

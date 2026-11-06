@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/recovery/service.py",
+  "originalSize": 22204,
+  "sha256": "1ae559fd913525eb2c7d083fd09a1a854c313cf8098232b244495b2e2e2789e6",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/recovery/service.py\""
+}

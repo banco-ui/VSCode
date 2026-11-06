@@ -1,0 +1,477 @@
+ities:
+            assert entity.source_evidence is not None
+            assert entity.source_evidence.provider_type is not None
+            assert entity.source_evidence.raw_data_ref is not None
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_source_evidence_has_snapshot_id(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap = adapter.collect()
+        result = normalizer.normalize(snap)
+        for entity in result.platforms + result.nodes:
+            assert entity.source_evidence.raw_data_ref == snap.snapshot_id
+
+    def test_k8s_raw_data_preserved_in_metadata(self):
+        adapter = KubernetesProviderAdapter(
+            fixture=make_k8s_fixture(), provider_id="p1")
+        snap = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snap)
+        for node in result.nodes:
+            assert "kubernetes" in node.metadata
+            assert "raw" in node.metadata["kubernetes"]
+            assert isinstance(node.metadata["kubernetes"]["raw"], dict)
+
+    def test_openstack_raw_data_preserved_in_metadata(self):
+        adapter = OpenStackProviderAdapter(
+            fixture=make_openstack_fixture(), provider_id="p1")
+        snap = adapter.collect()
+        result = OpenStackProviderNormalizer().normalize(snap)
+        for node in result.nodes:
+            assert "openstack" in node.metadata
+            assert "raw" in node.metadata["openstack"]
+            assert isinstance(node.metadata["openstack"]["raw"], dict)
+
+
+# === SECTION 9: ONLY DIRECT/DERIVED EVIDENCE ===
+
+
+class TestOnlyDirectDerivedEvidence:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_relationship_evidence_types(self, provider_fn):
+        adapter, _, _ = provider_fn()
+        snap = adapter.collect()
+        for ev in snap.relationship_evidence:
+            assert ev.evidence_type in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            )
+
+    def test_k8s_has_direct_evidence(self):
+        adapter = KubernetesProviderAdapter(
+            fixture=make_k8s_fixture(), provider_id="p1")
+        snap = adapter.collect()
+        direct = [e for e in snap.relationship_evidence
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        assert len(direct) > 0
+        runs_on = [e for e in direct if e.relationship_type == "runs_on"]
+        assert len(runs_on) > 0
+
+    def test_openstack_has_direct_evidence(self):
+        adapter = OpenStackProviderAdapter(
+            fixture=make_openstack_fixture(), provider_id="p1")
+        snap = adapter.collect()
+        direct = [e for e in snap.relationship_evidence
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        assert len(direct) >= 2
+        runs_on = [e for e in direct if e.relationship_type == "runs_on"]
+        attached = [e for e in direct if e.relationship_type == "attached_to"]
+        assert len(runs_on) > 0
+        assert len(attached) > 0
+
+
+# === SECTION 10: NO INFERRED/UNKNOWN EDGES IN GRAPH ===
+
+
+class TestNoInferredEdges:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_graph_no_inferred_edges(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        for edge in report.relationships:
+            assert edge.evidence_type in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            )
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_graph_validation_no_errors(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        assert report.is_valid
+        assert len(report.validation_errors) == 0
+
+
+# === SECTION 11: DUPLICATE HANDLING ===
+
+
+class TestDuplicateHandling:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_duplicate_entity_same_canonical_id(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap = adapter.collect()
+        r1 = normalizer.normalize(snap)
+        r2 = normalizer.normalize(snap)
+        ids1 = sorted(e.canonical_id for e in r1.nodes)
+        ids2 = sorted(e.canonical_id for e in r2.nodes)
+        assert ids1 == ids2
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_graph_no_duplicate_edges(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        seen = set()
+        for edge in report.relationships:
+            key = edge.edge_key
+            assert key not in seen, f"Duplicate edge: {key}"
+            seen.add(key)
+
+
+# === SECTION 12: PARTIAL SUCCESS VS ERRORS ===
+
+
+class TestPartialSuccessVsErrors:
+
+    def test_k8s_partial_collection(self):
+        fixture = make_k8s_fixture()
+        fixture["errors"] = {"pods": "403 Forbidden"}
+        adapter = KubernetesProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+        assert len(snap.errors) > 0
+
+    def test_openstack_partial_collection(self):
+        fixture = make_openstack_fixture()
+        fixture["errors"] = {"servers": "403 Forbidden"}
+        adapter = OpenStackProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+        assert len(snap.errors) > 0
+
+    def test_k8s_all_resource_capabilities_fail(self):
+        """K8s all resource caps fail, PLATFORM still succeeds → PARTIAL."""
+        fixture = make_k8s_fixture()
+        fixture["errors"] = {
+            "nodes": "403", "pods": "403", "services": "403",
+            "persistent_volumes": "403", "persistent_volume_claims": "403",
+        }
+        adapter = KubernetesProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+
+    def test_openstack_all_resource_capabilities_fail(self):
+        """OpenStack all resource caps fail, PLATFORM still succeeds → PARTIAL."""
+        fixture = make_openstack_fixture()
+        fixture["errors"] = {
+            "hypervisors": "403", "servers": "403",
+            "networks": "403", "volumes": "403",
+            "availability_zones": "403",
+        }
+        adapter = OpenStackProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_partial_vs_failed_distinguishable(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap_ok = adapter.collect()
+        result_ok = normalizer.normalize(snap_ok)
+        assert result_ok.status == OrchestrationStatus.SUCCESS
+
+
+# === SECTION 13: HEALTH EXTRACTION REGISTRATION ===
+
+
+class TestHealthExtractionRegistration:
+
+    def test_k8s_extractor_registered(self):
+        from server_manager.health.service import HealthService
+        assert ProviderType.KUBERNETES in HealthService._EXTRACTORS
+
+    def test_openstack_extractor_registered(self):
+        from server_manager.health.service import HealthService
+        assert ProviderType.OPENSTACK in HealthService._EXTRACTORS
+
+    def test_k8s_health_dispatched(self):
+        adapter = KubernetesProviderAdapter(
+            fixture=make_k8s_fixture(), provider_id="p1")
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        assert health.provider_type == ProviderType.KUBERNETES
+        assert len(health.results) > 0
+
+    def test_openstack_health_dispatched(self):
+        adapter = OpenStackProviderAdapter(
+            fixture=make_openstack_fixture(), provider_id="p1")
+        normalizer = OpenStackProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        assert health.provider_type == ProviderType.OPENSTACK
+        assert len(health.results) > 0
+
+    def test_unknown_provider_health_skipped(self):
+        from server_manager.discovery.models import (
+            CanonicalInventory, DiscoveryResult,
+        )
+        discovery = DiscoveryResult(
+            provider_type=ProviderType.UNKNOWN,
+            provider_id="unknown",
+            discovery_status=OrchestrationStatus.SUCCESS,
+            snapshot_id="snap-x",
+            inventory=CanonicalInventory(
+                provider_type=ProviderType.UNKNOWN,
+                snapshot_id="snap-x",
+            ),
+        )
+        health = HealthService().assess(discovery)
+        assert health.is_skipped
+
+
+# === GRAPH AND RESOURCE INTEGRITY (spec section 3) ===
+
+
+class TestGraphAndResourceIntegrity:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_edge_endpoints_exist_as_nodes(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        node_ids = report.node_ids
+        for edge in report.relationships:
+            assert edge.source_id in node_ids
+            assert edge.target_id in node_ids
+
+    def test_openstack_vm_to_hypervisor_direct_evidence(self):
+        adapter = OpenStackProviderAdapter(
+            fixture=make_openstack_fixture(), provider_id="p1")
+        normalizer = OpenStackProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        runs_on = [e for e in report.relationships
+                   if e.relationship_type.value == "RUNS_ON"]
+        assert len(runs_on) > 0
+        direct = [e for e in runs_on
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        assert len(direct) > 0
+        for edge in direct:
+            assert edge.raw_data is not None
+            assert "server" in edge.raw_data
+            assert "hypervisor" in edge.raw_data
+
+    def test_openstack_volume_attachment_direct_evidence(self):
+        adapter = OpenStackProviderAdapter(
+            fixture=make_openstack_fixture(), provider_id="p1")
+        normalizer = OpenStackProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        attached = [e for e in report.relationships
+                    if e.relationship_type.value == "ATTACHED_TO"]
+        assert len(attached) > 0
+        for edge in attached:
+            assert edge.evidence_type == RelationshipEvidenceType.DIRECT
+            assert edge.raw_data is not None
+            assert "volume" in edge.raw_data
+            assert "server" in edge.raw_data
+
+    def test_k8s_pod_to_node_retains_semantics(self):
+        adapter = KubernetesProviderAdapter(
+            fixture=make_k8s_fixture(), provider_id="p1")
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        runs_on = [e for e in report.relationships
+                   if e.relationship_type.value == "RUNS_ON"]
+        assert len(runs_on) > 0
+        direct = [e for e in runs_on
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        assert len(direct) > 0
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_missing_capacity_not_zero(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        for hr in health.results:
+            for ci in hr.capacity_infos:
+                if ci.capacity is not None:
+                    assert ci.capacity != "0"
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_no_inferred_topology(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = GraphBuilder().build(discovery)
+        inferred = [
+            e for e in report.relationships
+            if e.evidence_type not in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            )
+        ]
+        assert len(inferred) == 0
+
+    def test_openstack_nodes_have_provenance(self):
+        adapter = OpenStackProviderAdapter(
+            fixture=make_openstack_fixture(), provider_id="p1")
+        normalizer = OpenStackProviderNormalizer()
+        snap = adapter.collect()
+        result = normalizer.normalize(snap)
+        for node in result.nodes:
+            assert node.source_evidence is not None
+            assert node.source_evidence.provider_type == ProviderType.OPENSTACK
+
+    def test_k8s_nodes_have_provenance(self):
+        adapter = KubernetesProviderAdapter(
+            fixture=make_k8s_fixture(), provider_id="p1")
+        normalizer = KubernetesProviderNormalizer()
+        snap = adapter.collect()
+        result = normalizer.normalize(snap)
+        for node in result.nodes:
+            assert node.source_evidence is not None
+            assert node.source_evidence.provider_type == ProviderType.KUBERNETES
+
+
+# === MANAGEMENT API COMPATIBILITY (spec section 2 item 14) ===
+
+
+def _build_client_with_provider(provider_fn):
+    """Build a TestClient with the given provider's discovery result."""
+    from fastapi.testclient import TestClient
+    from server_manager.api.app import create_app
+    from server_manager.api import dependencies as deps
+    from server_manager.api.dependencies import ManagementContext
+
+    adapter, normalizer, expected_type = provider_fn()
+    ctx = ManagementContext()
+    discovery = PlatformDiscovery().discover(adapter, normalizer)
+    ctx._refresh_from_discovery(discovery)
+
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    client = TestClient(app)
+    return client, discovery, expected_type
+
+
+class TestManagementApiCompatibility:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_inventory_summary_response(self, provider_fn):
+        client, discovery, expected_type = _build_client_with_provider(
+            provider_fn)
+        resp = client.get("/api/v1/inventory")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider_type"] == expected_type.value
+        assert body["total_entities"] > 0
+        assert "entity_counts" in body
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_health_report_response(self, provider_fn):
+        client, _, expected_type = _build_client_with_provider(provider_fn)
+        resp = client.get("/api/v1/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider_type"] == expected_type.value
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_graph_summary_response(self, provider_fn):
+        client, _, _ = _build_client_with_provider(provider_fn)
+        resp = client.get("/api/v1/graph/summary")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["node_count"] > 0
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_entity_list_response(self, provider_fn):
+        client, _, _ = _build_client_with_provider(provider_fn)
+        for entity_type in ["nodes", "networks", "storages"]:
+            resp = client.get(f"/api/v1/inventory/{entity_type}")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert "items" in body
+            assert "total" in body
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_discovery_run_response_contract(self, provider_fn):
+        from fastapi.testclient import TestClient
+        from server_manager.api.app import create_app
+        from server_manager.api import dependencies as deps
+        from server_manager.api.dependencies import ManagementContext
+
+        adapter, normalizer, expected_type = provider_fn()
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (adapter, normalizer)
+
+        app = create_app()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/discovery/run")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["provider_type"] == expected_type.value
+        assert body["discovery_status"] in (
+            "SUCCESS", "PARTIAL", "FAILED", "SKIPPED")
+        assert "entity_count" in body
+        assert "capabilities_attempted" in body
+        assert "errors" in body
+        assert "warnings" in body
+
+
+# === API AND DASHBOARD INTEGRATION (spec section 4) ===
+
+
+class TestApiAndDashboardIntegration:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_no_k8s_only_assumptions_in_shared_paths(self, provider_fn):
+        client, _, expected_type = _build_client_with_provider(provider_fn)
+        resp = client.get("/api/v1/inventory")
+        body = resp.json()
+        assert body["provider_type"] == expected_type.value
+        assert body["identified_platform_type"] == expected_type.value
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_no_false_healthy_state(self, provider_fn):
+        client, _, _ = _build_client_with_provider(provider_fn)
+        resp = client.get("/api/v1/health")
+        body = resp.json()
+        assert body["health_status"] in (
+            "SUCCESS", "PARTIAL", "FAILED", "SKIPPED")
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_no_fabricated_inventory(self, provider_fn):
+        client, discovery, _ = _build_client_with_provider(provider_fn)
+        resp = client.get("/api/v1/inventory")
+        body = resp.json()
+        assert body["total_entities"] == discovery.entity_count
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_no_new_mutation_routes(self, provider_fn):
+        client, _, _ = _build_client_with_provider(provider_fn)
+        resp = client.post("/api/v1/operations/preview", json={
+            "operation_id": "op-1",
+            "operation_type": "RESTART",
+            "target_canonical_id": "canon-test-node-01",
+            "provider_type": "KUBERNETES",
+        })
+        if resp.status_code == 200:
+            body = resp.json()
+            assert body["execution_allowed"] is False
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_entity_status_endpoint(self, provider_fn):
+        client, discovery, _ = _build_client_with_provider(provider_fn)
+        if discovery.inventory and discovery.inventory.nodes:
+            node_id = discovery.inventory.nodes[0].canonical_id
+            resp = client.get(f"/api/v1/visibility/entities/{node_id}")
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["entity_id"] == node_id
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_operational_summary_endpoint(self, provider_fn):
+        client, _, _ = _build_client_with_provider(provider_fn)
+        resp = client.get("/api/v1/visibility/summary")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "infrastructure" in body
+        assert "health" in body
+        assert "generated_at" in body

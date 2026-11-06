@@ -1,0 +1,327 @@
+ActionType.RESTART_EXECUTION_ENVIRONMENT},
+            authorization=AuthorizationLevel.EXECUTE,
+        )
+        fault = make_fault(fault_type=FaultType.HEALTH_FAILURE)
+        cand = svc.propose_candidate(fault)
+        assert cand is not None
+        exec_result = svc.execute(cand)
+        assert exec_result.was_executed
+        # Fault status is NOT changed by recovery execution
+        assert cand.fault.status == FaultStatus.DETECTED
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  EXECUTION DEFAULT DISABLED TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestExecutionDefaultDisabled:
+    """AUTOMATIC_RECOVERY = DISABLED by default."""
+
+    def test_execution_disabled_by_default(self):
+        svc = RecoveryService(executor=MockRecoveryExecutor())
+        assert svc.execution_enabled is False
+
+    def test_execution_blocked_when_disabled(self):
+        svc = RecoveryService(
+            executor=MockRecoveryExecutor(),
+            execution_enabled=False,
+            supported_actions={RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT},
+            authorization=AuthorizationLevel.EXECUTE,
+        )
+        fault = make_fault()
+        cand = svc.propose_candidate(fault)
+        result = svc.execute(cand)
+        assert result.status == RecoveryExecutionStatus.BLOCKED
+
+    def test_no_auto_execute_on_fault(self):
+        """Creating a candidate does NOT execute anything."""
+        svc = RecoveryService(
+            executor=MockRecoveryExecutor(),
+            execution_enabled=True,
+        )
+        fault = make_fault()
+        cand = svc.propose_candidate(fault)
+        assert cand is not None
+        assert svc.get_execution_result(cand.action.action_id) is None
+
+    def test_no_escalation_on_failure(self):
+        """Failed recovery does NOT auto-trigger other actions."""
+        executor = MockRecoveryExecutor(simulate_failure=True)
+        svc = RecoveryService(
+            executor=executor,
+            execution_enabled=True,
+            supported_actions={RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT},
+            authorization=AuthorizationLevel.EXECUTE,
+        )
+        fault = make_fault()
+        cand = svc.propose_candidate(fault)
+        result = svc.execute(cand)
+        assert result.status == RecoveryExecutionStatus.FAILED
+        assert len(svc._active_candidates) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GRAPH CONTEXT TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestGraphContext:
+    """Graph context integration — read-only lookup."""
+
+    def test_graph_context_lookup(self):
+        from server_manager.discovery.models import CanonicalInventory
+        from server_manager.models.canonical import (
+            Node, ExecutionEnvironment, Workload,
+        )
+
+        source = make_source()
+        node = Node(
+            canonical_id="canon-k8s-node-01",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=source,
+        )
+        ee = ExecutionEnvironment(
+            canonical_id="canon-k8s-ee-01",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=source,
+            node_ref="canon-k8s-node-01",
+        )
+
+        inventory = CanonicalInventory(
+            provider_type=ProviderType.KUBERNETES,
+            snapshot_id="snap-01",
+            nodes=[node],
+            execution_environments=[ee],
+        )
+        report = GraphBuilder().build_from_inventory(inventory)
+        query = GraphQuery(report)
+        ctx = RecoveryGraphContext(query)
+
+        target = ctx.get_target_node("canon-k8s-node-01")
+        assert target is not None
+        rels = ctx.get_relationships("canon-k8s-ee-01")
+        assert len(rels) > 0
+        neighbors = ctx.get_related_entities("canon-k8s-ee-01")
+        assert "canon-k8s-node-01" in neighbors
+
+    def test_graph_context_not_found(self):
+        from server_manager.discovery.models import CanonicalInventory
+
+        inventory = CanonicalInventory(
+            provider_type=ProviderType.KUBERNETES,
+            snapshot_id="snap-01",
+        )
+        report = GraphBuilder().build_from_inventory(inventory)
+        query = GraphQuery(report)
+        ctx = RecoveryGraphContext(query)
+
+        assert ctx.get_target_node("does-not-exist") is None
+        assert ctx.get_related_entities("does-not-exist") == []
+        assert ctx.get_relationships("does-not-exist") == []
+
+    def test_graph_context_no_new_edges(self):
+        """Recovery does NOT create new graph edges."""
+        from server_manager.discovery.models import CanonicalInventory
+        from server_manager.models.canonical import Node
+
+        source = make_source()
+        node = Node(
+            canonical_id="canon-k8s-node-01",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=source,
+        )
+        inventory = CanonicalInventory(
+            provider_type=ProviderType.KUBERNETES,
+            snapshot_id="snap-01",
+            nodes=[node],
+        )
+        report = GraphBuilder().build_from_inventory(inventory)
+        initial_edge_count = len(report.relationships)
+
+        ctx = RecoveryGraphContext(GraphQuery(report))
+        ctx.get_target_node("canon-k8s-node-01")
+        ctx.get_related_entities("canon-k8s-node-01")
+        ctx.get_relationships("canon-k8s-node-01")
+
+        assert len(report.relationships) == initial_edge_count
+
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MUTATION SAFETY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMutationSafety:
+    """Inspect-based mutation safety: no mutation operations in code."""
+
+    FORBIDDEN_PATTERNS = [
+        "create_pod", "delete_pod", "update_pod", "patch_pod",
+        "scale_deployment", "restart_node", "rollout_restart",
+        "kubectl", "apply_manifest", "replace_resource", "exec_command",
+    ]
+
+    def test_no_mutation_patterns_in_recovery_models(self):
+        import server_manager.recovery.models as m
+        source = inspect.getsource(m)
+        for pattern in self.FORBIDDEN_PATTERNS:
+            assert pattern not in source, (
+                f"Forbidden pattern '{pattern}' found in recovery models"
+            )
+
+    def test_no_mutation_patterns_in_recovery_service(self):
+        import server_manager.recovery.service as s
+        source = inspect.getsource(s)
+        for pattern in self.FORBIDDEN_PATTERNS:
+            assert pattern not in source, (
+                f"Forbidden pattern '{pattern}' found in recovery service"
+            )
+
+    def test_no_auto_recovery_methods(self):
+        """No auto_restart, auto_redeploy, auto_scale, etc."""
+        import server_manager.recovery.service as s
+        source = inspect.getsource(s)
+        for pattern in ["auto_restart", "auto_redeploy", "auto_scale",
+                        "auto_delete", "auto_recovery", "auto_remediate"]:
+            assert pattern not in source, (
+                f"Forbidden auto method '{pattern}' in service"
+            )
+
+    def test_no_provider_api_calls(self):
+        """Recovery service does not directly call provider APIs."""
+        import server_manager.recovery.service as s
+        source = inspect.getsource(s)
+        forbidden = [
+            "CoreV1Api", "AppsV1Api", "kubernetes.client",
+            "requests.post", "requests.put", "requests.delete",
+            "requests.patch",
+        ]
+        for pattern in forbidden:
+            assert pattern not in source, (
+                f"Provider API call '{pattern}' found in recovery service"
+            )
+
+    def test_no_kubernetes_import(self):
+        """Recovery service should not import Kubernetes client."""
+        import server_manager.recovery.service as s
+        source = inspect.getsource(s)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  KUBERNETES RECOVERY CONTRACT TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestKubernetesRecoveryContract:
+    """Kubernetes recovery contract — mock/fixture based.
+
+    Live mutation is SKIPPED (no credentials).
+    """
+
+    def test_kubernetes_fault_to_candidate(self):
+        """K8s health failure → recovery candidate."""
+        svc = RecoveryService(
+            executor=MockRecoveryExecutor(),
+            execution_enabled=True,
+            supported_actions={RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT},
+            authorization=AuthorizationLevel.EXECUTE,
+        )
+        fault = Fault(
+            fault_id="k8s-fault-001",
+            entity_id="canon-k8s-node-01",
+            fault_type=FaultType.HEALTH_FAILURE,
+            severity=Severity.CRITICAL,
+            evidence={
+                "condition": "Ready=False",
+                "source": "kubernetes_node_condition",
+            },
+            source=make_source(),
+        )
+        cand = svc.propose_candidate(fault)
+        assert cand is not None
+        assert cand.action.provider_type == ProviderType.KUBERNETES
+
+    def test_kubernetes_mock_execution(self):
+        """K8s recovery via mock executor."""
+        svc = RecoveryService(
+            executor=MockRecoveryExecutor(),
+            execution_enabled=True,
+            supported_actions={RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT},
+            authorization=AuthorizationLevel.EXECUTE,
+        )
+        fault = Fault(
+            fault_id="k8s-fault-002",
+            entity_id="canon-k8s-ee-01",
+            fault_type=FaultType.AVAILABILITY_FAILURE,
+            severity=Severity.CRITICAL,
+            evidence={"pod_phase": "Failed"},
+            source=make_source(),
+        )
+        cand = svc.propose_candidate(fault)
+        assert cand is not None
+        result = svc.execute(cand)
+        assert result.status == RecoveryExecutionStatus.EXECUTED
+
+    def test_kubernetes_mock_verification(self):
+        """K8s post-action verification via mock."""
+        svc = RecoveryService(
+            executor=MockRecoveryExecutor(),
+            execution_enabled=True,
+            supported_actions={RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT},
+            authorization=AuthorizationLevel.EXECUTE,
+        )
+        fault = Fault(
+            fault_id="k8s-fault-003",
+            entity_id="canon-k8s-ee-01",
+            fault_type=FaultType.HEALTH_FAILURE,
+            severity=Severity.CRITICAL,
+            evidence={"condition": "Ready=False"},
+            source=make_source(),
+        )
+        cand = svc.propose_candidate(fault)
+        svc.execute(cand)
+        healthy = HealthResult(
+            entity_id="canon-k8s-ee-01",
+            entity_type="EXECUTION_ENVIRONMENT",
+            status=HealthStatus.HEALTHY,
+            availability=AvailabilityStatus.AVAILABLE,
+            source_evidence=make_source(),
+        )
+        result = svc.verify(cand, post_health=healthy)
+        assert result.status == RecoveryExecutionStatus.VERIFIED
+
+    def test_kubernetes_graph_context_lookup(self):
+        """K8s recovery target → graph context lookup."""
+        from server_manager.discovery.models import CanonicalInventory
+        from server_manager.models.canonical import Node, ExecutionEnvironment
+
+        source = make_source()
+        node = Node(
+            canonical_id="canon-k8s-node-01",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=source,
+        )
+        ee = ExecutionEnvironment(
+            canonical_id="canon-k8s-ee-01",
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=source,
+            node_ref="canon-k8s-node-01",
+        )
+        inventory = CanonicalInventory(
+            provider_type=ProviderType.KUBERNETES,
+            snapshot_id="snap-01",
+            nodes=[node],
+            execution_environments=[ee],
+        )
+        report = GraphBuilder().build_from_inventory(inventory)
+        ctx = RecoveryGraphContext(GraphQuery(report))
+
+        target = ctx.get_target_node("canon-k8s-ee-01")
+        assert target is not None
+        neighbors = ctx.get_related_entities("canon-k8s-ee-01")
+        assert "canon-k8s-node-01" in neighbors
+
+        assert "import kubernetes" not in source
+        assert "from kubernetes" not in source
+

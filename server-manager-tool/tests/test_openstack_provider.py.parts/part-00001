@@ -1,0 +1,410 @@
+"""OpenStack Provider Adapter Tests — Phase 26.
+
+Tests for OpenStackProviderAdapter:
+    - Provider identity, capability declaration
+    - Raw snapshot creation and payload preservation
+    - Collection status (SUCCESS, PARTIAL, FAILED)
+    - Partial collection, permission error, empty vs error
+    - Relationship evidence (DIRECT)
+    - Provenance, no live connection
+
+NO live OpenStack connection. All fixtures are synthetic/in-memory.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.models.canonical import ProviderType, RelationshipEvidenceType
+from server_manager.orchestrator.models import ErrorCategory, OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability,
+    CapabilityResult,
+    OpenStackProviderAdapter,
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+
+def make_hypervisor(
+    hostname: str, hv_id: int = 1, state: str = "up",
+    status: str = "enabled", vcpus: int = 32, memory_mb: int = 131072,
+    local_gb: int = 500,
+) -> dict:
+    return {
+        "hypervisor_hostname": hostname, "id": hv_id,
+        "state": state, "status": status,
+        "vcpus": vcpus, "memory_mb": memory_mb, "local_gb": local_gb,
+        "vcpus_used": 10, "memory_mb_used": 40960, "local_gb_used": 120,
+    }
+
+
+def make_server(
+    server_id: str, name: str = "vm-01", status: str = "ACTIVE",
+    hypervisor: str | None = "compute-01",
+) -> dict:
+    srv: dict[str, Any] = {
+        "id": server_id, "name": name, "status": status,
+        "flavor": {"id": "flavor-001"},
+        "addresses": {"public": [{"addr": "10.0.0.5"}]},
+    }
+    if hypervisor:
+        srv["OS-EXT-SRV-ATTR:hypervisor_hostname"] = hypervisor
+    return srv
+
+
+def make_network(
+    net_id: str, name: str = "public-net", status: str = "ACTIVE",
+) -> dict:
+    return {
+        "id": net_id, "name": name, "status": status,
+        "provider:network_type": "vlan",
+    }
+
+
+def make_volume(
+    vol_id: str, name: str = "data-vol", status: str = "in-use",
+    size: int = 100, attachments: list | None = None,
+) -> dict:
+    if attachments is None:
+        attachments = [{"server_id": "srv-001"}]
+    return {
+        "id": vol_id, "name": name, "status": status, "size": size,
+        "attachments": attachments,
+    }
+
+
+def make_az(zone_name: str, available: bool = True) -> dict:
+    return {"zoneName": zone_name, "zoneState": {"available": available}}
+
+
+def make_flavor(flavor_id: str, name: str = "m1.small") -> dict:
+    return {"id": flavor_id, "name": name, "vcpus": 2, "ram": 2048, "disk": 20}
+
+
+@pytest.fixture
+def fixture_os01() -> dict[str, Any]:
+    return {"platform": {"name": "openstack-cloud", "version": "Yoga"}}
+
+
+@pytest.fixture
+def fixture_os02() -> dict[str, Any]:
+    return {
+        "platform": {"name": "openstack-cloud", "version": "Yoga"},
+        "hypervisors": [make_hypervisor("compute-01")],
+    }
+
+
+@pytest.fixture
+def fixture_os03() -> dict[str, Any]:
+    return {
+        "platform": {"name": "openstack-cloud", "version": "Yoga"},
+        "availability_zones": [make_az("nova")],
+        "hypervisors": [make_hypervisor("compute-01")],
+        "servers": [make_server("srv-001", "vm-web-01", "ACTIVE", "compute-01")],
+        "networks": [make_network("net-001", "public-net", "ACTIVE")],
+        "volumes": [make_volume("vol-001", "data-vol", "in-use", 100,
+                                [{"server_id": "srv-001"}])],
+        "flavors": [make_flavor("flavor-001", "m1.small")],
+    }
+
+
+@pytest.fixture
+def fixture_os04_partial() -> dict[str, Any]:
+    return {
+        "platform": {"name": "openstack-cloud", "version": "Yoga"},
+        "hypervisors": [make_hypervisor("compute-01")],
+        "errors": {"servers": "403 Forbidden: servers.list is forbidden"},
+    }
+
+
+@pytest.fixture
+def fixture_os05_all_fail() -> dict[str, Any]:
+    return {
+        "platform": {"name": "openstack-cloud", "version": "Yoga"},
+        "errors": {
+            "hypervisors": "403 Forbidden",
+            "servers": "403 Forbidden",
+            "networks": "403 Forbidden",
+            "volumes": "403 Forbidden",
+            "availability_zones": "403 Forbidden",
+        },
+    }
+
+
+@pytest.fixture
+def fixture_os06_no_hv() -> dict[str, Any]:
+    return {
+        "platform": {"name": "openstack-cloud", "version": "Yoga"},
+        "servers": [make_server("srv-001", "vm-01", "ACTIVE", hypervisor=None)],
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G1 — PROVIDER IDENTITY
+# ════════════════════════════════════════════════════════════════════════
+
+class TestProviderIdentity:
+    def test_provider_type_is_openstack(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert adapter.provider_type == ProviderType.OPENSTACK
+
+    def test_default_provider_id(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert adapter.provider_id == "openstack-cloud"
+
+    def test_custom_provider_id(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(
+            provider_id="prod-cloud", fixture=fixture_os01)
+        assert adapter.provider_id == "prod-cloud"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G2 — CAPABILITY DECLARATION
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCapabilityDeclaration:
+    def test_capabilities_not_empty(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert len(adapter.capabilities()) > 0
+
+    def test_capabilities_contains_platform(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert AdapterCapability.PLATFORM in adapter.capabilities()
+
+    def test_capabilities_contains_node(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert AdapterCapability.NODE in adapter.capabilities()
+
+    def test_capabilities_contains_ee(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert AdapterCapability.EXECUTION_ENVIRONMENT in adapter.capabilities()
+
+    def test_capabilities_contains_network(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert AdapterCapability.NETWORK in adapter.capabilities()
+
+    def test_capabilities_contains_storage(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert AdapterCapability.STORAGE in adapter.capabilities()
+
+    def test_capabilities_does_not_contain_metrics(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert AdapterCapability.METRICS not in adapter.capabilities()
+
+    def test_capabilities_does_not_contain_accelerator(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        assert AdapterCapability.ACCELERATOR not in adapter.capabilities()
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G3 — COLLECTION: SUCCESS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCollectionSuccess:
+    def test_collect_returns_snapshot(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        snap = adapter.collect()
+        assert isinstance(snap, RawProviderSnapshot)
+
+    def test_collect_success_status(self, fixture_os03):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.SUCCESS
+
+    def test_collect_provider_type(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        snap = adapter.collect()
+        assert snap.provider_type == ProviderType.OPENSTACK
+
+    def test_collect_snapshot_id_format(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        snap = adapter.collect()
+        assert snap.snapshot_id.startswith("snap-os-")
+
+    def test_collect_payload_preserved(self, fixture_os03):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        snap = adapter.collect()
+        assert "hypervisors" in snap.payload
+        assert len(snap.payload["hypervisors"]) == 1
+        assert "servers" in snap.payload
+        assert len(snap.payload["servers"]) == 1
+
+    def test_collect_platform_info_preserved(self, fixture_os03):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        snap = adapter.collect()
+        assert snap.payload["platform"]["name"] == "openstack-cloud"
+        assert snap.payload["platform"]["version"] == "Yoga"
+
+    def test_collect_source_evidence(self, fixture_os03):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        snap = adapter.collect()
+        assert snap.source_evidence is not None
+        assert snap.source_evidence.provider_type == ProviderType.OPENSTACK
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G4 — COLLECTION: PARTIAL
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCollectionPartial:
+    def test_partial_status(self, fixture_os04_partial):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os04_partial)
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+
+    def test_partial_has_errors(self, fixture_os04_partial):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os04_partial)
+        snap = adapter.collect()
+        assert len(snap.errors) > 0
+
+    def test_partial_failed_capability_error_category(self, fixture_os04_partial):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os04_partial)
+        snap = adapter.collect()
+        failed = snap.failed_capabilities
+        assert AdapterCapability.EXECUTION_ENVIRONMENT in failed
+        ee_cr = next(
+            cr for cr in snap.capability_results
+            if cr.capability == AdapterCapability.EXECUTION_ENVIRONMENT
+        )
+        assert ee_cr.error_category == ErrorCategory.AUTHENTICATION_ERROR
+
+    def test_partial_successful_capabilities_preserved(self, fixture_os04_partial):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os04_partial)
+        snap = adapter.collect()
+        assert AdapterCapability.NODE in snap.successful_capabilities
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5 — COLLECTION: ALL FAILED
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCollectionAllFailed:
+    def test_all_failed_status(self, fixture_os05_all_fail):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os05_all_fail)
+        snap = adapter.collect()
+        # Platform always succeeds, so status is PARTIAL not FAILED
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+
+    def test_all_failed_has_errors(self, fixture_os05_all_fail):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os05_all_fail)
+        snap = adapter.collect()
+        assert len(snap.errors) >= 5
+
+    def test_all_failed_no_successful(self, fixture_os05_all_fail):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os05_all_fail)
+        snap = adapter.collect()
+        # PLATFORM always succeeds
+        assert AdapterCapability.NODE not in snap.successful_capabilities
+        assert AdapterCapability.EXECUTION_ENVIRONMENT not in snap.successful_capabilities
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G6 — RELATIONSHIP EVIDENCE
+# ════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def fixture_os07_multi_vol() -> dict[str, Any]:
+    return {
+        "platform": {"name": "openstack-cloud", "version": "Yoga"},
+        "volumes": [
+            make_volume("vol-001", "data-vol", "in-use", 100,
+                        [{"server_id": "srv-001"}]),
+            make_volume("vol-002", "backup-vol", "available", 200, []),
+        ],
+    }
+
+
+class TestRelationshipEvidence:
+    def test_server_to_hypervisor_direct(self, fixture_os03):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        snap = adapter.collect()
+        runs_on = [e for e in snap.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        assert len(runs_on) == 1
+        assert runs_on[0].evidence_type == RelationshipEvidenceType.DIRECT
+        assert runs_on[0].source_entity_ref == "srv-001"
+        assert runs_on[0].target_entity_ref == "compute-01"
+
+    def test_volume_to_server_direct(self, fixture_os03):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        snap = adapter.collect()
+        attached = [e for e in snap.relationship_evidence
+                    if e.relationship_type == "attached_to"]
+        assert len(attached) == 1
+        assert attached[0].evidence_type == RelationshipEvidenceType.DIRECT
+        assert attached[0].source_entity_ref == "vol-001"
+        assert attached[0].target_entity_ref == "srv-001"
+
+    def test_no_hv_no_runs_on(self, fixture_os06_no_hv):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os06_no_hv)
+        snap = adapter.collect()
+        runs_on = [e for e in snap.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        assert len(runs_on) == 0
+
+    def test_unattached_volume_no_evidence(self, fixture_os07_multi_vol):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os07_multi_vol)
+        snap = adapter.collect()
+        attached = [e for e in snap.relationship_evidence
+                    if e.relationship_type == "attached_to"]
+        # Only vol-001 has attachment to srv-001
+        assert len(attached) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G7 — EMPTY COLLECTION
+# ════════════════════════════════════════════════════════════════════════
+
+class TestEmptyCollection:
+    def test_empty_fixture_success(self):
+        adapter = OpenStackProviderAdapter(fixture={})
+        snap = adapter.collect()
+        # Platform always succeeds even with empty fixture
+        assert snap.collection_status == OrchestrationStatus.SUCCESS
+
+    def test_empty_fixture_payload_keys(self):
+        adapter = OpenStackProviderAdapter(fixture={})
+        snap = adapter.collect()
+        assert isinstance(snap.payload.get("hypervisors", None), list)
+        assert isinstance(snap.payload.get("servers", None), list)
+
+    def test_empty_fixture_no_relationships(self):
+        adapter = OpenStackProviderAdapter(fixture={})
+        snap = adapter.collect()
+        assert len(snap.relationship_evidence) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G8 — COLLECT_SAFE
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCollectSafe:
+    def test_collect_safe_returns_snapshot(self, fixture_os01):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        snap = adapter.collect_safe()
+        assert isinstance(snap, RawProviderSnapshot)
+
+    def test_collect_safe_success(self, fixture_os03):
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        snap = adapter.collect_safe()
+        assert snap.collection_status == OrchestrationStatus.SUCCESS
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G9 — NO LIVE CONNECTION
+# ════════════════════════════════════════════════════════════════════════
+
+class TestNoLiveConnection:
+    def test_fixture_based_only(self, fixture_os03):
+        """Adapter with fixture does not attempt live connection."""
+        adapter = OpenStackProviderAdapter(fixture=fixture_os03)
+        assert adapter._client is None
+
+    def test_no_client_attribute_access(self, fixture_os01):
+        """No client attribute means no live connection path."""
+        adapter = OpenStackProviderAdapter(fixture=fixture_os01)
+        snap = adapter.collect()
+        # Fixture path: payload has data from fixture, not from API calls
+        assert snap.payload["platform"]["name"] == "openstack-cloud"

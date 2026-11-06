@@ -1,0 +1,19 @@
+{
+  "originalPath": "usm-automation/logs/lsm-reprovision.log",
+  "originalSize": 204206,
+  "sha256": "3aaa7ae0574915023a30e41757ce65786f70421a5d31a0ae0a91b763b04cd1cb",
+  "partSize": 25000,
+  "partCount": 9,
+  "parts": [
+    "part-00001",
+    "part-00002",
+    "part-00003",
+    "part-00004",
+    "part-00005",
+    "part-00006",
+    "part-00007",
+    "part-00008",
+    "part-00009"
+  ],
+  "restore": "node scripts/restore-split.js \"usm-automation/logs/lsm-reprovision.log\""
+}

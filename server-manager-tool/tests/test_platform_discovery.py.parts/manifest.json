@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_platform_discovery.py",
+  "originalSize": 25458,
+  "sha256": "a7ba1e66509b7efc3dd176abde5523b62e5629620eb3484a3c5ba061d91408ed",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_platform_discovery.py\""
+}

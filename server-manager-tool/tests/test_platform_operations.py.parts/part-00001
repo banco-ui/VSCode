@@ -1,0 +1,608 @@
+"""Cross-Platform Operations Tests — Phase 19.
+
+Tests the operation pipeline:
+
+    OperationRequest
+        ↓
+    Target Resolution (canonical_id)
+        ↓
+    Capability Resolution (SUPPORTED / UNSUPPORTED / UNKNOWN)
+        ↓
+    Safety / Authorization Gate
+        ↓
+    Preview (dry-run, no mutation)
+        ↓
+    Execution (if execution_enabled=True)
+        ↓
+    Post-Action Verification
+        ↓
+    OperationResult
+
+All fixtures are synthetic/in-memory. No live Kubernetes connection.
+No real provider mutation. Mock executor only.
+
+Safety principles verified:
+    - Execution disabled by default
+    - UNKNOWN capability → NOT supported
+    - Missing evidence → no execution
+    - No inference: target must be deterministically resolved
+    - No escalation: failure does not auto-trigger other operations
+    - Idempotency: same (target, op_type, params) → no duplicate
+    - No mutation operations in code
+    - Pod != Workload preserved
+    - Graph relationship ≠ operation causality
+"""
+from __future__ import annotations
+
+import inspect
+
+import pytest
+
+from server_manager.graph import GraphBuilder, GraphQuery
+from server_manager.models.canonical import ProviderType, SourceEvidence
+from server_manager.models.enums import Confidence
+from server_manager.operations import (
+    CapabilityDecision,
+    CapabilityResolver,
+    MockOperationExecutor,
+    OperationBlockReason,
+    OperationExecutor,
+    OperationGraphContext,
+    OperationParameters,
+    OperationPreview,
+    OperationRequest,
+    OperationResult,
+    OperationSafetyGate,
+    OperationSafetyGateResult,
+    OperationService,
+    OperationStatus,
+    OperationType,
+    TargetResolution,
+    TargetResolver,
+)
+from server_manager.recovery.models import (
+    AuthorizationLevel,
+    RecoveryActionType,
+    SafetyResult,
+)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURES
+# ════════════════════════════════════════════════════════════════════════
+
+
+def make_request(
+    op_type=OperationType.RESTART,
+    target="canon-k8s-node-01",
+    provider=ProviderType.KUBERNETES,
+    auth=AuthorizationLevel.EXECUTE,
+    execution_enabled=True,
+    evidence=None,
+    params=None,
+    operation_id="op-001",
+):
+    return OperationRequest(
+        operation_id=operation_id,
+        operation_type=op_type,
+        target_canonical_id=target,
+        provider_type=provider,
+        authorization=auth,
+        execution_enabled=execution_enabled,
+        evidence=evidence if evidence is not None else {"reason": "test"},
+        parameters=params or OperationParameters(),
+    )
+
+
+def make_resolved_target(
+    canonical_id="canon-k8s-node-01",
+    provider=ProviderType.KUBERNETES,
+    entity_type="NODE",
+):
+    return TargetResolution(
+        resolved=True,
+        canonical_id=canonical_id,
+        provider_type=provider,
+        entity_type=entity_type,
+        evidence={"source": "test"},
+    )
+
+
+def make_service(
+    simulate_failure=False,
+    simulate_verification_failure=False,
+    register_target=True,
+    register_capability=True,
+):
+    target_resolver = TargetResolver()
+    if register_target:
+        target_resolver.register_target(
+            "canon-k8s-node-01",
+            ProviderType.KUBERNETES,
+            provider_id="k8s-node-01",
+            entity_type="NODE",
+        )
+    cap_resolver = CapabilityResolver()
+    if register_capability:
+        cap_resolver.register(
+            ProviderType.KUBERNETES,
+            {OperationType.RESTART, OperationType.QUERY_STATUS, OperationType.REDEPLOY},
+        )
+    executor = MockOperationExecutor(
+        simulate_failure=simulate_failure,
+        simulate_verification_failure=simulate_verification_failure,
+    )
+    return OperationService(
+        target_resolver=target_resolver,
+        capability_resolver=cap_resolver,
+        executor=executor,
+    ), executor
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  OPERATION MODEL TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestOperationModel:
+    """OperationRequest model construction and identity."""
+
+    def test_valid_request(self):
+        req = make_request()
+        assert req.operation_id == "op-001"
+        assert req.operation_type == OperationType.RESTART
+        assert req.target_canonical_id == "canon-k8s-node-01"
+
+    def test_is_mutating_restart(self):
+        req = make_request(op_type=OperationType.RESTART)
+        assert req.is_mutating is True
+
+    def test_is_not_mutating_query_status(self):
+        req = make_request(op_type=OperationType.QUERY_STATUS)
+        assert req.is_mutating is False
+
+    def test_identity_key_deterministic(self):
+        """Same (target, op_type, params) → same identity."""
+        r1 = make_request()
+        r2 = make_request(operation_id="op-002")
+        assert r1.identity_key == r2.identity_key
+
+    def test_identity_key_differs_different_target(self):
+        r1 = make_request(target="canon-a")
+        r2 = make_request(target="canon-b")
+        assert r1.identity_key != r2.identity_key
+
+    def test_identity_key_differs_different_params(self):
+        r1 = make_request(params=OperationParameters(namespace="ns1"))
+        r2 = make_request(params=OperationParameters(namespace="ns2"))
+        assert r1.identity_key != r2.identity_key
+
+    def test_parameters_normalized_hash(self):
+        p1 = OperationParameters(namespace="default", force=True)
+        p2 = OperationParameters(namespace="default", force=True)
+        p3 = OperationParameters(namespace="default", force=False)
+        assert p1.normalized_hash() == p2.normalized_hash()
+        assert p1.normalized_hash() != p3.normalized_hash()
+
+    def test_serialization(self):
+        req = make_request()
+        data = req.model_dump()
+        assert data["operation_type"] == "RESTART"
+        assert "parameters" in data
+
+    def test_from_recovery_action_type_restart(self):
+        """Phase 18 RecoveryActionType maps to OperationType."""
+        ot = OperationType.from_recovery_action_type(RecoveryActionType.RESTART)
+        assert ot == OperationType.RESTART
+
+    def test_from_recovery_action_type_redeploy(self):
+        ot = OperationType.from_recovery_action_type(RecoveryActionType.REDEPLOY)
+        assert ot == OperationType.REDEPLOY
+
+    def test_from_recovery_action_type_restart_workload(self):
+        ot = OperationType.from_recovery_action_type(
+            RecoveryActionType.RESTART_WORKLOAD
+        )
+        assert ot == OperationType.RESTART
+
+    def test_operation_type_requires_execute_auth(self):
+        assert OperationType.RESTART.requires_execute_auth is True
+        assert OperationType.QUERY_STATUS.requires_execute_auth is False
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  TARGET RESOLUTION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestTargetResolution:
+    """Target resolution via canonical_id."""
+
+    def test_canonical_id_resolved(self):
+        resolver = TargetResolver()
+        resolver.register_target(
+            "canon-k8s-node-01", ProviderType.KUBERNETES,
+            provider_id="k8s-node-01", entity_type="NODE",
+        )
+        result = resolver.resolve("canon-k8s-node-01")
+        assert result.resolved is True
+        assert result.canonical_id == "canon-k8s-node-01"
+        assert result.provider_type == ProviderType.KUBERNETES
+        assert result.provider_id == "k8s-node-01"
+        assert result.entity_type == "NODE"
+
+    def test_provider_id_preserved_when_explicit(self):
+        resolver = TargetResolver()
+        resolver.register_target(
+            "canon-wl-01", ProviderType.KUBERNETES,
+            provider_id="k8s-wl-01", entity_type="WORKLOAD",
+        )
+        result = resolver.resolve("canon-wl-01")
+        assert result.provider_id == "k8s-wl-01"
+
+    def test_missing_target_unresolved(self):
+        resolver = TargetResolver()
+        result = resolver.resolve("canon-nonexistent")
+        assert result.resolved is False
+        assert result.ambiguous is False
+
+    def test_ambiguous_target_flag(self):
+        """An explicitly ambiguous target returns ambiguous=True."""
+        resolver = TargetResolver()
+        target = TargetResolution(
+            resolved=True, canonical_id="canon-x",
+            provider_type=ProviderType.KUBERNETES,
+            ambiguous=True,
+        )
+        resolver._targets["canon-x"] = target
+        result = resolver.resolve("canon-x")
+        assert result.ambiguous is True
+
+    def test_graph_context_resolution(self):
+        """Target resolvable via graph context when not registered."""
+        resolver = TargetResolver()
+        from server_manager.graph import GraphReport, GraphNode
+        from server_manager.graph.models import EntityType
+        node = GraphNode(
+            canonical_id="canon-graph-node-01",
+            entity_type=EntityType.NODE,
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=SourceEvidence(
+                provider_type=ProviderType.KUBERNETES,
+                confidence=Confidence.HIGH,
+            ),
+        )
+        report = GraphReport(nodes=[node], relationships=[])
+        graph_ctx = OperationGraphContext(GraphQuery(report))
+        result = resolver.resolve("canon-graph-node-01", graph_ctx)
+        assert result.resolved is True
+        assert result.provider_type == ProviderType.KUBERNETES
+
+    def test_no_inference_from_hostname(self):
+        """No inference from hostname patterns or naming conventions."""
+        resolver = TargetResolver()
+        # Unregistered target with hostname-like name → NOT resolved
+        result = resolver.resolve("node-01.example.com")
+        assert result.resolved is False
+
+    def test_no_inference_from_naming(self):
+        resolver = TargetResolver()
+        result = resolver.resolve("k8s-prod-node-01")
+        assert result.resolved is False
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CAPABILITY RESOLUTION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCapabilityResolution:
+    """Provider capability resolution."""
+
+    def test_supported(self):
+        resolver = CapabilityResolver()
+        resolver.register(
+            ProviderType.KUBERNETES,
+            {OperationType.RESTART, OperationType.QUERY_STATUS},
+        )
+        result = resolver.resolve(ProviderType.KUBERNETES, OperationType.RESTART)
+        assert result == CapabilityDecision.SUPPORTED
+        assert result.is_supported is True
+
+    def test_unsupported(self):
+        resolver = CapabilityResolver()
+        resolver.register(
+            ProviderType.KUBERNETES, {OperationType.QUERY_STATUS},
+        )
+        result = resolver.resolve(ProviderType.KUBERNETES, OperationType.RESTART)
+        assert result == CapabilityDecision.UNSUPPORTED
+        assert result.is_supported is False
+
+    def test_unknown_provider(self):
+        resolver = CapabilityResolver()
+        result = resolver.resolve(ProviderType.UNKNOWN, OperationType.RESTART)
+        assert result == CapabilityDecision.UNKNOWN
+        assert result.is_supported is False
+
+    def test_unregistered_provider(self):
+        """Provider not registered → UNKNOWN, not SUPPORTED."""
+        resolver = CapabilityResolver()
+        result = resolver.resolve(ProviderType.KUBERNETES, OperationType.RESTART)
+        assert result == CapabilityDecision.UNKNOWN
+        assert result.is_supported is False
+
+    def test_unknown_not_treated_as_supported(self):
+        """UNKNOWN is NOT SUPPORTED — no capability assumed from name."""
+        resolver = CapabilityResolver()
+        result = resolver.resolve(ProviderType.VMWARE, OperationType.RESTART)
+        assert result == CapabilityDecision.UNKNOWN
+        assert result.is_supported is False
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  AUTHORIZATION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestAuthorization:
+    """Authorization level handling."""
+
+    def test_execute_auth_allows_mutating(self):
+        service, executor = make_service()
+        req = make_request(auth=AuthorizationLevel.EXECUTE)
+        result = service.execute(req)
+        assert result.was_executed
+
+    def test_read_only_blocks_mutating(self):
+        service, executor = make_service()
+        req = make_request(auth=AuthorizationLevel.READ_ONLY)
+        result = service.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert "INSUFFICIENT" in (result.error or "")
+
+    def test_dry_run_does_not_mutate(self):
+        service, executor = make_service()
+        req = make_request(auth=AuthorizationLevel.DRY_RUN)
+        result = service.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_discovery_blocks_mutating(self):
+        service, executor = make_service()
+        req = make_request(auth=AuthorizationLevel.DISCOVERY)
+        result = service.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_query_status_allowed_read_only(self):
+        """QUERY_STATUS is non-mutating, allowed at READ_ONLY."""
+        service, executor = make_service()
+        req = make_request(
+            op_type=OperationType.QUERY_STATUS,
+            auth=AuthorizationLevel.READ_ONLY,
+            execution_enabled=False,
+        )
+        result = service.execute(req)
+        # QUERY_STATUS doesn't require execution_enabled
+        assert result.was_executed
+
+    def test_query_status_blocked_discovery(self):
+        """QUERY_STATUS requires at least READ_ONLY."""
+        service, executor = make_service()
+        req = make_request(
+            op_type=OperationType.QUERY_STATUS,
+            auth=AuthorizationLevel.DISCOVERY,
+            execution_enabled=False,
+        )
+        result = service.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PREVIEW TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPreview:
+    """Preview / dry-run tests."""
+
+    def test_preview_deterministic(self):
+        """Same request → same preview."""
+        service, _ = make_service()
+        req = make_request()
+        p1 = service.preview(req)
+        p2 = service.preview(req)
+        assert p1.expected_effect == p2.expected_effect
+        assert p1.capability_decision == p2.capability_decision
+
+    def test_preview_no_mutation(self):
+        """Preview must not perform any mutation."""
+        service, executor = make_service()
+        req = make_request()
+        service.preview(req)
+        assert executor.mutation_count == 0
+
+    def test_preview_reports_resolved_target(self):
+        service, _ = make_service()
+        req = make_request()
+        preview = service.preview(req)
+        assert preview.resolved_target is not None
+        assert preview.resolved_target.canonical_id == "canon-k8s-node-01"
+
+    def test_preview_reports_capability(self):
+        service, _ = make_service()
+        req = make_request()
+        preview = service.preview(req)
+        assert preview.capability_decision == CapabilityDecision.SUPPORTED
+
+    def test_preview_unresolved_target(self):
+        service, _ = make_service()
+        req = make_request(target="canon-unknown-99")
+        preview = service.preview(req)
+        assert preview.resolved_target is None or not preview.resolved_target.resolved
+
+    def test_preview_unsupported_capability(self):
+        service, _ = make_service()
+        req = make_request(op_type=OperationType.SCALE)
+        preview = service.preview(req)
+        assert preview.capability_decision == CapabilityDecision.UNSUPPORTED
+
+    def test_dry_run_no_mutation(self):
+        service, executor = make_service()
+        req = make_request()
+        result = service.dry_run(req)
+        assert result.status == OperationStatus.DRY_RUN
+        assert executor.mutation_count == 0
+
+    def test_dry_run_not_success(self):
+        service, _ = make_service()
+        req = make_request()
+        result = service.dry_run(req)
+        assert not result.is_success
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  EXECUTION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestExecution:
+    """Mock execution and post-action verification tests."""
+
+    def test_mock_successful_execution(self):
+        service, executor = make_service()
+        req = make_request()
+        result = service.execute(req)
+        assert result.status == OperationStatus.VERIFIED
+        assert result.is_success
+        assert executor.mutation_count == 1
+
+    def test_mock_execution_failure(self):
+        service, executor = make_service(simulate_failure=True)
+        req = make_request()
+        result = service.execute(req)
+        assert result.status == OperationStatus.FAILED
+        assert not result.is_success
+        assert result.error is not None
+
+    def test_verification_success(self):
+        service, executor = make_service()
+        req = make_request()
+        result = service.execute(req)
+        assert result.status == OperationStatus.VERIFIED
+        assert "verified" in result.evidence
+
+    def test_verification_failure(self):
+        """Execution succeeded but verification failed."""
+        service, executor = make_service(simulate_verification_failure=True)
+        req = make_request()
+        result = service.execute(req)
+        assert result.status == OperationStatus.VERIFICATION_FAILED
+        assert not result.is_success
+        assert result.was_executed
+
+    def test_executed_not_verified(self):
+        """EXECUTED is not the same as VERIFIED — need post-action evidence."""
+        service, executor = make_service()
+        req = make_request()
+        # Execute via service goes through verify(), so we test executor directly
+        target = make_resolved_target()
+        exec_result = executor.execute(req, target)
+        assert exec_result.status == OperationStatus.EXECUTED
+        assert not exec_result.is_success  # EXECUTED is not success yet
+
+    def test_blocked_execution_no_mutation(self):
+        """When safety gate blocks, executor must not be called."""
+        service, executor = make_service()
+        req = make_request(execution_enabled=False)
+        result = service.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  IDEMPOTENCY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestIdempotency:
+    """Idempotency: same (target, op_type, params) → no duplicate execution."""
+
+    def test_duplicate_request_blocked(self):
+        """First execution succeeds; second identical request is blocked."""
+        service, executor = make_service()
+        req = make_request()
+        r1 = service.execute(req)
+        assert r1.status == OperationStatus.VERIFIED
+        assert executor.mutation_count == 1
+        r2 = service.execute(req)
+        assert r2.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 1  # no additional mutation
+
+    def test_same_request_identity(self):
+        """Same (target, op_type, params) → same identity_key."""
+        r1 = make_request(operation_id="op-a")
+        r2 = make_request(operation_id="op-b")
+        assert r1.identity_key == r2.identity_key
+
+    def test_different_target_different_identity(self):
+        r1 = make_request(target="canon-a")
+        r2 = make_request(target="canon-b")
+        assert r1.identity_key != r2.identity_key
+
+    def test_different_params_different_identity(self):
+        r1 = make_request(params=OperationParameters(namespace="ns1"))
+        r2 = make_request(params=OperationParameters(namespace="ns2"))
+        assert r1.identity_key != r2.identity_key
+
+    def test_failed_operation_allows_retry(self):
+        """A FAILED operation removes from active set, allowing retry."""
+        service_fail, executor_fail = make_service(simulate_failure=True)
+        req = make_request()
+        r1 = service_fail.execute(req)
+        assert r1.status == OperationStatus.FAILED
+        assert executor_fail.mutation_count == 1
+        # Retry with non-failing executor
+        service_ok, executor_ok = make_service()
+        r2 = service_ok.execute(req)
+        assert r2.status == OperationStatus.VERIFIED
+        assert executor_ok.mutation_count == 1
+
+    def test_no_auto_retry_on_failure(self):
+        """Failure does not auto-trigger another operation."""
+        service, executor = make_service(simulate_failure=True)
+        req = make_request()
+        result = service.execute(req)
+        assert result.status == OperationStatus.FAILED
+        # No escalation — mutation count stays at 1
+        assert executor.mutation_count == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  SAFETY GATE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestSafetyGate:
+    """Direct safety gate evaluation tests."""
+
+    def test_valid_request_passes(self):
+        gate = OperationSafetyGate(active_identity_keys=set())
+        req = make_request()
+        target = make_resolved_target()
+        cap = CapabilityDecision.SUPPORTED
+        result = gate.evaluate(req, target, cap, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.PASS
+
+    def test_unresolved_target_blocked(self):
+        gate = OperationSafetyGate()
+        req = make_request()
+        target = TargetResolution(resolved=False, canonical_id="")
+        result = gate.evaluate(req, target, CapabilityDecision.SUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.TARGET_UNRESOLVED
+
+    def test_ambiguous_target_blocked(self):
+        gate = OperationSafetyGate()
+        req = make_request()
+        target = TargetResolution(resolved=True, canonical_id="canon-x", ambiguous=True, 

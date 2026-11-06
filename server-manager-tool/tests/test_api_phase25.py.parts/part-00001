@@ -1,0 +1,560 @@
+"""Phase 25 — Real-time Status Update & Dashboard Data Freshness Tests.
+
+Tests for the improved polling-based refresh mechanism:
+- Duplicate request prevention via _loading guard
+- Tab visibility handling via visibilitychange event
+- Data freshness tracking (last successful refresh, stale indicator)
+- Partial failure handling (partial stale indicator)
+- Discovery POST safety in auto-refresh context
+- Operations/Recovery execute API non-invocation
+- Credential non-storage and error response safety
+
+SAFETY: READ_ONLY, no live mutation, no credential exposure.
+"""
+from __future__ import annotations
+
+import inspect
+import os
+import re
+
+import pytest
+from fastapi.testclient import TestClient
+
+from server_manager.api.app import create_app
+from server_manager.api import dependencies as deps
+from server_manager.api.dependencies import ManagementContext
+from server_manager.discovery.service import PlatformDiscovery
+from server_manager.models.canonical import ProviderType
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.providers import KubernetesProviderAdapter
+
+
+# ── Mock K8s Topology (same as Phase 23/24 tests) ──────────────────
+
+class MockK8sObject:
+    def __init__(self, data): self._data = data
+    def to_dict(self): return self._data
+
+class MockK8sListResponse:
+    def __init__(self, items): self.items = items
+    def to_dict(self):
+        return {"items": [i.to_dict() if hasattr(i, "to_dict") else i for i in self.items]}
+
+class MockCoreV1Api:
+    def __init__(self, topology): self._topology = topology
+    def get_api_version(self): return {"major": "1", "minor": "28"}
+    def list_namespace(self):
+        return MockK8sListResponse([MockK8sObject(ns) for ns in self._topology.get("namespaces", [])])
+    def list_node(self):
+        return MockK8sListResponse([MockK8sObject(n) for n in self._topology.get("nodes", [])])
+    def list_pod_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(p) for p in self._topology.get("pods", [])])
+    def list_service_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(s) for s in self._topology.get("services", [])])
+    def list_persistent_volume(self):
+        return MockK8sListResponse([MockK8sObject(pv) for pv in self._topology.get("persistent_volumes", [])])
+    def list_persistent_volume_claim_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(pvc) for pvc in self._topology.get("persistent_volume_claims", [])])
+
+
+def make_namespace(name):
+    return {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "uid": "uid-ns-" + name}}
+
+def make_node(name, uid=None, ready=True):
+    conditions = [
+        {"type": "Ready", "status": "True" if ready else "False"},
+        {"type": "MemoryPressure", "status": "False"},
+        {"type": "DiskPressure", "status": "False"},
+        {"type": "PIDPressure", "status": "False"},
+    ]
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or "uid-node-" + name}, "spec": {},
+            "status": {"capacity": {"cpu": "8", "memory": "16256396Ki", "pods": "110"},
+                       "allocatable": {"cpu": "7500m", "memory": "15256396Ki", "pods": "110"},
+                       "conditions": conditions}}
+
+def make_pod(name, uid=None, namespace="default", node_name="node-01", phase="Running", ready=True):
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or "uid-pod-" + name, "namespace": namespace},
+            "spec": {"nodeName": node_name, "containers": [{"name": "main", "image": "nginx:1.25", "resources": {}}]},
+            "status": {"phase": phase, "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]}}
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or "uid-svc-" + name, "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+def make_pv(name, uid=None, phase="Bound"):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or "uid-pv-" + name},
+            "spec": {"capacity": {"storage": "10Gi"}}, "status": {"phase": phase}}
+
+def make_pvc(name, uid=None, phase="Bound"):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or "uid-pvc-" + name, "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}}, "status": {"phase": phase}}
+
+
+def make_healthy_cluster_topology():
+    return {
+        "cluster": {"name": "test-cluster-01", "version": "v1.28.0"},
+        "namespaces": [make_namespace("default"), make_namespace("ran")],
+        "nodes": [make_node("node-01", uid="uid-node-01"), make_node("node-02", uid="uid-node-02")],
+        "pods": [
+            make_pod("app-pod-01", uid="uid-pod-app-01", namespace="default", node_name="node-01"),
+            make_pod("app-pod-02", uid="uid-pod-app-02", namespace="ran", node_name="node-02"),
+            make_pod("app-pod-03", uid="uid-pod-app-03", namespace="default", node_name="node-01"),
+        ],
+        "services": [make_service("app-svc", uid="uid-svc-app")],
+        "persistent_volumes": [make_pv("pv-01", uid="uid-pv-01")],
+        "persistent_volume_claims": [make_pvc("pvc-01", uid="uid-pvc-01")],
+    }
+
+
+# ── Build management context (same pattern as Phase 23/24) ─────────
+
+class _NoOpOperationExecutor:
+    """No-op executor that only supports preview, never execute."""
+    def preview(self, request, target, capability):
+        from server_manager.operations.models import OperationPreview
+        from server_manager.recovery.models import SafetyResult
+        return OperationPreview(request=request, resolved_target=target,
+            capability_decision=capability, expected_effect="Query status preview",
+            safety_result=SafetyResult.BLOCKED, execution_allowed=False)
+    def execute(self, request, target): raise AssertionError("execute() should not be called")
+    def verify(self, request, target, execution_result): raise AssertionError("verify() should not be called")
+
+class _MockRecoveryExecutor:
+    def preview(self, action):
+        from server_manager.recovery.models import RecoveryPreview
+        return RecoveryPreview(action=action, expected_effect="Restart preview")
+    def execute(self, action): raise AssertionError("execute() should not be called")
+    def verify(self, action, post_health=None): raise AssertionError("verify() should not be called")
+
+
+def build_management_context(topology, provider_id="test-cluster"):
+    from server_manager.fault.service import FaultDetectionService
+    from server_manager.graph.service import GraphBuilder, GraphQuery
+    from server_manager.health.service import HealthService
+    from server_manager.monitoring.service import MonitoringService
+    from server_manager.operations.models import OperationType
+    from server_manager.operations.service import (
+        CapabilityResolver, OperationExecutor, OperationGraphContext,
+        OperationService, TargetResolver,
+    )
+    from server_manager.recovery.models import AuthorizationLevel
+    from server_manager.recovery.service import RecoveryExecutor, RecoveryService
+    from server_manager.visibility.service import AlertService, OperationalVisibilityService
+
+    normalizer = KubernetesProviderNormalizer()
+    discovery = PlatformDiscovery()
+    adapter = KubernetesProviderAdapter(provider_id=provider_id, client=MockCoreV1Api(topology))
+    discovery_result = discovery.discover(adapter, normalizer)
+    health_report = HealthService().assess(discovery_result)
+    graph_query = GraphQuery(GraphBuilder().build(discovery_result))
+    monitoring_report = MonitoringService().monitor(health_report)
+    fault_result = FaultDetectionService().detect(
+        monitoring_report.observations, monitoring_report.state_changes)
+    alert_service = AlertService()
+    for fault in fault_result.faults: alert_service.create_alert(fault)
+    visibility = OperationalVisibilityService(alert_service=alert_service)
+    visibility.set_inventory(discovery_result.inventory)
+    visibility.set_health_report(health_report)
+    visibility.set_fault_result(fault_result)
+    visibility.set_graph_query(graph_query)
+    target_resolver = TargetResolver()
+    for node in discovery_result.inventory.nodes:
+        target_resolver.register_target(canonical_id=node.canonical_id,
+            provider_type=ProviderType.KUBERNETES, provider_id=provider_id, entity_type="Node")
+    cap_resolver = CapabilityResolver()
+    cap_resolver.register(ProviderType.KUBERNETES, {OperationType.RESTART, OperationType.QUERY_STATUS})
+    operation_service = OperationService(target_resolver=target_resolver, capability_resolver=cap_resolver,
+        executor=_NoOpOperationExecutor(), graph_context=OperationGraphContext(graph_query))
+    recovery_service = RecoveryService(executor=_MockRecoveryExecutor(), execution_enabled=False,
+        authorization=AuthorizationLevel.READ_ONLY)
+    ctx = ManagementContext()
+    ctx.discovery_result = discovery_result
+    ctx.health_report = health_report
+    ctx.graph_query = graph_query
+    ctx.monitoring_service = MonitoringService()
+    ctx.monitoring_report = monitoring_report
+    ctx.fault_result = fault_result
+    ctx.alert_service = alert_service
+    ctx.visibility = visibility
+    ctx.operation_service = operation_service
+    ctx.recovery_service = recovery_service
+    return ctx
+
+
+# ── Fixtures ──────────────────────────────────────────────────────
+
+@pytest.fixture
+def client():
+    topology = make_healthy_cluster_topology()
+    ctx = build_management_context(topology)
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+@pytest.fixture
+def unconfigured_client():
+    app = create_app()
+    ctx = ManagementContext()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+_UI_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "src", "server_manager", "dashboard", "ui",
+)
+
+def _read_ui(filename):
+    with open(os.path.join(_UI_DIR, filename), "r", encoding="utf-8") as f:
+        return f.read()
+
+
+# ── 1. Duplicate Request Prevention ───────────────────────────────
+
+class TestDuplicateRequestPrevention:
+    def test_loading_flag_in_app_state(self):
+        content = _read_ui("js/app.js")
+        assert "_loading" in content
+
+    def test_refresh_guarded_by_loading(self):
+        content = _read_ui("js/app.js")
+        refresh_match = re.search(r'refresh:\s*function\s*\(\)\s*\{[^}]+\}', content)
+        assert refresh_match, "refresh function not found"
+        assert "_loading" in refresh_match.group(0)
+
+    def test_set_loading_method_present(self):
+        content = _read_ui("js/app.js")
+        assert "_setLoading" in content
+        assert "btn.disabled" in content
+
+    def test_set_loading_disables_refresh_button(self):
+        content = _read_ui("js/app.js")
+        assert "btn.disabled = loading" in content
+
+    def test_fetchall_sets_loading(self):
+        content = _read_ui("js/app.js")
+        fetchall_match = re.search(r'_fetchAll:\s*function.*?\}(?:\s*,|\s*\n\s*_)', content, re.DOTALL)
+        assert fetchall_match, "_fetchAll method not found"
+        fetchall_body = fetchall_match.group(0)
+        assert "_setLoading(true)" in fetchall_body
+        assert "_setLoading(false)" in fetchall_body
+
+    def test_all_render_functions_use_fetchall(self):
+        content = _read_ui("js/app.js")
+        assert ".catch(function () { return null; })" not in content
+        assert "self._updateLastRefresh(); self.hideError()" not in content
+
+
+# ── 2. Auto-Refresh Enable/Disable ────────────────────────────────
+
+class TestAutoRefreshToggle:
+    def test_auto_refresh_state_present(self):
+        content = _read_ui("js/app.js")
+        assert "_autoRefresh" in content
+
+    def test_auto_refresh_interval_at_least_30s(self):
+        content = _read_ui("js/app.js")
+        match = re.search(r'_autoRefreshInterval:\s*(\d+)', content)
+        assert match, "_autoRefreshInterval not found"
+        interval = int(match.group(1))
+        assert interval >= 30000, f"Auto-refresh interval {interval}ms < 30000ms"
+
+    def test_start_auto_refresh_present(self):
+        content = _read_ui("js/app.js")
+        assert "_startAutoRefresh" in content
+
+    def test_stop_auto_refresh_present(self):
+        content = _read_ui("js/app.js")
+        assert "_stopAutoRefresh" in content
+
+    def test_auto_refresh_checkbox_in_html(self):
+        html = _read_ui("index.html")
+        assert 'id="auto-refresh"' in html
+        assert 'type="checkbox"' in html
+
+    def test_auto_refresh_checks_document_hidden(self):
+        content = _read_ui("js/app.js")
+        assert "document.hidden" in content
+
+    def test_auto_refresh_toggle_label_shows_interval(self):
+        html = _read_ui("index.html")
+        assert "30s" in html or "30" in html
+
+
+# ── 3. Tab Visibility Handling ────────────────────────────────────
+
+class TestTabVisibility:
+    def test_visibilitychange_listener_present(self):
+        content = _read_ui("js/app.js")
+        assert "visibilitychange" in content
+
+    def test_visibility_handler_checks_not_hidden(self):
+        content = _read_ui("js/app.js")
+        vis_match = re.search(r"visibilitychange.*?document\.hidden", content, re.DOTALL)
+        assert vis_match, "visibilitychange handler must check document.hidden"
+
+    def test_visibility_handler_refreshes_on_visible(self):
+        content = _read_ui("js/app.js")
+        vis_section = content[content.find("visibilitychange"):content.find("visibilitychange") + 200]
+        assert "refresh" in vis_section
+
+
+# ── 4. Data Freshness Tracking ────────────────────────────────────
+
+class TestDataFreshness:
+    def test_last_refresh_tracking_present(self):
+        content = _read_ui("js/app.js")
+        assert "_lastRefresh" in content
+
+    def test_update_last_refresh_present(self):
+        content = _read_ui("js/app.js")
+        assert "_updateLastRefresh" in content
+
+    def test_update_last_refresh_sets_date(self):
+        content = _read_ui("js/app.js")
+        update_match = re.search(r'_updateLastRefresh:\s*function.*?_lastRefresh\s*=\s*new\s+Date', content, re.DOTALL)
+        assert update_match, "_updateLastRefresh must set _lastRefresh to new Date()"
+
+    def test_mark_stale_present(self):
+        content = _read_ui("js/app.js")
+        assert "_markStale" in content
+
+    def test_mark_partial_stale_present(self):
+        content = _read_ui("js/app.js")
+        assert "_markPartialStale" in content
+
+    def test_stale_indicator_in_css(self):
+        css = _read_ui("css/styles.css")
+        assert "stale-indicator" in css
+
+    def test_last_refresh_displayed_in_header(self):
+        html = _read_ui("index.html")
+        assert 'id="last-refresh"' in html
+
+    def test_update_last_refresh_clears_stale(self):
+        content = _read_ui("js/app.js")
+        update_section = content[content.find("_updateLastRefresh:"):content.find("_updateLastRefresh:") + 200]
+        assert "_stale = false" in update_section
+
+    def test_mark_stale_preserves_old_time(self):
+        content = _read_ui("js/app.js")
+        stale_section = content[content.find("_markStale:"):content.find("_markStale:") + 300]
+        assert "this._lastRefresh = new Date()" not in stale_section
+
+
+# ── 5. Partial Failure Handling ───────────────────────────────────
+
+class TestPartialFailureHandling:
+    def test_error_tracking_in_fetchall(self):
+        content = _read_ui("js/app.js")
+        assert "_error" in content
+
+    def test_fetchall_counts_errors_and_successes(self):
+        content = _read_ui("js/app.js")
+        assert "errors" in content and "successes" in content
+
+    def test_fetchall_calls_mark_partial_stale_on_partial_failure(self):
+        content = _read_ui("js/app.js")
+        fetchall_section = content[content.find("_fetchAll:"):content.find("_fetchAll:") + 800]
+        assert "_markPartialStale" in fetchall_section
+
+    def test_fetchall_calls_mark_stale_on_total_failure(self):
+        content = _read_ui("js/app.js")
+        fetchall_section = content[content.find("_fetchAll:"):content.find("_fetchAll:") + 800]
+        assert "_markStale" in fetchall_section
+
+    def test_fetchall_calls_update_last_refresh_on_success(self):
+        content = _read_ui("js/app.js")
+        fetchall_section = content[content.find("_fetchAll:"):content.find("_fetchAll:") + 800]
+        assert "_updateLastRefresh" in fetchall_section
+
+    def test_fetchall_returns_null_for_failed_calls(self):
+        content = _read_ui("js/app.js")
+        fetchall_section = content[content.find("_fetchAll:"):content.find("_fetchAll:") + 1200]
+        assert "null" in fetchall_section
+
+    def test_overview_shows_stale_warning(self):
+        content = _read_ui("js/app.js")
+        overview_section = content[content.find("_renderOverview:"):]
+        assert "stale" in overview_section[:2000].lower()
+
+    def test_partial_stale_shows_failed_count(self):
+        content = _read_ui("js/app.js")
+        partial_section = content[content.find("_markPartialStale:"):]
+        assert "failedCount" in partial_section[:300] or "failed" in partial_section[:300].lower()
+
+
+# ── 6. Discovery POST Safety ──────────────────────────────────────
+
+class TestDiscoveryPostSafety:
+    def test_discovery_not_called_in_fetchall(self):
+        content = _read_ui("js/app.js")
+        fetchall_section = content[content.find("_fetchAll:"):content.find("_fetchAll:") + 800]
+        assert "discoveryRun" not in fetchall_section
+
+    def test_discovery_only_in_run_discovery(self):
+        """discoveryRun POST should only be called from _runDiscovery, not auto-refresh."""
+        content = _read_ui("js/app.js")
+        # Verify discoveryRun is not inside _fetchAll or _startAutoRefresh
+        fetchall_section = content[content.find("_fetchAll:"):content.find("_fetchAll:") + 1200]
+        assert "discoveryRun" not in fetchall_section
+        timer_section = content[content.find("_startAutoRefresh:"):content.find("_startAutoRefresh:") + 300]
+        assert "discoveryRun" not in timer_section
+
+    def test_discovery_post_not_auto_repeated(self):
+        content = _read_ui("js/app.js")
+        timer_section = content[content.find("_startAutoRefresh:"):content.find("_startAutoRefresh:") + 300]
+        assert "discoveryRun" not in timer_section
+
+    def test_no_operations_execute_called(self):
+        content = _read_ui("js/api-client.js")
+        assert "/operations/execute" not in content
+        assert "/recovery/execute" not in content
+
+    def test_no_put_delete_patch_in_api_client(self):
+        content = _read_ui("js/api-client.js")
+        for m in ["PUT", "DELETE", "PATCH"]:
+            assert f"method: '{m}'" not in content
+            assert f'method: "{m}"' not in content
+
+
+# ── 7. Credential Safety ──────────────────────────────────────────
+
+class TestCredentialSafety:
+    def test_no_credential_storage(self):
+        for f in ["js/api-client.js", "js/app.js"]:
+            content = _read_ui(f)
+            assert "localStorage.setItem" not in content
+            assert "localStorage.getItem" not in content
+
+    def test_no_token_in_app_js(self):
+        content = _read_ui("js/app.js")
+        assert "kubeconfig" not in content.lower()
+
+    def test_api_errors_safe(self, unconfigured_client):
+        c, _ = unconfigured_client
+        body = c.get("/api/v1/inventory").json()
+        assert "detail" in body
+        detail = body["detail"]
+        assert "code" in detail
+        assert "message" in detail
+        assert "Traceback" not in str(body)
+
+
+# ── 8. Unknown State Policy ───────────────────────────────────────
+
+class TestUnknownStatePolicy:
+    def test_unknown_not_converted_to_healthy(self):
+        """UNKNOWN status must not be converted to HEALTHY."""
+        content = _read_ui("js/app.js")
+        # badgeClass function should map UNKNOWN to badge-unknown
+        badge_match = re.search(r'function\s+badgeClass\(.*?\{.*?\}', content, re.DOTALL)
+        assert badge_match, "badgeClass function not found"
+        badge_body = badge_match.group(0)
+        assert "badge-unknown" in badge_body
+
+    def test_empty_values_not_converted_to_zero(self):
+        content = _read_ui("js/app.js")
+        val_section = content[content.find("function val("):content.find("function val(") + 200]
+        assert "no-data" in val_section or "\u2014" in val_section
+
+
+# ── 9. CSS Styles for Freshness ───────────────────────────────────
+
+class TestFreshnessStyles:
+    def test_stale_indicator_css_exists(self):
+        css = _read_ui("css/styles.css")
+        assert ".stale-indicator" in css
+
+    def test_refresh_loading_class_exists(self):
+        css = _read_ui("css/styles.css")
+        assert "btn-refresh-loading" in css or "refresh-loading" in css
+
+    def test_spin_animation_exists(self):
+        css = _read_ui("css/styles.css")
+        assert "spin" in css
+        assert "@keyframes" in css
+
+
+# ── 10. API Integration — Manual Refresh ───────────────────────────
+
+class TestManualRefreshIntegration:
+    def test_manual_refresh_returns_data(self, client):
+        c, ctx = client
+        r = c.get("/api/v1/visibility/summary")
+        assert r.status_code == 200
+        body = r.json()
+        assert "generated_at" in body
+
+    def test_refresh_all_endpoints_accessible(self, client):
+        c, _ = client
+        endpoints = [
+            "/api/v1/system/health", "/api/v1/system/readiness",
+            "/api/v1/inventory", "/api/v1/inventory/entities",
+            "/api/v1/health", "/api/v1/faults",
+            "/api/v1/visibility/summary", "/api/v1/visibility/alerts",
+            "/api/v1/graph/summary",
+        ]
+        for ep in endpoints:
+            r = c.get(ep)
+            assert r.status_code == 200, f"{ep} returned {r.status_code}"
+
+    def test_refresh_fails_gracefully_when_unconfigured(self, unconfigured_client):
+        c, _ = unconfigured_client
+        r = c.get("/api/v1/inventory")
+        assert r.status_code == 503
+        body = r.json()
+        assert "detail" in body
+        assert body["detail"]["code"] == "SERVICE_UNAVAILABLE"
+
+    def test_system_health_always_ok(self, unconfigured_client):
+        c, _ = unconfigured_client
+        r = c.get("/api/v1/system/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+
+# ── 11. Regression — Phase 23 UI ──────────────────────────────────
+
+class TestPhase23Regression:
+    def test_all_nav_items_present(self, client):
+        c, _ = client
+        html = c.get("/dashboard/").text
+        for nav_item in ["overview", "inventory", "topology", "health", "faults", "operations"]:
+            assert 'data-route="' + nav_item + '"' in html
+
+    def test_refresh_button_present(self, client):
+        c, _ = client
+        assert 'id="btn-refresh"' in c.get("/dashboard/").text
+
+    def test_auto_refresh_toggle_present(self, client):
+        c, _ = client
+        assert 'id="auto-refresh"' in c.get("/dashboard/").text
+
+    def test_error_banner_present(self, client):
+        c, _ = client
+        assert 'id="error-banner"' in c.get("/dashboard/").text
+
+    def test_last_refresh_element_present(self, client):
+        c, _ = client
+        assert 'id="last-refresh"' in c.get("/dashboard/").text
+
+    def test_api_status_present(self, client):
+        c, _ = client
+        html = c.get("/dashboard/").text
+        assert "api-status" in html
+        assert "aria-live" in html
+
+    def test_scripts_loaded(self, client):
+        c, _ = client
+        html = c.get("/dashboard/").text
+        assert "js/api-client.js" in html
+        assert "js/app.js" in html
+
+    def test_css_loaded(self, client):
+        c, _ = client
+    

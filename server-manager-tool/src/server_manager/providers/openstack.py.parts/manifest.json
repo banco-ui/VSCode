@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/providers/openstack.py",
+  "originalSize": 17582,
+  "sha256": "9631e01529c6e5523f3342a847aa50bbd3105b418663c85559a1870cad1f3631",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/providers/openstack.py\""
+}

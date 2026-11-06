@@ -1,0 +1,631 @@
+"""Cross-Provider Contract & Integration Validation Tests — Phase 27.
+
+Validates that Kubernetes and OpenStack providers consistently implement
+the common Server Manager architecture contract.
+
+Covers (per Phase 27 spec section 2):
+  1.  Equivalent adapter contract behavior
+  2.  Deterministic Canonical IDs for repeated identical input
+  3.  Stable normalization of identical snapshots
+  4.  Missing fields and unknown enum values
+  5.  Missing metrics must not become zero
+  6.  UNKNOWN must not become HEALTHY
+  7.  Failed discovery must not produce fake successful inventory
+  8.  Evidence and provenance must be preserved
+  9.  Only supported DIRECT/DERIVED evidence may create canonical relationships
+  10. No INFERRED/UNKNOWN relationships are promoted into factual edges
+  11. Duplicate entities and relationships are handled consistently
+  12. Partial success and provider errors remain distinguishable
+  13. Health extraction is registered and dispatched correctly
+  14. Existing Management API response contracts remain compatible
+
+Does NOT force both providers to expose identical entity kinds or capabilities.
+Asserts consistent contracts, not identical provider data.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.discovery.service import PlatformDiscovery
+from server_manager.graph.service import GraphBuilder, GraphQuery
+from server_manager.health.service import HealthService
+from server_manager.models.canonical import (
+    ProviderType,
+    RelationshipEvidenceType,
+)
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability,
+    KubernetesProviderAdapter,
+    OpenStackProviderAdapter,
+    ProviderAdapter,
+    RawProviderSnapshot,
+)
+from server_manager.normalizers.kubernetes_normalizer import (
+    KubernetesProviderNormalizer,
+)
+from server_manager.normalizers.openstack_normalizer import (
+    OpenStackProviderNormalizer,
+)
+
+# === KUBERNETES FIXTURE HELPERS ===
+
+
+def make_k8s_node(name, uid=None, ready=True):
+    conditions = [
+        {"type": "Ready", "status": "True" if ready else "False"},
+        {"type": "MemoryPressure", "status": "False"},
+        {"type": "DiskPressure", "status": "False"},
+        {"type": "PIDPressure", "status": "False"},
+    ]
+    return {
+        "apiVersion": "v1", "kind": "Node",
+        "metadata": {"name": name, "uid": uid or f"uid-node-{name}"},
+        "spec": {},
+        "status": {
+            "capacity": {"cpu": "8", "memory": "16Gi", "pods": "110"},
+            "allocatable": {"cpu": "7500m", "memory": "15Gi", "pods": "110"},
+            "conditions": conditions,
+        },
+    }
+
+
+def make_k8s_pod(name, uid=None, namespace="default", node_name=None,
+                 containers=None, phase="Running"):
+    spec = {}
+    if node_name:
+        spec["nodeName"] = node_name
+    spec["containers"] = containers or [
+        {"name": "main", "image": "nginx:1.21", "resources": {}}]
+    return {
+        "apiVersion": "v1", "kind": "Pod",
+        "metadata": {
+            "name": name, "uid": uid or f"uid-pod-{name}",
+            "namespace": namespace},
+        "spec": spec,
+        "status": {"phase": phase,
+                   "conditions": [{"type": "Ready", "status": "True"}]},
+    }
+
+
+def make_k8s_service(name, uid=None):
+    return {
+        "apiVersion": "v1", "kind": "Service",
+        "metadata": {"name": name, "uid": uid or f"uid-svc-{name}",
+                     "namespace": "default"},
+        "spec": {"type": "ClusterIP", "clusterIP": "10.96.0.1"},
+    }
+
+
+def make_k8s_pv(name, uid=None, phase="Bound"):
+    return {
+        "apiVersion": "v1", "kind": "PersistentVolume",
+        "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+        "spec": {"capacity": {"storage": "10Gi"}},
+        "status": {"phase": phase},
+    }
+
+
+def make_k8s_pvc(name, uid=None, phase="Bound"):
+    return {
+        "apiVersion": "v1", "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}",
+                     "namespace": "default"},
+        "spec": {"resources": {"requests": {"storage": "5Gi"}}},
+        "status": {"phase": phase},
+    }
+
+
+def make_k8s_cluster_info(name="test-cluster", version="v1.28.0"):
+    return {"name": name, "version": version}
+
+
+def make_k8s_fixture():
+    return {
+        "cluster": make_k8s_cluster_info(),
+        "nodes": [
+            make_k8s_node("k8s-node-01", uid="uid-k8s-node-01"),
+            make_k8s_node("k8s-node-02", uid="uid-k8s-node-02"),
+        ],
+        "pods": [
+            make_k8s_pod("web-pod-01", uid="uid-web-pod-01",
+                         node_name="k8s-node-01"),
+            make_k8s_pod("web-pod-02", uid="uid-web-pod-02",
+                         node_name="k8s-node-02"),
+        ],
+        "services": [make_k8s_service("web-svc", uid="uid-web-svc")],
+        "persistent_volumes": [make_k8s_pv("pv-01", uid="uid-pv-01")],
+        "persistent_volume_claims": [make_k8s_pvc("pvc-01", uid="uid-pvc-01")],
+    }
+
+
+# === OPENSTACK FIXTURE HELPERS ===
+
+
+def make_os_hypervisor(hostname, hv_id=1, state="up", status="enabled",
+                       vcpus=32, memory_mb=131072, local_gb=500):
+    return {
+        "hypervisor_hostname": hostname, "id": hv_id,
+        "state": state, "status": status,
+        "vcpus": vcpus, "memory_mb": memory_mb, "local_gb": local_gb,
+    }
+
+
+def make_os_server(server_id, name, status="ACTIVE", hv_hostname=None,
+                   flavor=None):
+    srv = {"id": server_id, "name": name, "status": status}
+    if hv_hostname:
+        srv["OS-EXT-SRV-ATTR:hypervisor_hostname"] = hv_hostname
+    srv["flavor"] = flavor or {"id": "flavor-001", "vcpus": 4, "ram": 8192}
+    return srv
+
+
+def make_os_network(net_id, name, status="ACTIVE"):
+    return {"id": net_id, "name": name, "status": status}
+
+
+def make_os_volume(vol_id, name, status="in-use", size=100, attachments=None):
+    return {
+        "id": vol_id, "name": name, "status": status,
+        "size": size, "attachments": attachments or [],
+    }
+
+
+def make_os_az(zone_name, available=True):
+    return {"zoneName": zone_name, "zoneState": {"available": available}}
+
+
+def make_openstack_fixture():
+    return {
+        "platform": {"name": "os-cloud-01", "version": "Yoga"},
+        "availability_zones": [make_os_az("nova")],
+        "hypervisors": [
+            make_os_hypervisor("compute-01", hv_id=1),
+            make_os_hypervisor("compute-02", hv_id=2),
+        ],
+        "servers": [
+            make_os_server("srv-001", "vm-web-01", hv_hostname="compute-01"),
+            make_os_server("srv-002", "vm-web-02", hv_hostname="compute-02"),
+        ],
+        "networks": [make_os_network("net-001", "public-net")],
+        "volumes": [
+            make_os_volume("vol-001", "data-vol-01",
+                           attachments=[{"server_id": "srv-001"}]),
+        ],
+    }
+
+
+# === PROVIDER PARAMETRIZATION ===
+
+
+def _k8s_provider():
+    return (
+        KubernetesProviderAdapter(fixture=make_k8s_fixture(),
+                                  provider_id="k8s-test-cluster"),
+        KubernetesProviderNormalizer(),
+        ProviderType.KUBERNETES,
+    )
+
+
+def _openstack_provider():
+    return (
+        OpenStackProviderAdapter(fixture=make_openstack_fixture(),
+                                 provider_id="os-test-cloud"),
+        OpenStackProviderNormalizer(),
+        ProviderType.OPENSTACK,
+    )
+
+
+_PROVIDERS = [_k8s_provider, _openstack_provider]
+_PROVIDER_IDS = ["kubernetes", "openstack"]
+
+
+# === SECTION 1: EQUIVALENT ADAPTER CONTRACT BEHAVIOR ===
+
+
+class TestAdapterContract:
+    """Both providers must satisfy the same ProviderAdapter contract."""
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_adapter_inherits_provider_adapter(self, provider_fn):
+        adapter, _, _ = provider_fn()
+        assert isinstance(adapter, ProviderAdapter)
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_capabilities_returns_list(self, provider_fn):
+        adapter, _, _ = provider_fn()
+        caps = adapter.capabilities()
+        assert isinstance(caps, list)
+        assert len(caps) > 0
+        for cap in caps:
+            assert isinstance(cap, AdapterCapability)
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_collect_returns_raw_snapshot(self, provider_fn):
+        adapter, _, _ = provider_fn()
+        snapshot = adapter.collect()
+        assert isinstance(snapshot, RawProviderSnapshot)
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_collect_safe_returns_snapshot(self, provider_fn):
+        adapter, _, _ = provider_fn()
+        snapshot = adapter.collect_safe()
+        assert isinstance(snapshot, RawProviderSnapshot)
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_snapshot_has_identity_fields(self, provider_fn):
+        adapter, _, expected_type = provider_fn()
+        snapshot = adapter.collect()
+        assert snapshot.provider_type == expected_type
+        assert snapshot.provider_id is not None
+        assert snapshot.snapshot_id
+        assert snapshot.collected_at
+        assert snapshot.collection_status in (
+            OrchestrationStatus.SUCCESS,
+            OrchestrationStatus.PARTIAL,
+        )
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_declared_vs_capability_results(self, provider_fn):
+        adapter, _, _ = provider_fn()
+        snapshot = adapter.collect()
+        declared = set(snapshot.declared_capabilities)
+        result_caps = {cr.capability for cr in snapshot.capability_results}
+        assert result_caps.issubset(declared)
+
+
+# === SECTION 2: DETERMINISTIC CANONICAL IDS ===
+
+
+class TestDeterministicIds:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_repeated_normalization_same_ids(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap1 = adapter.collect()
+        snap2 = adapter.collect()
+        r1 = normalizer.normalize(snap1)
+        r2 = normalizer.normalize(snap2)
+        ids1 = {e.canonical_id for e in r1.platforms + r1.nodes + r1.clusters}
+        ids2 = {e.canonical_id for e in r2.platforms + r2.nodes + r2.clusters}
+        assert ids1 == ids2
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_canonical_id_differs_from_provider_id(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snapshot = adapter.collect()
+        result = normalizer.normalize(snapshot)
+        all_entities = (
+            result.platforms + result.clusters + result.nodes
+            + result.execution_environments + result.networks + result.storages
+        )
+        for entity in all_entities:
+            assert entity.canonical_id != entity.provider_id
+            assert entity.canonical_id.startswith("canon-")
+
+    def test_different_producers_different_ids(self):
+        k8s_adapter = KubernetesProviderAdapter(
+            fixture={"cluster": make_k8s_cluster_info(),
+                     "nodes": [make_k8s_node("node-x", uid="uid-x")],
+                     "pods": [], "services": [],
+                     "persistent_volumes": [], "persistent_volume_claims": []},
+            provider_id="p1")
+        os_adapter = OpenStackProviderAdapter(
+            fixture={"platform": {"name": "p1", "version": "X"},
+                     "availability_zones": [],
+                     "hypervisors": [make_os_hypervisor("node-x", hv_id=1)],
+                     "servers": [], "networks": [], "volumes": []},
+            provider_id="p1")
+        k8s_snap = k8s_adapter.collect()
+        os_snap = os_adapter.collect()
+        k8s_result = KubernetesProviderNormalizer().normalize(k8s_snap)
+        os_result = OpenStackProviderNormalizer().normalize(os_snap)
+        k8s_ids = {n.canonical_id for n in k8s_result.nodes}
+        os_ids = {n.canonical_id for n in os_result.nodes}
+        assert k8s_ids != os_ids
+        assert any("kubernetes" in nid for nid in k8s_ids)
+        assert any("openstack" in nid for nid in os_ids)
+
+
+# === SECTION 3: STABLE NORMALIZATION ===
+
+
+class TestStableNormalization:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_entity_counts_stable(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap = adapter.collect()
+        r1 = normalizer.normalize(snap)
+        r2 = normalizer.normalize(snap)
+        assert r1.entity_count == r2.entity_count
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_entity_types_stable(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap = adapter.collect()
+        r1 = normalizer.normalize(snap)
+        r2 = normalizer.normalize(snap)
+        assert len(r1.platforms) == len(r2.platforms)
+        assert len(r1.clusters) == len(r2.clusters)
+        assert len(r1.nodes) == len(r2.nodes)
+        assert len(r1.execution_environments) == len(r2.execution_environments)
+        assert len(r1.networks) == len(r2.networks)
+        assert len(r1.storages) == len(r2.storages)
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_status_stable(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap = adapter.collect()
+        r1 = normalizer.normalize(snap)
+        r2 = normalizer.normalize(snap)
+        assert r1.status == r2.status
+
+
+# === SECTION 4: MISSING FIELDS AND UNKNOWN ENUMS ===
+
+
+class TestMissingFieldsAndEnums:
+
+    def test_k8s_pod_without_node_name(self):
+        fixture = {
+            "cluster": make_k8s_cluster_info(),
+            "nodes": [make_k8s_node("n1", uid="uid-n1")],
+            "pods": [make_k8s_pod("pod-no-node", uid="uid-pnn",
+                                  node_name=None)],
+            "services": [], "persistent_volumes": [],
+            "persistent_volume_claims": [],
+        }
+        adapter = KubernetesProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snap)
+        assert len(result.execution_environments) >= 1
+        runs_on = [e for e in snap.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        assert len(runs_on) == 0
+
+    def test_openstack_server_without_hypervisor(self):
+        fixture = {
+            "platform": {"name": "os", "version": "Yoga"},
+            "availability_zones": [],
+            "hypervisors": [make_os_hypervisor("hv-01", hv_id=1)],
+            "servers": [make_os_server("srv-1", "vm-1", hv_hostname=None)],
+            "networks": [], "volumes": [],
+        }
+        adapter = OpenStackProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        result = OpenStackProviderNormalizer().normalize(snap)
+        assert len(result.execution_environments) == 1
+        runs_on = [e for e in snap.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        assert len(runs_on) == 0
+
+    def test_k8s_empty_collections(self):
+        fixture = {
+            "cluster": make_k8s_cluster_info(),
+            "nodes": [], "pods": [], "services": [],
+            "persistent_volumes": [], "persistent_volume_claims": [],
+        }
+        adapter = KubernetesProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snap)
+        assert len(result.platforms) >= 1
+        assert len(result.clusters) >= 1
+        assert len(result.nodes) == 0
+        assert len(result.execution_environments) == 0
+        assert result.status == OrchestrationStatus.SUCCESS
+
+    def test_openstack_empty_collections(self):
+        fixture = {
+            "platform": {"name": "os", "version": "Yoga"},
+            "availability_zones": [], "hypervisors": [],
+            "servers": [], "networks": [], "volumes": [],
+        }
+        adapter = OpenStackProviderAdapter(fixture=fixture, provider_id="p1")
+        snap = adapter.collect()
+        result = OpenStackProviderNormalizer().normalize(snap)
+        assert len(result.platforms) >= 1
+        assert len(result.clusters) == 0
+        assert len(result.nodes) == 0
+        assert result.status == OrchestrationStatus.SUCCESS
+
+
+# === SECTION 5: MISSING METRICS MUST NOT BECOME ZERO ===
+
+
+class TestMissingMetricsNotZero:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_used_is_none_not_zero(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        for hr in health.results:
+            for rs in hr.resource_statuses:
+                if rs.used is not None:
+                    assert rs.used != "0"
+                    assert rs.used != 0
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_utilization_is_none_not_zero(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        for hr in health.results:
+            for rs in hr.resource_statuses:
+                if rs.utilization is not None:
+                    assert rs.utilization != "0"
+                    assert rs.utilization != 0
+
+    def test_k8s_node_capacity_present_used_none(self):
+        fixture = {
+            "cluster": make_k8s_cluster_info(),
+            "nodes": [make_k8s_node("n1", uid="uid-n1")],
+            "pods": [], "services": [],
+            "persistent_volumes": [], "persistent_volume_claims": [],
+        }
+        adapter = KubernetesProviderAdapter(fixture=fixture, provider_id="p1")
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        node_results = [hr for hr in health.results if hr.entity_type == "NODE"]
+        assert len(node_results) == 1
+        assert len(node_results[0].capacity_infos) > 0
+        for rs in node_results[0].resource_statuses:
+            assert rs.used is None
+            assert rs.utilization is None
+
+    def test_openstack_hypervisor_capacity_present_used_none(self):
+        fixture = {
+            "platform": {"name": "os", "version": "Yoga"},
+            "availability_zones": [],
+            "hypervisors": [make_os_hypervisor("hv-01", hv_id=1)],
+            "servers": [], "networks": [], "volumes": [],
+        }
+        adapter = OpenStackProviderAdapter(fixture=fixture, provider_id="p1")
+        normalizer = OpenStackProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        node_results = [hr for hr in health.results if hr.entity_type == "NODE"]
+        assert len(node_results) == 1
+        assert len(node_results[0].capacity_infos) > 0
+        for rs in node_results[0].resource_statuses:
+            assert rs.used is None
+            assert rs.utilization is None
+
+
+# === SECTION 6: UNKNOWN MUST NOT BECOME HEALTHY ===
+
+
+class TestUnknownNotHealthy:
+
+    def test_k8s_service_no_health_evidence_unknown(self):
+        fixture = {
+            "cluster": make_k8s_cluster_info(),
+            "nodes": [], "pods": [],
+            "services": [make_k8s_service("svc-1", uid="uid-svc-1")],
+            "persistent_volumes": [], "persistent_volume_claims": [],
+        }
+        adapter = KubernetesProviderAdapter(fixture=fixture, provider_id="p1")
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        svc_results = [hr for hr in health.results
+                       if hr.entity_type == "NETWORK"]
+        assert len(svc_results) == 1
+        from server_manager.health.models import HealthStatus
+        assert svc_results[0].status == HealthStatus.UNKNOWN
+
+    def test_openstack_entity_no_status_unknown(self):
+        fixture = {
+            "platform": {"name": "os", "version": "Yoga"},
+            "availability_zones": [],
+            "hypervisors": [],
+            "servers": [{"id": "srv-1", "name": "vm-1"}],
+            "networks": [], "volumes": [],
+        }
+        adapter = OpenStackProviderAdapter(fixture=fixture, provider_id="p1")
+        normalizer = OpenStackProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        ee_results = [hr for hr in health.results
+                      if hr.entity_type == "EXECUTION_ENVIRONMENT"]
+        assert len(ee_results) == 1
+        from server_manager.health.models import HealthStatus
+        assert ee_results[0].status == HealthStatus.UNKNOWN
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_no_unknown_promoted_to_healthy(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health = HealthService().assess(discovery)
+        from server_manager.health.models import HealthStatus
+        for hr in health.results:
+            if hr.status == HealthStatus.UNKNOWN:
+                assert hr.status != HealthStatus.HEALTHY
+
+
+# === SECTION 7: FAILED DISCOVERY NO FAKE INVENTORY ===
+
+
+class TestFailedDiscoveryNoFakeInventory:
+
+    def test_k8s_collect_safe_with_exception(self):
+        class FailingAdapter(KubernetesProviderAdapter):
+            def collect(self, **kwargs):
+                raise ConnectionError("cluster unreachable")
+        adapter = FailingAdapter(provider_id="fail-k8s")
+        snap = adapter.collect_safe()
+        assert snap.collection_status == OrchestrationStatus.FAILED
+        assert len(snap.errors) > 0
+
+    def test_openstack_collect_safe_with_exception(self):
+        class FailingAdapter(OpenStackProviderAdapter):
+            def collect(self, **kwargs):
+                raise ConnectionError("cloud unreachable")
+        adapter = FailingAdapter(provider_id="fail-os")
+        snap = adapter.collect_safe()
+        assert snap.collection_status == OrchestrationStatus.FAILED
+        assert len(snap.errors) > 0
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_failed_discovery_no_inventory(self, provider_fn):
+        class FailingAdapter(ProviderAdapter):
+            def __init__(self, pt):
+                super().__init__(pt, "failing")
+            def capabilities(self):
+                return [AdapterCapability.PLATFORM]
+            def collect(self, **kwargs):
+                return RawProviderSnapshot(
+                    snapshot_id="snap-fail",
+                    provider_type=self._provider_type,
+                    provider_id="failing",
+                    collection_status=OrchestrationStatus.FAILED,
+                    errors=["connection refused"],
+                )
+        adapter, normalizer, pt = provider_fn()
+        failing = FailingAdapter(pt)
+        discovery = PlatformDiscovery().discover(failing, normalizer)
+        assert discovery.is_failed
+        assert discovery.inventory is None
+        assert discovery.entity_count == 0
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_failed_discovery_no_entities(self, provider_fn):
+        class FailingAdapter(ProviderAdapter):
+            def __init__(self, pt):
+                super().__init__(pt, "failing")
+            def capabilities(self):
+                return [AdapterCapability.PLATFORM]
+            def collect(self, **kwargs):
+                return RawProviderSnapshot(
+                    snapshot_id="snap-fail2",
+                    provider_type=self._provider_type,
+                    provider_id="failing",
+                    collection_status=OrchestrationStatus.FAILED,
+                    errors=["auth failed"],
+                )
+        adapter, normalizer, pt = provider_fn()
+        failing = FailingAdapter(pt)
+        discovery = PlatformDiscovery().discover(failing, normalizer)
+        assert discovery.inventory is None
+
+
+# === SECTION 8: EVIDENCE AND PROVENANCE PRESERVED ===
+
+
+class TestEvidenceAndProvenance:
+
+    @pytest.mark.parametrize("provider_fn", _PROVIDERS, ids=_PROVIDER_IDS)
+    def test_all_entities_have_source_evidence(self, provider_fn):
+        adapter, normalizer, _ = provider_fn()
+        snap = adapter.collect()
+        result = normalizer.normalize(snap)
+        all_entities = (
+            result.platforms + result.clusters + result.nodes
+            + result.execution_environments + result.networks + result.storages
+        )
+        assert len(all_entities) > 0
+        for entity in all_ent

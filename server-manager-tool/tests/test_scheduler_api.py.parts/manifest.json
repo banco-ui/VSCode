@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_scheduler_api.py",
+  "originalSize": 28061,
+  "sha256": "871e0dd3333a9219e12cf5645a5389a43da6dcd816085a26723e8b7df55f7cb7",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_scheduler_api.py\""
+}

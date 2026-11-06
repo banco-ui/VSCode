@@ -1,0 +1,769 @@
+ >nul 2>&1 && type \"C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\background-1786349457777-jotrjc6.log\"'] Result:\nCommand executed successfully (exit code 0).\nOutput:\n╔═══════════════════════════════════════════════════════════╗\n\n
+
+## 🤖 Cline (2026. 8. 10. 오후 5:11:43)
+
+아직 API 응답이 오지 않았습니다. Cell 증설은 서버에서 처리 시간이 길기 때문입니다. 조금 더 기다리겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 5:11:45)
+
+아직 API 응답이 오지 않았습니다. Cell 증설은 서버에서 처리 시간이 길기 때문입니다. 조금 더 기다리겠습니다.
+
+### 💻 명령어: ping -n 25 127.0.0.1 >nul 2>&1 && type "C:\Users\banco\AppData\Local\Temp\cline\background-1786349457777-jotrjc6.log"
+
+### 📝 : ╔═══════════════════════════════════════════════════════════╗
+
+║   USM Cell 증설 자동화 (API 기반)                        ║
+║   대상: USM 개발 서버 (10.251.209.131:7443)                    ║
+╚═══════════════════════════════════════════════════════════╝
+
+[2026-08-10T08:10:30.503Z] [INFO] === Cell 증설 자동화 시작 ===
+[2
+
+### 📝 : [2026-08-10T08:10:30.521Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+
+🚀 USM API 호출 중...
+[2026-08-10T08:10:30.524Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+
+### 📝 command_output: ⏱️ Command timed out. Output is being logged to: C:\Users\banco\AppData\Local\Temp\cline\background-1786349541077-1lb7us5.log
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] 실제 Cell 증설 API 호출 (이미 존재함 확인)
+- [x] Cell 증설 skill 등록
+- [x] tasks.json에 Cell 증설 작업 추가
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'ping -n 25 127.0.0.1 >nul 2>&1 && type \"C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\background-1786349457777-jotrjc6.log\"'] Result:\nCommand timed out after 30 seconds. Running in background.\nLog file: C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\bac
+
+## 🤖 Cline (2026. 8. 10. 오후 5:12:27)
+
+아직 API 응답을 기다리는 중입니다. Cell 증설은 서버에서 처리 시간이 길기 때문입니다. 로그 파일을 다시 확인하겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 5:12:29)
+
+아직 API 응답을 기다리는 중입니다. Cell 증설은 서버에서 처리 시간이 길기 때문입니다. 로그 파일을 다시 확인하겠습니다.
+
+### 💻 명령어: type "C:\Users\banco\AppData\Local\Temp\cline\background-1786349457777-jotrjc6.log"
+
+### 📝 : ╔═══════════════════════════════════════════════════════════╗
+
+║   USM Cell 증설 자동화 (API 기반)                        ║
+║   대상: USM 개발 서버 (10.251.209.131:7443)                    ║
+╚═══════════════════════════════════════════════════════════╝
+
+[2026-08-10T08:10:30.503Z] [INFO] === Cell 증설 자동화 시작 ===
+[2
+
+### 📝 : [2026-08-10T08:10:30.521Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+
+🚀 USM API 호출 중...
+[2026-08-10T08:10:30.524Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] 실제 Cell 증설 API 호출 (이미 존재함 확인)
+- [x] Cell 증설 skill 등록
+- [x] tasks.json에 Cell 증설 작업 추가
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'type \"C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\background-1786349457777-jotrjc6.log\"'] Result:\nCommand executed successfully (exit code 0).\nOutput:\n╔═══════════════════════════════════════════════════════════╗\n\n║   USM Cell 증설 자동화 (API 기반)      
+
+## 🤖 Cline (2026. 8. 10. 오후 5:12:44)
+
+아직 API 응답을 기다리는 중입니다. Cell 증설은 서버에서 처리 시간이 길기 때문입니다. 30초 더 기다려 보겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 5:12:44)
+
+아직 API 응답을 기다리는 중입니다. Cell 증설은 서버에서 처리 시간이 길기 때문입니다. 30초 더 기다려 보겠습니다.
+
+### 💻 명령어: ping -n 30 127.0.0.1 >nul 2>&1 && type "C:\Users\banco\AppData\Local\Temp\cline\background-1786349457777-jotrjc6.log" | findstr /C:"성공" /C:"실패" /C:"에러" /C:"완료" /C:"RESULT" /C:"already"
+
+### 📝 command_output: ⏱️ Command timed out. Output is being logged to: C:\Users\banco\AppData\Local\Temp\cline\background-1786349600153-cxm3phu.log
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] 실제 Cell 증설 API 호출 (이미 존재함 확인)
+- [x] Cell 증설 skill 등록
+- [x] tasks.json에 Cell 증설 작업 추가
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'ping -n 30 127.0.0.1 >nul 2>&1 && type \"C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\background-1786349457777-jotrjc6.log\" | findstr /C:\"성공\" /C:\"실패\" /C:\"에러\" /C:\"완료\" /C:\"RESULT\" /C:\"already\"'] Result:\nCommand timed out after 30 seconds. Runni
+
+### 💻 명령어: type "C:\Users\banco\AppData\Local\Temp\cline\background-1786349457777-jotrjc6.log"
+
+### 📝 : ╔═══════════════════════════════════════════════════════════╗
+
+║   USM Cell 증설 자동화 (API 기반)                        ║
+║   대상: USM 개발 서버 (10.251.209.131:7443)                    ║
+╚═══════════════════════════════════════════════════════════╝
+
+[2026-08-10T08:10:30.503Z] [INFO] === Cell 증설 자동화 시작 ===
+[2
+
+### 📝 : [2026-08-10T08:10:30.521Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+
+🚀 USM API 호출 중...
+[2026-08-10T08:10:30.524Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] 실제 Cell 증설 API 호출 (이미 존재함 확인)
+- [x] Cell 증설 skill 등록
+- [x] tasks.json에 Cell 증설 작업 추가
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'type \"C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\background-1786349457777-jotrjc6.log\"'] Result:\nCommand executed successfully (exit code 0).\nOutput:\n╔═══════════════════════════════════════════════════════════╗\n\n║   USM Cell 증설 자동화 (API 기반)      
+
+## 🤖 Cline (2026. 8. 10. 오후 5:13:43)
+
+API 호출이 3분 이상 진행 중입니다. Cell 증설은 서버에서 처리 시간이 매우 긴 것 같습니다. 13172 때와 마찬가지로 서버에서는 정상 처리되고 있을 가능성이 높습니다. 조금 더 기다리겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 5:13:46)
+
+API 호출이 3분 이상 진행 중입니다. Cell 증설은 서버에서 처리 시간이 매우 긴 것 같습니다. 13172 때와 마찬가지로 서버에서는 정상 처리되고 있을 가능성이 높습니다. 조금 더 기다리겠습니다.
+
+### 💻 명령어: ping -n 25 127.0.0.1 >nul 2>&1 && type "C:\Users\banco\AppData\Local\Temp\cline\background-1786349457777-jotrjc6.log"
+
+### 📝 : ╔═══════════════════════════════════════════════════════════╗
+
+║   USM Cell 증설 자동화 (API 기반)                        ║
+║   대상: USM 개발 서버 (10.251.209.131:7443)                    ║
+╚═══════════════════════════════════════════════════════════╝
+
+[2026-08-10T08:10:30.503Z] [INFO] === Cell 증설 자동화 시작 ===
+[2
+
+### 📝 : [2026-08-10T08:10:30.521Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+
+🚀 USM API 호출 중...
+[2026-08-10T08:10:30.524Z] [INFO] API 호출: POST /oss/ne/NVGNB_13190/cells
+[2026-08-10T08:13:46.986Z] [INFO] ✅ 성공: OK
+✅ NE "NVGNB_13190" Cell 증설 성공: OK
+
+📊 리포트 저장: d:\Data\AI\VSCode\usm-automation\output\repor
+
+### 📝 command_output: ⏱️ Command timed out. Output is being logged to: C:\Users\banco\AppData\Local\Temp\cline\background-1786349663189-kpb41wk.log
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] 실제 Cell 증설 API 호출 (이미 존재함 확인)
+- [x] Cell 증설 skill 등록
+- [x] tasks.json에 Cell 증설 작업 추가
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'ping -n 25 127.0.0.1 >nul 2>&1 && type \"C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\background-1786349457777-jotrjc6.log\"'] Result:\nCommand timed out after 30 seconds. Running in background.\nLog file: C:\\Users\\banco\\AppData\\Local\\Temp\\cline\\bac
+
+## 🤖 Cline (2026. 8. 10. 오후 5:14:30)
+
+## 🎉 NVGNB_13190 Cell 증설 성공!!
+
+```
+✅ NE "NVGNB_13190" Cell 증설 성공: OK
+```
+
+- **API 호출 시간**: 약 3분 16초 (08:10:30 → 08:13:46)
+- **Cell 개수**: 3개
+- **응답**: `RESULT: OK`
+
+## 🤖 Cline (2026. 8. 10. 오후 5:14:34)
+
+## 🎉 NVGNB_13190 Cell 증설 성공!!
+
+```
+✅ NE "NVGNB_13190" Cell 증설 성공: OK
+```
+
+- **API 호출 시간**: 약 3분 16초 (08:10:30 → 08:13:46)
+- **Cell 개수**: 3개
+- **응답**: `RESULT: OK`
+
+### ✅ 완료: ## NE + Cell 증설 자동화 완료! 🎉
+
+### 전체 테스트 결과
+
+| NE | NE 증설 | Cell 증설 | Cell 개수 |
+|---|---|---|---|
+| NVGNB_13172 | ✅ OK (~9초) | ✅ OK (이미 존재 확인) | 3개 |
+| NVGNB_13190 | ✅ OK (~2초) | ✅ OK (~3분 16초) | 3개 |
+
+### 자동화 파이프라인
+```
+1. NE 증설: CSV → JSON → POST /oss/ne → RESULT: OK
+2. Cell 증설: CSV → JSON → POST /oss/ne/{NE}/cells → RESULT: OK
+```
+
+### 구축된 자동화 시스템
+- **스크립트**: `usm-ne-provisioning.js`, `usm-cell-provisioning.js`
+- **Skill 문서**: `.claude/skills/ne-provisioning.md`, `.claude/skills/cell-provisionin
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] NVGNB_13172 Cell 증설 (이미 존재 확인)
+  - [x] NVGNB_13190 Cell 증설 성공 (RESULT: OK, ~3분)
+- [x] 
+
+### 💻 명령어: node scripts/usm-cell-provisioning.js "[13190] 26A_SKT_NVGNB_CELL_0612.csv" NVGNB_13190 --dry-run
+
+### 📝 : ╔═══════════════════════════════════════════════════════════╗
+║   USM Cell 증설 자동화 (API 기반)                        ║
+
+║   대상: USM 개발 서버 (10.251.209.131:7443)                    ║
+╚═══════════════════════════════════════════════════════════╝
+
+[2026-08-10T08:15:00.276Z] [INFO] === Cell 증설 자동화 시작 ===
+[2
+
+### 📝 : "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "Cell Identity": [
+      "190",
+      "191",
+      "192"
+    ],
+    "Cell Num": [
+      "0",
+      "1",
+      "8"
+    ],
+    "Cell Name": [
+      "123",
+      "133",
+      "143"
+    ],
+    "Channel Card ID": [
+
+### 📝 : "0",
+      "0",
+      "0"
+    ],
+    "Modem ID": [
+      "0",
+      "1",
+      "2"
+    ],
+    "Modem Resource ID": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Port ID": [
+      "0",
+      "4",
+      "8"
+    ],
+    "RU Conf": [
+
+### 📝 : "0_0_0",
+      "0_4_0",
+      "0_8_0"
+    ],
+    "NR Frequency Band": [
+      "78",
+      "78",
+      "78"
+    ],
+    "NR DL Arfcn": [
+      "643334",
+      "643334",
+      "643334"
+    ],
+    "NR UL Arfcn": [
+      "643334",
+      "643334",
+      "643334"
+    ],
+    "NR DL Bandwidth": [
+
+### 📝 : "nr-bandwidth-100",
+      "nr-bandwidth-100",
+      "nr-bandwidth-100"
+    ],
+    "NR UL Bandwidth": [
+      "nr-bandwidth-100",
+      "nr-bandwidth-100",
+      "nr-bandwidth-100"
+    ],
+    "SDL Support": [
+      "false",
+      "false",
+      "false"
+    ],
+    "NR Physical Cell ID": [
+      "190",
+
+### 📝 : "dl-antenna-count-32tx",
+      "dl-antenna-count-4tx",
+      "dl-antenna-count-32tx"
+    ],
+    "UL Antenna Count": [
+      "ul-antenna-count-32rx",
+      "ul-antenna-count-4rx",
+      "ul-antenna-count-32rx"
+    ],
+    "Number of Rx Paths per RU": [
+      "4",
+      "4",
+      "4"
+    ],
+    "Cell 
+
+### 📝 : "option-7-2a",
+      "option-7-2a",
+      "option-7-2a"
+    ],
+    "UL Function Split": [
+      "option-7-2a",
+      "option-7-2a",
+      "option-7-2a"
+    ],
+    "PRACH RSI Auto Mode": [
+      "true",
+      "true",
+      "true"
+    ],
+    "PRACH RSI": [
+      "",
+      "",
+      ""
+    ],
+    "PRAC
+
+### 📝 : "15",
+      "15",
+      "15"
+    ],
+    "PRACH Configuration Index": [
+      "203",
+      "203",
+      "203"
+    ],
+    "PRACH SSB Per RO": [
+      "ssb-per-ro-one-choice",
+      "ssb-per-ro-one-half-choice",
+      "ssb-per-ro-one-choice"
+    ],
+    "Restricted Set": [
+      "unrestricted-set",
+    
+
+### 📝 : "auto-prach-rb-offset-on-multiple-regions",
+      "manual-config-low",
+      "auto-prach-rb-offset-on-multiple-regions"
+    ],
+    "NR Cell TDD Configuration": [
+      "fr1-tdd-41-f-10-2-2",
+      "fr1-tdd-41-f-10-2-2",
+      "fr1-tdd-41-f-10-2-2"
+    ],
+    "Number of Tx SSB": [
+      "1",
+      "1
+
+### 📝 : "use",
+      "use",
+      "use"
+    ],
+    "Tracking Area Code": [
+      "000001",
+      "000001",
+      "000001"
+    ],
+    "Optic Distance Option": [
+      "20km",
+      "20km",
+      "20km"
+    ],
+    "Cell Coverage": [
+      "",
+      "",
+      ""
+    ],
+    "RedCap BWP Preference TDD": [
+
+### 📝 : "lower-edge",
+      "lower-edge",
+      "lower-edge"
+    ]
+  },
+  "@CHANNEL_BOARD_INFORMATION": {
+    "State": [
+      "ADD"
+    ],
+    "Unit Type": [
+      "fcp"
+    ],
+    "Unit ID": [
+      "0"
+    ],
+    "Board Type": [
+      "gcb1-c1a"
+    ],
+    "Firmware Type": [
+      "type-none"
+
+### 📝 : ]
+  },
+  "@CPRI_PORT_INFORMATION": {
+    "State": [
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "Unit Type": [
+      "fcp",
+      "fcp",
+      "fcp"
+    ],
+    "Unit ID": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Port ID": [
+      "0",
+
+### 📝 : "4",
+      "8"
+    ],
+    "CPRI Speed": [
+      "10.1376-gbps",
+      "10.1376-gbps",
+      "10.1376-gbps"
+    ]
+  },
+  "@RU_INFORMATION": {
+    "State": [
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "RU Conf": [
+      "0_0_0",
+      "0_4_0",
+      "0_8_0"
+    ],
+
+### 📝 : "RU Port ID": [
+      "0",
+      "0",
+      "0"
+    ],
+    "RU Unit Type": [
+      "mmu",
+      "rrh",
+      "mmu"
+    ],
+    "RU Board Type": [
+      "mt3205-780",
+      "rt8815-780",
+      "mt3228-780"
+    ],
+    "Auto GPS Flag": [
+      "on",
+      "on",
+      "on"
+    ],
+
+### 📝 : "Latitude": [
+      "N 000:00:00.000",
+      "N 000:00:00.000",
+      "N 000:00:00.000"
+    ],
+    "Longitude": [
+      "E 000:00:00.000",
+      "E 000:00:00.000",
+      "E 000:00:00.000"
+    ],
+    "Height": [
+      "0000.00m",
+      "0000.00m",
+      "0000.00m"
+    ],
+    "Sub Type": [
+      "0",
+
+
+### 📝 : "Copy Mode": [
+      "off",
+      "off",
+      "off"
+    ],
+    "Start Frequency": [
+      "360001",
+      "360000",
+      "360001"
+    ],
+    "Serial Number": [
+      "-",
+      "-",
+      "-"
+    ],
+    "Uncertainty Semi Major": [
+      "8",
+      "8",
+      "8"
+    ],
+
+### 📝 : "Uncertainty Semi Minor": [
+      "8",
+      "8",
+      "8"
+    ],
+    "Orientation Of Major Axis": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Uncertainty Altitude": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Confidence": [
+      "100",
+      "100",
+      "100"
+    ],
+
+### 📝 : "Ude Switch": [
+      "off",
+      "off",
+      "off"
+    ],
+    "Psu Status": [
+      "not-equip",
+      "not-equip",
+      "not-equip"
+    ]
+  },
+  "@RU_CARRIER_PORT_INFORMATION": {
+    "State": [
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "RU Conf": [
+      "0_0_0",
+      "0_4_0",
+
+### 📝 : "0_8_0"
+    ],
+    "Cell Num": [
+      "0",
+      "1",
+      "8"
+    ],
+    "RU Port Index": [
+      "0",
+      "0",
+      "0"
+    ],
+    "RU Port ID": [
+      "0",
+      "0",
+      "0"
+    ]
+  },
+  "@SON_INFORMATION": {
+    "Initial PCI": [
+
+### 📝 : "off"
+    ],
+    "Initial RSI": [
+      "off"
+    ],
+    "Initial NCRT": [
+      "off"
+    ],
+    "Initial LTE NCRT": [
+      "off"
+    ],
+    "Initial ZCZC": [
+      "off"
+    ],
+    "Initial PRACH Config Index": [
+      "off"
+    ],
+    "Initial TAC": [
+      "off"
+    ]
+
+### 📝 : }
+}
+
+📊 리포트 저장: d:\Data\AI\VSCode\usm-automation\output\reports\cell-provisioning_2026-08-10T08-15-00-295Z.json
+[2026-08-10T08:15:00.298Z] [INFO] === Cell 증설 자동화 완료 ===
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] NVGNB_13172 Cell 증설 (이미 존재 확인)
+  - [x] NVGNB_13190 Cell 증설 성공 (RESULT: OK, ~3분)
+- [x] 
+
+### 📝 user_feedback: 13190 도 cell 증설 완료 됐네.
+참고로. cell 증설은 증설할 Cell 수에 따라 시간이 많이 걸릴수도 있어.
+NE 는 증설이 1개라서 금방 반응이 오는데, Cell 이 최대가 되면 csv 파일도 커지고, 증설하는데 시간이 많이 걸려
+30분까지도 걸려. 참고로 얘기함.
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현
+  - [x] Cell 템플릿 CSV 형식 확인
+  - [x] Cell 증설 스크립트 작성 (usm-cell-provisioning.js)
+  - [x] Dry-run 테스트 성공 (14개 섹션, 3개 Cell)
+  - [x] NVGNB_13172 Cell 증설 (이미 존재 확인)
+  - [x] NVGNB_13190 Cell 증설 성공 (RESULT: OK, ~3분)
+- [x] 
+
+### 📝 api_req_started: {"request":"[Tool]\n[attempt_completion] Result: Done\nCommand executed successfully (exit code 0).\nOutput:\n╔═══════════════════════════════════════════════════════════╗\n║   USM Cell 증설 자동화 (API 기반)                        ║\n\n║   대상: USM 개발 서버 (10.251.209.131:7443)                    ║\n╚═══════
+
+### 📝 reasoning: 사용자가 Cell 증설이 30분까지도 걸릴 수 있다고 알려주었습니다. 현재 타임아웃이 300초(5분)로 설정되어 있는데, 이를 30분(1800초)으로 늘려야 합니다. 스크립트를 업데이트하겠습니다.
+
+### 🔧 도구 실행: {"tool":"editedExistingFile","path":"scripts/usm-cell-provisioning.js","content":"------- SEARCH\n    req.setTimeout(300000, () => { req.destroy(); reject(new Error('Request timeout (300s)')); });\n==
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 skill 등록 완료
+- [x] tasks.json에 Cell 증설 작업 추가
+- [x] Cell 증설 타임아웃 30분으로 조정
+
+### 📝 api_req_started: {"request":"[Tool]\n[replace_in_file for 'd:\\Data\\AI\\VSCode\\usm-automation\\scripts\\usm-cell-provisioning.js'] Result:\nThe content was successfully saved to d:/Data/AI/VSCode/usm-automation/scripts/usm-cell-provisioning.js.\n\nHere is the full, updated content of the file that was saved:\n\n<f
+
+## 🤖 Cline (2026. 8. 10. 오후 5:18:00)
+
+Cell 증설 타임아웃을 30분(1800초)으로 조정했습니다. 이제 Cell이 많아도 타임아웃 없이 대기할 수 있습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 5:18:01)
+
+Cell 증설 타임아웃을 30분(1800초)으로 조정했습니다. 이제 Cell이 많아도 타임아웃 없이 대기할 수 있습니다.
+
+### ✅ 완료: ## NE + Cell 증설 자동화 완료! 🎉
+
+### 전체 테스트 결과
+
+| NE | NE 증설 | Cell 증설 | Cell 개수 | Cell 소요 시간 |
+|---|---|---|---|---|
+| NVGNB_13172 | ✅ OK | ✅ OK | 3개 | ~10초 |
+| NVGNB_13190 | ✅ OK | ✅ OK | 3개 | ~3분 16초 |
+
+### 타임아웃 조정
+- NE 증설: 120초 (NE 1개라 빠름)
+- Cell 증설: **30분 (1800초)** — Cell 수에 따라 최대 30분까지 소요될 수 있어 조정
+
+### 구축된 자동화 시스템
+- **NE 증설**: `scripts/usm-ne-provisioning.js` → `POST /oss/ne`
+- **Cell 증설**: `scripts/usm-cell-provisioning.js` → `POST /oss/ne/{NE}/cells`
+- **Skill 문서**: `.claude/skills/ne-provisi
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 skill 등록 완료
+- [x] tasks.json에 Cell 증설 작업 추가
+- [x] Cell 증설 타임아웃 30분으로 조정
+
+### 💻 명령어: node scripts/usm-cell-provisioning.js "[13190] 26A_SKT_NVGNB_CELL_0612.csv" NVGNB_13190 --dry-run
+
+### 📝 : ╔═══════════════════════════════════════════════════════════╗
+║   USM Cell 증설 자동화 (API 기반)                        ║
+║   대상: USM 개발 서버 (10.251.209.131:7443)                    ║
+╚═══════════════════════════════════════════════════════════╝
+
+
+[2026-08-10T08:18:16.730Z] [INFO] === Cell 증설 자동화 시작 ===
+[2
+
+### 📝 : "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "Cell Identity": [
+      "190",
+      "191",
+      "192"
+    ],
+    "Cell Num": [
+      "0",
+      "1",
+      "8"
+    ],
+    "Cell Name": [
+      "123",
+      "133",
+      "143"
+    ],
+    "Channel Card ID": [
+
+### 📝 : "0",
+      "0",
+      "0"
+    ],
+    "Modem ID": [
+      "0",
+      "1",
+      "2"
+    ],
+    "Modem Resource ID": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Port ID": [
+      "0",
+      "4",
+      "8"
+    ],
+    "RU Conf": [
+
+### 📝 : "0_0_0",
+      "0_4_0",
+      "0_8_0"
+    ],
+    "NR Frequency Band": [
+      "78",
+      "78",
+      "78"
+    ],
+    "NR DL Arfcn": [
+      "643334",
+      "643334",
+      "643334"
+    ],
+    "NR UL Arfcn": [
+      "643334",
+      "643334",
+      "643334"
+    ],
+    "NR DL Bandwidth": [
+
+### 📝 : "nr-bandwidth-100",
+      "nr-bandwidth-100",
+      "nr-bandwidth-100"
+    ],
+    "NR UL Bandwidt

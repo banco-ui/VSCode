@@ -1,0 +1,522 @@
+"""Tests for Dashboard Query Service (Phase 7)."""
+import pytest
+from server_manager.store.store import InventoryStore
+from server_manager.store.models import ServerRegistryEntry, InventorySnapshot
+from server_manager.dashboard.query_service import DashboardQueryService
+from server_manager.dashboard.diff import compute_snapshot_diff
+from server_manager.dashboard.models import (
+    ServerSummary, ServerDetail, ServerListResult, SnapshotSummary,
+    DashboardSummary, FieldDiff, SnapshotDiff,
+)
+from server_manager.models.enums import (
+    HealthStatus, ServerLifecycle, Vendor, ComputeEligibility, ComputePotential,
+)
+from server_manager.models.inventory import (
+    ServerInventory, Identity, Hardware, CPU, Memory, OS, Health, Compute,
+)
+
+
+def make_inventory(
+    server_id="R750-001",
+    cores=48,
+    health=HealthStatus.OK,
+    eligibility=ComputeEligibility.CANDIDATE,
+):
+    return ServerInventory(
+        identity=Identity(server_id=server_id, vendor=Vendor.Dell, model="PowerEdge R750"),
+        hardware=Hardware(
+            cpu=CPU(count=2, total_cores=cores, total_threads=cores * 2),
+            memory=Memory(total_gb=256.0),
+        ),
+        os=OS(distribution="Ubuntu", kernel="5.15.0", hostname="srv-1"),
+        health=Health(system=health, cpu=health, memory=health),
+        compute=Compute(potential=ComputePotential.HIGH, eligibility=eligibility),
+    )
+
+
+def make_snapshot(server_id="R750-001", run_id="run-001", inv=None):
+    return InventorySnapshot(
+        snapshot_id=f"snap-{run_id}",
+        server_id=server_id,
+        orchestration_run_id=run_id,
+        collected_at=f"2026-01-0{run_id[-1]}T00:00:00+00:00",
+        inventory=inv or make_inventory(server_id),
+    )
+
+
+@pytest.fixture
+def store():
+    s = InventoryStore(":memory:")
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def populated_store(store):
+    """Store with 3 servers, each with snapshots."""
+    for i in range(3):
+        sid = f"R750-{i:03d}"
+        entry = ServerRegistryEntry(
+            server_id=sid,
+            display_name=f"Server {i}",
+            vendor=Vendor.Dell,
+            model="PowerEdge R750",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+        )
+        store.register_server(entry)
+        snap = make_snapshot(sid, f"run-00{i}")
+        store.save_snapshot(snap)
+    return store
+
+
+class TestDashboardModels:
+    def test_server_summary_extra_forbid(self):
+        with pytest.raises(Exception):
+            ServerSummary(server_id="x", display_name="y", extra="bad")
+
+    def test_server_detail_extra_forbid(self):
+        with pytest.raises(Exception):
+            ServerDetail(server_id="x", display_name="y", extra="bad")
+
+    def test_snapshot_diff_has_changes(self):
+        diff = SnapshotDiff(snapshot_a_id="a", snapshot_b_id="b",
+                           changed_fields=[FieldDiff(field_path="x", old_value=1, new_value=2)])
+        assert diff.has_changes is True
+        assert diff.change_count == 1
+
+    def test_snapshot_diff_no_changes(self):
+        diff = SnapshotDiff(snapshot_a_id="a", snapshot_b_id="b")
+        assert diff.has_changes is False
+        assert diff.change_count == 0
+
+    def test_dashboard_summary_defaults(self):
+        s = DashboardSummary()
+        assert s.total_servers == 0
+        assert s.active_servers == 0
+
+
+class TestServerList:
+    def test_get_server_list(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        result = svc.get_server_list()
+        assert result.total == 3
+        assert len(result.servers) == 3
+
+    def test_get_server_list_with_vendor_filter(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        result = svc.get_server_list(filters={"vendor": "Dell"})
+        assert result.total == 3
+
+    def test_get_server_list_with_lifecycle_filter(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        result = svc.get_server_list(filters={"lifecycle_state": "ACTIVE"})
+        assert result.total == 3
+
+    def test_get_server_list_empty(self, store):
+        svc = DashboardQueryService(store)
+        result = svc.get_server_list()
+        assert result.total == 0
+        assert result.servers == []
+
+    def test_server_summary_has_health(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        result = svc.get_server_list()
+        for s in result.servers:
+            assert s.health == HealthStatus.OK
+
+    def test_server_summary_has_compute_info(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        result = svc.get_server_list()
+        for s in result.servers:
+            assert s.cpu_cores == 48
+            assert s.memory_gb == 256.0
+            assert s.compute_eligibility == ComputeEligibility.CANDIDATE
+
+
+class TestServerDetail:
+    def test_get_server_detail(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        detail = svc.get_server_detail("R750-000")
+        assert detail is not None
+        assert detail.server_id == "R750-000"
+        assert detail.os_distribution == "Ubuntu"
+        assert detail.cpu_cores == 48
+
+    def test_get_server_detail_nonexistent(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        detail = svc.get_server_detail("nonexistent")
+        assert detail is None
+
+    def test_server_detail_has_snapshot_count(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        detail = svc.get_server_detail("R750-000")
+        assert detail.snapshot_count == 1
+
+
+class TestSnapshotHistory:
+    def test_get_snapshot_history(self, populated_store):
+        # Add more snapshots with unique IDs
+        for i in range(3):
+            snap = make_snapshot("R750-000", f"hist-{i:02d}")
+            populated_store.save_snapshot(snap)
+
+        svc = DashboardQueryService(populated_store)
+        history = svc.get_snapshot_history("R750-000")
+        assert len(history) >= 3
+        assert history[0].snapshot_id is not None
+
+    def test_snapshot_history_empty(self, store):
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="Server 1",
+            vendor=Vendor.Dell,
+        )
+        store.register_server(entry)
+        svc = DashboardQueryService(store)
+        history = svc.get_snapshot_history("R750-001")
+        assert len(history) == 0
+
+    def test_snapshot_history_limit(self, populated_store):
+        for i in range(10):
+            snap = make_snapshot("R750-000", f"limit-{i:02d}")
+            populated_store.save_snapshot(snap)
+        svc = DashboardQueryService(populated_store)
+        history = svc.get_snapshot_history("R750-000", limit=5)
+        assert len(history) == 5
+
+
+class TestSnapshotDiff:
+    def test_diff_no_changes(self, store):
+        inv = make_inventory()
+        snap1 = make_snapshot("R750-001", "run-001", inv)
+        snap2 = make_snapshot("R750-001", "run-002", inv)
+        store.register_server(ServerRegistryEntry(
+            server_id="R750-001", display_name="S1", vendor=Vendor.Dell,
+        ))
+        store.save_snapshot(snap1)
+        store.save_snapshot(snap2)
+        svc = DashboardQueryService(store)
+        diff = svc.get_snapshot_diff("snap-run-001", "snap-run-002")
+        assert diff is not None
+        assert diff.has_changes is False
+
+    def test_diff_with_changes(self, store):
+        inv1 = make_inventory(cores=48)
+        inv2 = make_inventory(cores=24)
+        snap1 = make_snapshot("R750-001", "run-001", inv1)
+        snap2 = make_snapshot("R750-001", "run-002", inv2)
+        store.register_server(ServerRegistryEntry(
+            server_id="R750-001", display_name="S1", vendor=Vendor.Dell,
+        ))
+        store.save_snapshot(snap1)
+        store.save_snapshot(snap2)
+        svc = DashboardQueryService(store)
+        diff = svc.get_snapshot_diff("snap-run-001", "snap-run-002")
+        assert diff is not None
+        assert diff.has_changes is True
+
+    def test_diff_nonexistent_snapshot(self, store):
+        svc = DashboardQueryService(store)
+        diff = svc.get_snapshot_diff("nonexistent-a", "nonexistent-b")
+        assert diff is None
+
+    def test_compute_diff_direct(self):
+        inv1 = make_inventory(cores=48)
+        inv2 = make_inventory(cores=24)
+        diff = compute_snapshot_diff("snap-a", "snap-b", inv1, inv2)
+        assert diff.snapshot_a_id == "snap-a"
+        assert diff.snapshot_b_id == "snap-b"
+        assert diff.has_changes is True
+
+    def test_diff_added_field(self):
+        """When a field changes from empty/default to populated, it should be detected as changed."""
+        inv1 = ServerInventory()
+        inv2 = make_inventory()
+        diff = compute_snapshot_diff("a", "b", inv1, inv2)
+        assert diff.has_changes is True
+        # With model_dump(), default values exist on both sides, so they're "changed" not "added"
+        assert len(diff.changed_fields) > 0
+
+    def test_diff_removed_field(self):
+        """When a field changes from populated to empty/default, it should be detected as changed."""
+        inv1 = make_inventory()
+        inv2 = ServerInventory()
+        diff = compute_snapshot_diff("a", "b", inv1, inv2)
+        assert diff.has_changes is True
+        assert len(diff.changed_fields) > 0
+
+
+class TestWeekendComputeCandidates:
+    def test_get_candidates(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        candidates = svc.get_weekend_compute_candidates()
+        assert len(candidates) == 3
+        for c in candidates:
+            assert c.lifecycle_state == ServerLifecycle.ACTIVE
+            assert c.compute_eligibility in {
+                ComputeEligibility.CANDIDATE,
+                ComputeEligibility.COMPUTE_ELIGIBLE,
+                ComputeEligibility.IDLE,
+            }
+
+    def test_no_candidates_when_production(self, store):
+        entry = ServerRegistryEntry(
+            server_id="R750-001", display_name="S1", vendor=Vendor.Dell,
+        )
+        store.register_server(entry)
+        inv = make_inventory(eligibility=ComputeEligibility.PRODUCTION)
+        snap = make_snapshot("R750-001", "run-001", inv)
+        store.save_snapshot(snap)
+        svc = DashboardQueryService(store)
+        candidates = svc.get_weekend_compute_candidates()
+        assert len(candidates) == 0
+
+    def test_no_candidates_when_unreachable(self, store):
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="S1",
+            vendor=Vendor.Dell,
+            lifecycle_state=ServerLifecycle.UNREACHABLE,
+        )
+        store.register_server(entry)
+        inv = make_inventory(eligibility=ComputeEligibility.CANDIDATE)
+        snap = make_snapshot("R750-001", "run-001", inv)
+        store.save_snapshot(snap)
+        svc = DashboardQueryService(store)
+        candidates = svc.get_weekend_compute_candidates()
+        assert len(candidates) == 0
+
+
+class TestDashboardSummary:
+    def test_summary(self, populated_store):
+        svc = DashboardQueryService(populated_store)
+        summary = svc.get_dashboard_summary()
+        assert summary.total_servers == 3
+        assert summary.active_servers == 3
+        assert summary.unreachable_servers == 0
+        assert summary.compute_candidates == 3
+        assert summary.total_cpu_cores == 144  # 3 * 48
+        assert summary.total_memory_gb == 768.0  # 3 * 256
+
+    def test_summary_empty(self, store):
+        svc = DashboardQueryService(store)
+        summary = svc.get_dashboard_summary()
+        assert summary.total_servers == 0
+        assert summary.active_servers == 0
+
+    def test_summary_with_unreachable(self, store):
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="S1",
+            vendor=Vendor.Dell,
+            lifecycle_state=ServerLifecycle.UNREACHABLE,
+        )
+        store.register_server(entry)
+        inv = make_inventory(health=HealthStatus.CRITICAL)
+        snap = make_snapshot("R750-001", "run-001", inv)
+        store.save_snapshot(snap)
+        svc = DashboardQueryService(store)
+        summary = svc.get_dashboard_summary()
+        assert summary.total_servers == 1
+        assert summary.unreachable_servers == 1
+        assert summary.servers_critical == 1
+
+    def test_summary_with_maintenance(self, store):
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="S1",
+            vendor=Vendor.Dell,
+            lifecycle_state=ServerLifecycle.MAINTENANCE,
+        )
+        store.register_server(entry)
+        inv = make_inventory()
+        snap = make_snapshot("R750-001", "run-001", inv)
+        store.save_snapshot(snap)
+        svc = DashboardQueryService(store)
+        summary = svc.get_dashboard_summary()
+        assert summary.maintenance_servers == 1
+
+    def test_summary_with_warnings(self, store):
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="S1",
+            vendor=Vendor.Dell,
+        )
+        store.register_server(entry)
+        inv = make_inventory(health=HealthStatus.WARNING)
+        snap = make_snapshot("R750-001", "run-001", inv)
+        store.save_snapshot(snap)
+        svc = DashboardQueryService(store)
+        summary = svc.get_dashboard_summary()
+        assert summary.servers_with_warnings == 1
+
+
+class TestFieldDiff:
+    def test_field_diff_default(self):
+        fd = FieldDiff(field_path="x", old_value=1, new_value=2)
+        assert fd.change_type == "CHANGED"
+        assert fd.old_value == 1
+        assert fd.new_value == 2
+
+    def test_field_diff_extra_forbid(self):
+        with pytest.raises(Exception):
+            FieldDiff(field_path="x", extra="bad")
+
+
+class TestSnapshotSummary:
+    def test_defaults(self):
+        ss = SnapshotSummary(
+            snapshot_id="snap-1",
+            server_id="srv-1",
+            collected_at="2026-01-01T00:00:00+00:00",
+        )
+        assert ss.schema_version == "1.0"
+        assert ss.health == HealthStatus.UNKNOWN
+
+    def test_extra_forbid(self):
+        with pytest.raises(Exception):
+            SnapshotSummary(
+                snapshot_id="x", server_id="y", collected_at="z", extra="bad"
+            )
+
+
+# ── P1 Regression Tests ──────────────────────────────────────────────
+
+class TestExcludedUserWorkload:
+    """P1: EXCLUDED_USER_WORKLOAD must not be a compute candidate."""
+
+    def test_excluded_user_workload_not_candidate(self, store):
+        """P1: Server with EXCLUDED_USER_WORKLOAD eligibility must not
+        appear in weekend compute candidates.
+        """
+        entry = ServerRegistryEntry(
+            server_id="E910T-001",
+            display_name="e910t Server",
+            vendor=Vendor.HPE,
+            model="e910t",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+        )
+        store.register_server(entry)
+
+        inv = make_inventory(
+            server_id="E910T-001",
+            eligibility=ComputeEligibility.EXCLUDED_USER_WORKLOAD,
+        )
+        snap = make_snapshot(server_id="E910T-001", run_id="run-001", inv=inv)
+        store.save_snapshot(snap)
+
+        svc = DashboardQueryService(store)
+        candidates = svc.get_weekend_compute_candidates()
+
+        candidate_ids = [c.server_id for c in candidates]
+        assert "E910T-001" not in candidate_ids
+
+    def test_candidate_is_included(self, store):
+        """P1: Server with CANDIDATE eligibility IS a compute candidate.
+
+        This is the positive counterpart to the exclusion test above,
+        verifying the filter works correctly in both directions.
+        """
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="R750 Server",
+            vendor=Vendor.Dell,
+            model="PowerEdge R750",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+        )
+        store.register_server(entry)
+
+        inv = make_inventory(
+            server_id="R750-001",
+            eligibility=ComputeEligibility.CANDIDATE,
+        )
+        snap = make_snapshot(server_id="R750-001", run_id="run-001", inv=inv)
+        store.save_snapshot(snap)
+
+        svc = DashboardQueryService(store)
+        candidates = svc.get_weekend_compute_candidates()
+
+        candidate_ids = [c.server_id for c in candidates]
+        assert "R750-001" in candidate_ids
+
+
+class TestStoreToDashboardEndToEnd:
+    """P1: Verify data flows correctly from Store to DashboardQueryService."""
+
+    def test_store_to_dashboard_end_to_end(self, store):
+        """P1: End-to-end: register → save snapshot → query detail.
+
+        Verifies that data saved through the Store public API is
+        correctly read back through DashboardQueryService.
+        """
+        # 1. Register server
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="R750 Server 1",
+            vendor=Vendor.Dell,
+            model="PowerEdge R750",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+        )
+        store.register_server(entry)
+
+        # 2. Save snapshot with real inventory
+        inv = make_inventory(
+            server_id="R750-001",
+            cores=48,
+            health=HealthStatus.OK,
+            eligibility=ComputeEligibility.CANDIDATE,
+        )
+        snap = make_snapshot(server_id="R750-001", run_id="run-001", inv=inv)
+        store.save_snapshot(snap)
+
+        # 3. Query through DashboardQueryService
+        svc = DashboardQueryService(store)
+        detail = svc.get_server_detail("R750-001")
+
+        # 4. Verify data integrity
+        assert detail is not None
+        assert detail.server_id == "R750-001"
+        assert detail.vendor == Vendor.Dell
+        assert detail.model == "PowerEdge R750"
+        assert detail.cpu_cores == 48
+        assert detail.memory_gb == 256.0
+        assert detail.health == HealthStatus.OK
+        assert detail.compute_eligibility == ComputeEligibility.CANDIDATE
+        assert detail.snapshot_count == 1
+        assert detail.current_snapshot_id == "snap-run-001"
+
+    def test_store_to_dashboard_server_list(self, store):
+        """P1: End-to-end: register → save snapshot → query server list.
+
+        Verifies server list query reflects stored snapshot data.
+        """
+        entry = ServerRegistryEntry(
+            server_id="R750-001",
+            display_name="R750 Server 1",
+            vendor=Vendor.Dell,
+            model="PowerEdge R750",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+        )
+        store.register_server(entry)
+
+        inv = make_inventory(
+            server_id="R750-001",
+            cores=48,
+            health=HealthStatus.OK,
+            eligibility=ComputeEligibility.CANDIDATE,
+        )
+        snap = make_snapshot(server_id="R750-001", run_id="run-001", inv=inv)
+        store.save_snapshot(snap)
+
+        svc = DashboardQueryService(store)
+        result = svc.get_server_list()
+
+        assert len(result.servers) == 1
+        summary = result.servers[0]
+        assert summary.server_id == "R750-001"
+        assert summary.cpu_cores == 48
+        assert summary.memory_gb == 256.0
+        assert summary.health == HealthStatus.OK
+        assert summary.compute_eligibility == ComputeEligibility.CANDIDATE
+
+

@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_platform_graph.py",
+  "originalSize": 27442,
+  "sha256": "f4007df067771c2383f8c885f982bc49b14fd16055e9489f9adf4db34057ff14",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_platform_graph.py\""
+}

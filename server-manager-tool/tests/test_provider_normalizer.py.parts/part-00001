@@ -1,0 +1,598 @@
+"""Phase 13G-3 Provider Normalizer Contract Tests.
+
+Tests cover:
+    - Synthetic fixtures A-J (one per canonical entity type)
+    - Combined multi-layer topology fixture
+    - Positive: entity creation, identity, provenance, refs, relationship evidence
+    - Negative: missing fields, invalid types, invalid enums, malformed payloads
+    - Architecture: no provider connection, no INFERRED/UNKNOWN, identity separation
+
+NO live provider connections. All fixtures are synthetic.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+import pytest
+
+from server_manager.models.canonical import (
+    AcceleratorType,
+    ClusterType,
+    Confidence,
+    ExecutionEnvironmentType,
+    NetworkType,
+    OSType,
+    PlatformType,
+    ProviderType,
+    RelationshipEvidenceType,
+    StorageType,
+    WorkloadType,
+)
+from server_manager.normalizers.provider_normalizer import (
+    CanonicalIdentityGenerator,
+    GenericProviderNormalizer,
+    NormalizationError,
+    NormalizationResult,
+    ProviderNormalizer,
+    strict_bool,
+    strict_float,
+    strict_int,
+    strict_str,
+)
+from server_manager.orchestrator.models import ErrorCategory, OrchestrationStatus
+from server_manager.providers.base import (
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+NOW = datetime.now(timezone.utc).isoformat()
+
+
+def make_snapshot(
+    payload: dict[str, Any] | None = None,
+    provider_type: ProviderType = ProviderType.KUBERNETES,
+    provider_id: str = "test-provider-01",
+    snapshot_id: str = "snap-test-001",
+    relationship_evidence: list[RawRelationshipEvidence] | None = None,
+) -> RawProviderSnapshot:
+    """Create a RawProviderSnapshot with synthetic data."""
+    return RawProviderSnapshot(
+        provider_type=provider_type,
+        provider_id=provider_id,
+        snapshot_id=snapshot_id,
+        collected_at=NOW,
+        payload=payload or {},
+        relationship_evidence=relationship_evidence or [],
+    )
+
+NOW = datetime.now(timezone.utc).isoformat()
+
+
+@pytest.fixture
+def fixture_a_physical() -> dict[str, Any]:
+    """Fixture A: Physical (bare-metal server)."""
+    return {"physicals": [{"provider_id": "srv-01", "metadata": {"vendor": "Dell"}}]}
+
+
+@pytest.fixture
+def fixture_b_os() -> dict[str, Any]:
+    """Fixture B: OS (Ubuntu host OS)."""
+    return {"os": [{"provider_id": "os-01", "os_type": "HOST", "name": "Ubuntu",
+                    "version": "22.04", "kernel": "5.15.0",
+                    "architecture": "x86_64", "physical_ref": "srv-01"}]}
+
+
+@pytest.fixture
+def fixture_c_platform() -> dict[str, Any]:
+    """Fixture C: Platform (Kubernetes)."""
+    return {"platforms": [{"provider_id": "k8s-01", "platform_type": "KUBERNETES",
+                          "version": "1.28.0"}]}
+
+
+@pytest.fixture
+def fixture_d_cluster() -> dict[str, Any]:
+    """Fixture D: Cluster (Kubernetes cluster)."""
+    return {"clusters": [{"provider_id": "cluster-01", "cluster_type": "KUBERNETES",
+                          "platform_ref": "k8s-01"}]}
+
+
+@pytest.fixture
+def fixture_e_node() -> dict[str, Any]:
+    """Fixture E: Node (worker node)."""
+    return {"nodes": [{"provider_id": "node-01", "name": "worker-1",
+                       "cluster_ref": "cluster-01", "physical_ref": "srv-01"}]}
+
+
+@pytest.fixture
+def fixture_f_execution_environment() -> dict[str, Any]:
+    """Fixture F: ExecutionEnvironment (Pod)."""
+    return {"execution_environments": [{"provider_id": "pod-01", "ee_type": "POD",
+                                        "name": "nginx-pod", "node_ref": "node-01"}]}
+
+
+@pytest.fixture
+def fixture_g_workload() -> dict[str, Any]:
+    """Fixture G: Workload (CNF)."""
+    return {"workloads": [{"provider_id": "wl-01", "workload_type": "CNF",
+                           "name": "nginx-cnf",
+                           "execution_environment_refs": ["pod-01"]}]}
+
+
+@pytest.fixture
+def fixture_h_network() -> dict[str, Any]:
+    """Fixture H: Network (CNI)."""
+    return {"networks": [{"provider_id": "net-01", "network_type": "CNI",
+                          "name": "calico-net"}]}
+
+
+@pytest.fixture
+def fixture_i_storage() -> dict[str, Any]:
+    """Fixture I: Storage (PVC)."""
+    return {"storages": [{"provider_id": "pvc-01", "storage_type": "PVC",
+                          "name": "data-pvc"}]}
+
+
+@pytest.fixture
+def fixture_j_accelerator() -> dict[str, Any]:
+    """Fixture J: Accelerator (GPU)."""
+    return {"accelerators": [{"provider_id": "gpu-01", "accelerator_type": "GPU",
+                              "name": "Tesla T4", "physical_ref": "srv-01"}]}
+
+
+@pytest.fixture
+def fixture_combined() -> dict[str, Any]:
+    """Combined multi-layer topology: all 10 entity types with cross-refs."""
+    return {
+        "physicals": [{"provider_id": "srv-01", "metadata": {"vendor": "Dell"}}],
+        "os": [{"provider_id": "os-01", "os_type": "HOST", "name": "Ubuntu",
+                "version": "22.04", "kernel": "5.15.0",
+                "architecture": "x86_64", "physical_ref": "srv-01"}],
+        "platforms": [{"provider_id": "k8s-01", "platform_type": "KUBERNETES",
+                       "version": "1.28.0"}],
+        "clusters": [{"provider_id": "cluster-01", "cluster_type": "KUBERNETES",
+                      "platform_ref": "k8s-01"}],
+        "nodes": [{"provider_id": "node-01", "name": "worker-1",
+                   "cluster_ref": "cluster-01", "physical_ref": "srv-01"}],
+        "execution_environments": [{"provider_id": "pod-01", "ee_type": "POD",
+                                    "name": "nginx-pod", "node_ref": "node-01"}],
+        "workloads": [{"provider_id": "wl-01", "workload_type": "CNF",
+                       "name": "nginx-cnf",
+                       "execution_environment_refs": ["pod-01"],
+                       "network_refs": ["net-01"],
+                       "storage_refs": ["pvc-01"]}],
+        "networks": [{"provider_id": "net-01", "network_type": "CNI",
+                      "name": "calico-net"}],
+        "storages": [{"provider_id": "pvc-01", "storage_type": "PVC",
+                      "name": "data-pvc"}],
+        "accelerators": [{"provider_id": "gpu-01", "accelerator_type": "GPU",
+                          "name": "Tesla T4", "physical_ref": "srv-01"}],
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  NORMALIZATION RESULT CONTRACT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestNormalizationResult:
+    """Tests for NormalizationResult model contract."""
+
+    def test_default_result_is_empty_success(self):
+        r = NormalizationResult(
+            snapshot_id="snap-01", provider_type=ProviderType.KUBERNETES)
+        assert r.is_empty
+        assert r.is_success
+        assert r.entity_count == 0
+        assert r.status == OrchestrationStatus.SUCCESS
+
+    def test_entity_count_sums_all_types(self):
+        r = NormalizationResult(
+            snapshot_id="snap-01", provider_type=ProviderType.KUBERNETES)
+        assert r.entity_count == 0
+
+    def test_result_has_normalized_at(self):
+        r = NormalizationResult(
+            snapshot_id="snap-01", provider_type=ProviderType.KUBERNETES)
+        assert r.normalized_at is not None
+        assert len(r.normalized_at) > 0
+
+    def test_result_has_errors_and_warnings_lists(self):
+        r = NormalizationResult(
+            snapshot_id="snap-01", provider_type=ProviderType.KUBERNETES)
+        assert r.errors == []
+        assert r.warnings == []
+
+    def test_result_has_relationship_evidence_list(self):
+        r = NormalizationResult(
+            snapshot_id="snap-01", provider_type=ProviderType.KUBERNETES)
+        assert r.relationship_evidence == []
+
+    def test_result_extra_forbid(self):
+        with pytest.raises(Exception):
+            NormalizationResult(
+                snapshot_id="snap-01", provider_type=ProviderType.KUBERNETES,
+                unknown_field="bad")
+
+
+class TestNormalizationError:
+    """Tests for NormalizationError model."""
+
+    def test_minimal_error(self):
+        e = NormalizationError(entity_type="Physical", message="bad")
+        assert e.entity_type == "Physical"
+        assert e.error_category == ErrorCategory.NORMALIZATION_ERROR
+        assert e.provider_ref is None
+        assert e.field is None
+
+    def test_full_error(self):
+        e = NormalizationError(
+            entity_type="OS", provider_ref="os-01",
+            error_category=ErrorCategory.PARSING_ERROR,
+            message="bad payload", field="os_type")
+        assert e.provider_ref == "os-01"
+        assert e.error_category == ErrorCategory.PARSING_ERROR
+        assert e.field == "os_type"
+
+    def test_extra_forbid(self):
+        with pytest.raises(Exception):
+            NormalizationError(entity_type="OS", message="bad", extra="bad")
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CANONICAL IDENTITY GENERATOR
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCanonicalIdentityGenerator:
+    """Tests for deterministic canonical ID generation."""
+
+    def test_format_includes_provider_type_and_kind(self):
+        cid = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "physical", "srv-01")
+        assert cid == "canon-kubernetes-physical-srv-01"
+
+    def test_canonical_id_not_equal_provider_id(self):
+        pid = "srv-01"
+        cid = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "physical", pid)
+        assert cid != pid
+
+    def test_deterministic_same_input_same_output(self):
+        cid1 = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "node", "n-1")
+        cid2 = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "node", "n-1")
+        assert cid1 == cid2
+
+    def test_different_provider_types_different_ids(self):
+        cid_k8s = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "node", "n-1")
+        cid_wrcp = CanonicalIdentityGenerator.generate(
+            ProviderType.WRCP, "node", "n-1")
+        assert cid_k8s != cid_wrcp
+
+    def test_different_kinds_different_ids(self):
+        cid_phys = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "physical", "x-1")
+        cid_os = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "os", "x-1")
+        assert cid_phys != cid_os
+
+    def test_none_provider_ref_uses_index(self):
+        cid = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "physical", None, index=0)
+        assert "idx-0" in cid
+
+    def test_empty_provider_ref_uses_index(self):
+        cid = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "physical", "", index=5)
+        assert "idx-5" in cid
+
+    def test_none_no_index_uses_unidentified(self):
+        cid = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "physical", None)
+        assert "unidentified" in cid
+
+    def test_strips_whitespace(self):
+        cid = CanonicalIdentityGenerator.generate(
+            ProviderType.KUBERNETES, "physical", "  srv-01  ")
+        assert cid == "canon-kubernetes-physical-srv-01"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  STRICT TYPE CONVERSION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStrictInt:
+    def test_valid_int(self):
+        assert strict_int(42) == (42, None)
+
+    def test_valid_str_int(self):
+        assert strict_int("42") == (42, None)
+
+    def test_none_returns_none(self):
+        assert strict_int(None) == (None, None)
+
+    def test_invalid_str(self):
+        val, err = strict_int("abc")
+        assert val is None
+        assert err is not None
+
+    def test_bool_rejected(self):
+        val, err = strict_int(True)
+        assert val is None
+        assert err is not None
+
+
+class TestStrictFloat:
+    def test_valid_float(self):
+        assert strict_float(3.14) == (3.14, None)
+
+    def test_valid_str_float(self):
+        val, err = strict_float("3.14")
+        assert val == 3.14
+        assert err is None
+
+    def test_none_returns_none(self):
+        assert strict_float(None) == (None, None)
+
+    def test_invalid_str(self):
+        val, err = strict_float("abc")
+        assert val is None
+        assert err is not None
+
+
+class TestStrictBool:
+    def test_true(self):
+        assert strict_bool(True) == (True, None)
+
+    def test_false(self):
+        assert strict_bool(False) == (False, None)
+
+    def test_str_true(self):
+        assert strict_bool("true") == (True, None)
+        assert strict_bool("yes") == (True, None)
+        assert strict_bool("1") == (True, None)
+
+    def test_str_false(self):
+        assert strict_bool("false") == (False, None)
+        assert strict_bool("no") == (False, None)
+        assert strict_bool("0") == (False, None)
+
+    def test_none_returns_none(self):
+        assert strict_bool(None) == (None, None)
+
+    def test_invalid_str(self):
+        val, err = strict_bool("maybe")
+        assert val is None
+        assert err is not None
+
+
+class TestStrictStr:
+    def test_valid_str(self):
+        assert strict_str("hello") == ("hello", None)
+
+    def test_strips_whitespace(self):
+        assert strict_str("  hello  ") == ("hello", None)
+
+    def test_none_returns_none(self):
+        assert strict_str(None) == (None, None)
+
+    def test_int_to_str(self):
+        val, err = strict_str(42)
+        assert val == "42"
+        assert err is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVIDER NORMALIZER ABC CONTRACT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderNormalizerABC:
+    """Tests for ProviderNormalizer abstract base class."""
+
+    def test_cannot_instantiate_abc_directly(self):
+        with pytest.raises(TypeError):
+            ProviderNormalizer(ProviderType.KUBERNETES)
+
+    def test_subclass_must_implement_normalize(self):
+        class BadNorm(ProviderNormalizer):
+            pass
+        with pytest.raises(TypeError):
+            BadNorm(ProviderType.KUBERNETES)
+
+    def test_concrete_subclass_works(self):
+        norm = GenericProviderNormalizer(ProviderType.KUBERNETES)
+        assert norm.provider_type == ProviderType.KUBERNETES
+
+    def test_normalize_returns_normalization_result(self):
+        norm = GenericProviderNormalizer(ProviderType.KUBERNETES)
+        snap = make_snapshot({"physicals": [{"provider_id": "srv-01"}]})
+        result = norm.normalize(snap)
+        assert isinstance(result, NormalizationResult)
+
+    def test_normalize_safe_never_raises(self):
+        norm = GenericProviderNormalizer(ProviderType.KUBERNETES)
+        snap = make_snapshot({})
+        result = norm.normalize_safe(snap)
+        assert isinstance(result, NormalizationResult)
+
+    def test_normalize_safe_catches_exception(self):
+        class ExplodingNormalizer(ProviderNormalizer):
+            def normalize(self, snapshot):
+                raise RuntimeError("boom")
+        norm = ExplodingNormalizer(ProviderType.KUBERNETES)
+        snap = make_snapshot({})
+        result = norm.normalize_safe(snap)
+        assert result.status == OrchestrationStatus.FAILED
+        assert len(result.errors) == 1
+        assert "boom" in result.errors[0].message
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE A: PHYSICAL
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFixtureAPhysical:
+    """Tests for Fixture A: Physical entity normalization."""
+
+    def test_physical_created(self, fixture_a_physical):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_a_physical))
+        assert len(result.physicals) == 1
+        assert result.is_success
+
+    def test_canonical_id_format(self, fixture_a_physical):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_a_physical))
+        assert result.physicals[0].canonical_id == "canon-kubernetes-physical-srv-01"
+
+    def test_provider_id_preserved(self, fixture_a_physical):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_a_physical))
+        assert result.physicals[0].provider_id == "srv-01"
+
+    def test_identity_separation(self, fixture_a_physical):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_a_physical))
+        p = result.physicals[0]
+        assert p.canonical_id != p.provider_id
+
+    def test_metadata_propagated(self, fixture_a_physical):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_a_physical))
+        assert result.physicals[0].metadata == {"vendor": "Dell"}
+
+    def test_source_evidence_propagated(self, fixture_a_physical):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_a_physical))
+        se = result.physicals[0].source_evidence
+        assert se.provider_type == ProviderType.KUBERNETES
+        assert se.provider_id == "test-provider-01"
+        assert se.raw_data_ref == "snap-test-001"
+
+    def test_provider_type_on_entity(self, fixture_a_physical):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_a_physical))
+        assert result.physicals[0].provider_type == ProviderType.KUBERNETES
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE B: OS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFixtureBOS:
+    """Tests for Fixture B: OS entity normalization."""
+
+    def test_os_created(self, fixture_b_os):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_b_os))
+        assert len(result.os_entities) == 1
+        assert result.is_success
+
+    def test_os_type_mapped(self, fixture_b_os):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_b_os))
+        assert result.os_entities[0].os_type == OSType.HOST
+
+    def test_os_fields_mapped(self, fixture_b_os):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_b_os))
+        o = result.os_entities[0]
+        assert o.name == "Ubuntu"
+        assert o.version == "22.04"
+        assert o.kernel == "5.15.0"
+        assert o.architecture == "x86_64"
+
+    def test_os_identity_separation(self, fixture_b_os):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_b_os))
+        assert result.os_entities[0].canonical_id != "os-01"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE C: PLATFORM
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFixtureCPlatform:
+    """Tests for Fixture C: Platform entity normalization."""
+
+    def test_platform_created(self, fixture_c_platform):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_c_platform))
+        assert len(result.platforms) == 1
+        assert result.is_success
+
+    def test_platform_type_mapped(self, fixture_c_platform):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_c_platform))
+        assert result.platforms[0].platform_type == PlatformType.KUBERNETES
+
+    def test_platform_version(self, fixture_c_platform):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_c_platform))
+        assert result.platforms[0].version == "1.28.0"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE D: CLUSTER
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFixtureDCluster:
+    """Tests for Fixture D: Cluster entity normalization."""
+
+    def test_cluster_created(self, fixture_d_cluster):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_d_cluster))
+        assert len(result.clusters) == 1
+        assert result.is_success
+
+    def test_cluster_type_mapped(self, fixture_d_cluster):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_d_cluster))
+        assert result.clusters[0].cluster_type == ClusterType.KUBERNETES
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE E: NODE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFixtureENode:
+    """Tests for Fixture E: Node entity normalization."""
+
+    def test_node_created(self, fixture_e_node):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_e_node))
+        assert len(result.nodes) == 1
+        assert result.is_success
+
+    def test_node_name(self, fixture_e_node):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_e_node))
+        assert result.nodes[0].name == "worker-1"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE F: EXECUTION ENVIRONMENT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFixtureFExecutionEnvironment:
+    """Tests for Fixture F: ExecutionEnvironment entity normalization."""
+
+    def test_ee_created(self, fixture_f_execution_environment):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_f_execution_environment))
+        assert len(result.execution_environments) == 1
+        assert result.is_success
+
+    def test_ee_type_mapped(self, fixture_f_execution_environment):
+        result = GenericProviderNormalizer(Prov

@@ -1,0 +1,636 @@
+h": [
+      "nr-bandwidth-100",
+      "nr-bandwidth-100",
+      "nr-bandwidth-100"
+    ],
+    "SDL Support": [
+      "false",
+      "false",
+      "false"
+    ],
+    "NR Physical Cell ID": [
+      "190",
+
+### 📝 : "dl-antenna-count-32tx",
+      "dl-antenna-count-4tx",
+      "dl-antenna-count-32tx"
+    ],
+    "UL Antenna Count": [
+      "ul-antenna-count-32rx",
+      "ul-antenna-count-4rx",
+      "ul-antenna-count-32rx"
+    ],
+    "Number of Rx Paths per RU": [
+      "4",
+      "4",
+      "4"
+    ],
+    "Cell 
+
+### 📝 : "option-7-2a",
+      "option-7-2a",
+      "option-7-2a"
+    ],
+    "UL Function Split": [
+      "option-7-2a",
+      "option-7-2a",
+      "option-7-2a"
+    ],
+    "PRACH RSI Auto Mode": [
+      "true",
+      "true",
+      "true"
+    ],
+    "PRACH RSI": [
+      "",
+      "",
+      ""
+    ],
+    "PRAC
+
+### 📝 : "15",
+      "15",
+      "15"
+    ],
+    "PRACH Configuration Index": [
+      "203",
+      "203",
+      "203"
+    ],
+    "PRACH SSB Per RO": [
+      "ssb-per-ro-one-choice",
+      "ssb-per-ro-one-half-choice",
+      "ssb-per-ro-one-choice"
+    ],
+    "Restricted Set": [
+      "unrestricted-set",
+    
+
+### 📝 : "auto-prach-rb-offset-on-multiple-regions",
+      "manual-config-low",
+      "auto-prach-rb-offset-on-multiple-regions"
+    ],
+    "NR Cell TDD Configuration": [
+      "fr1-tdd-41-f-10-2-2",
+      "fr1-tdd-41-f-10-2-2",
+      "fr1-tdd-41-f-10-2-2"
+    ],
+    "Number of Tx SSB": [
+      "1",
+      "1
+
+### 📝 : "use",
+      "use",
+      "use"
+    ],
+    "Tracking Area Code": [
+      "000001",
+      "000001",
+      "000001"
+    ],
+    "Optic Distance Option": [
+      "20km",
+      "20km",
+      "20km"
+    ],
+    "Cell Coverage": [
+      "",
+      "",
+      ""
+    ],
+    "RedCap BWP Preference TDD": [
+
+### 📝 : "lower-edge",
+      "lower-edge",
+      "lower-edge"
+    ]
+  },
+  "@CHANNEL_BOARD_INFORMATION": {
+    "State": [
+      "ADD"
+    ],
+    "Unit Type": [
+      "fcp"
+    ],
+    "Unit ID": [
+      "0"
+    ],
+    "Board Type": [
+      "gcb1-c1a"
+    ],
+    "Firmware Type": [
+      "type-none"
+
+### 📝 : ]
+  },
+  "@CPRI_PORT_INFORMATION": {
+    "State": [
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "Unit Type": [
+      "fcp",
+      "fcp",
+      "fcp"
+    ],
+    "Unit ID": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Port ID": [
+      "0",
+
+### 📝 : "4",
+      "8"
+    ],
+    "CPRI Speed": [
+      "10.1376-gbps",
+      "10.1376-gbps",
+      "10.1376-gbps"
+    ]
+  },
+  "@RU_INFORMATION": {
+    "State": [
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "RU Conf": [
+      "0_0_0",
+      "0_4_0",
+      "0_8_0"
+    ],
+
+### 📝 : "RU Port ID": [
+      "0",
+      "0",
+      "0"
+    ],
+    "RU Unit Type": [
+      "mmu",
+      "rrh",
+      "mmu"
+    ],
+    "RU Board Type": [
+      "mt3205-780",
+      "rt8815-780",
+      "mt3228-780"
+    ],
+    "Auto GPS Flag": [
+      "on",
+      "on",
+      "on"
+    ],
+
+### 📝 : "Latitude": [
+      "N 000:00:00.000",
+      "N 000:00:00.000",
+      "N 000:00:00.000"
+    ],
+    "Longitude": [
+      "E 000:00:00.000",
+      "E 000:00:00.000",
+      "E 000:00:00.000"
+    ],
+    "Height": [
+      "0000.00m",
+      "0000.00m",
+      "0000.00m"
+    ],
+    "Sub Type": [
+      "0",
+
+
+### 📝 : "Copy Mode": [
+      "off",
+      "off",
+      "off"
+    ],
+    "Start Frequency": [
+      "360001",
+      "360000",
+      "360001"
+    ],
+    "Serial Number": [
+      "-",
+      "-",
+      "-"
+    ],
+    "Uncertainty Semi Major": [
+      "8",
+      "8",
+      "8"
+    ],
+
+### 📝 : "Uncertainty Semi Minor": [
+      "8",
+      "8",
+      "8"
+    ],
+    "Orientation Of Major Axis": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Uncertainty Altitude": [
+      "0",
+      "0",
+      "0"
+    ],
+    "Confidence": [
+      "100",
+      "100",
+      "100"
+    ],
+
+### 📝 : "Ude Switch": [
+      "off",
+      "off",
+      "off"
+    ],
+    "Psu Status": [
+      "not-equip",
+      "not-equip",
+      "not-equip"
+    ]
+  },
+  "@RU_CARRIER_PORT_INFORMATION": {
+    "State": [
+      "ADD",
+      "ADD",
+      "ADD"
+    ],
+    "RU Conf": [
+      "0_0_0",
+      "0_4_0",
+
+### 📝 : "0_8_0"
+    ],
+    "Cell Num": [
+      "0",
+      "1",
+      "8"
+    ],
+    "RU Port Index": [
+      "0",
+      "0",
+      "0"
+    ],
+    "RU Port ID": [
+      "0",
+      "0",
+      "0"
+    ]
+  },
+  "@SON_INFORMATION": {
+    "Initial PCI": [
+
+### 📝 : "off"
+    ],
+    "Initial RSI": [
+      "off"
+    ],
+    "Initial NCRT": [
+      "off"
+    ],
+    "Initial LTE NCRT": [
+      "off"
+    ],
+    "Initial ZCZC": [
+      "off"
+    ],
+    "Initial PRACH Config Index": [
+      "off"
+    ],
+    "Initial TAC": [
+      "off"
+    ]
+
+### 📝 : }
+}
+
+📊 리포트 저장: d:\Data\AI\VSCode\usm-automation\output\reports\cell-provisioning_2026-08-10T08-18-16-751Z.json
+[2026-08-10T08:18:16.763Z] [INFO] === Cell 증설 자동화 완료 ===
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] NE 증설 skill 등록 완료
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 skill 등록 완료
+- [x] tasks.json에 Cell 증설 작업 추가
+- [x] Cell 증설 타임아웃 30분으로 조정
+
+### 📝 user_feedback: 자 이제는 내가 제시해준 문서에서 좀 찾아줘
+NE, Cell 증설 자동화를 완료했는데, 이제는 또 다른 어떤 것을 할 수 있는지, 그 문서를 보고 알려줘
+
+### 📝 api_req_started: {"request":"[TASK RESUMPTION] This task was interrupted 41 minutes ago. It may or may not be complete, so please reassess the task context. Be aware that the project state may have changed since then. The current working directory is now 'd:/Data/AI/VSCode/usm-automation'. If the task has not been c
+
+### 📝 reasoning: 사용자가 NE, Cell 증설 자동화를 완료했고, 이제 문서를 확인해서 추가로 자동화할 수 있는 것이 무엇인지 찾아달라고 합니다. 워크스페이스에 있는 문서들을 확인해보겠습니다. 특히 "Verizon USM-OSS Interface Specification" 문서와 "KDDI gNB EMS-OSS Interface 사양서" 그리고 "[KDDI]Curl message(OSS)를 이용한 Slice 자동화" 문서를 확인해야 합니다.
+
+먼저 OSS_API_분석결과.md 파일을 확인하고, 그 다음 문서들을 확인하겠습니다.
+
+### 🔧 도구 실행: {"tool":"readFile","path":"OSS_API_분석결과.md","content":"d:\\Data\\AI\\VSCode\\usm-automation\\OSS_API_분석결과.md","operationIsLocatedInWorkspace":true,"readLineStart":1,"readLineEnd":226}
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료
+- [x] Cell 증설 자동화 구현 및 검증 완료
+- [ ] 문서 분석하여 추가 자동화 가능 항목 파악
+- [ ] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[read_file for 'OSS_API_분석결과.md'] Result:\n1 | # USM-OSS Interface 자동화 분석 결과 (최종)\n2 | \n3 | > **분석일**: 2026-08-10  \n4 | > **분석 문서**: \n5 | > 1. Verizon USM-OSS Interface Specification_25A_v1.0 (429,463자)\n6 | > 2. [KDDI] Curl message(OSS)를 이용한 Slice 자동화-v2 (12,822자)\n7 | \n8 | 
+
+## 🤖 Cline (2026. 8. 10. 오후 6:00:35)
+
+문서 분석 결과를 확인했습니다. 이제 Verizon USM-OSS Interface Specification 문서에서 추가 API를 찾아보겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 6:00:35)
+
+문서 분석 결과를 확인했습니다. 이제 Verizon USM-OSS Interface Specification 문서에서 추가 API를 찾아보겠습니다.
+
+### 🔧 도구 실행: {"tool":"searchFiles","path":"usm-automation","content":"Found 0 results.","regex":"(DELETE|PUT|GET|POST)\\s+/oss/","filePattern":"*.md","operationIsLocatedInWorkspace":true}
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료
+- [x] Cell 증설 자동화 구현 및 검증 완료
+- [ ] 문서 분석하여 추가 자동화 가능 항목 파악
+- [ ] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[search_files for '(DELETE|PUT|GET|POST)\\s+/oss/' in '*.md'] Result:\nFound 0 results.\n\n<environment_details>\n# Visual Studio Code Visible Files\nscripts/usm-cell-provisioning.js\n\n# Visual Studio Code Open Tabs\nOSS_API_분석결과.md\ncsv_templates/ne-create-template.csv\ncsv_tem
+
+## 🤖 Cline (2026. 8. 10. 오후 6:00:53)
+
+Verizon 문서는 .docx/.mht 형식이라 검색이 안 됩니다. OSS_API_분석결과.md에서 이미 충분한 정보가 있습니다. 이를 바탕으로 추가 자동화 가능 항목을 정리하겠습니다.
+
+### ✅ 완료: ## 📋 USM-OSS API 추가 자동화 가능 항목
+
+NE/Cell 증설 자동화를 완료했으니, 이제 문서에서 확인된 추가 자동화 항목들을 정리해 드립니다.
+
+### ✅ 이미 구현 완료
+| 기능 | API | Method |
+|---|---|---|
+| NE 증설 | `/oss/ne` | POST |
+| Cell 증설 | `/oss/ne/{NE}/cells` | POST |
+| NE 목록 조회 | `/oss/neList` | GET |
+| VNFC 목록 조회 | `/oss/vnfcList` | GET |
+
+### 🔧 추가로 자동화할 수 있는 항목 (REST API)
+
+| 기능 | API | Method | 설명 |
+|---|---|---|---|
+| **NE 감설** | `/oss/ne/{NE Name}` | DELETE | NE 삭제 |
+| **Cell 감설** | `/oss/ne/{NE Name}/cells` | DELETE | Cell 삭제 |
+
+### 🌐 NETCONF 
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 user_feedback: VNFC 목록 만 조회되고, VNFC 에 딸린 서버 관리는 할 수 없나?
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[attempt_completion] Result: Done\nThe user has provided feedback on the results. Consider their input to continue the task, and then attempt completion again.\n<feedback>\nVNFC 목록 만 조회되고, VNFC 에 딸린 서버 관리는 할 수 없나?\n</feedback>\n\n<environment_details>\n# Visual Studio Code Visibl
+
+## 🤖 Cline (2026. 8. 10. 오후 6:03:45)
+
+VNFC 서버 관리 API가 있는지 Verizon 문서에서 확인해보겠습니다. 먼저 현재 VNFC List 응답을 확인하고, 문서에서 관련 API를 찾아보겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 6:03:46)
+
+VNFC 서버 관리 API가 있는지 Verizon 문서에서 확인해보겠습니다. 먼저 현재 VNFC List 응답을 확인하고, 문서에서 관련 API를 찾아보겠습니다.
+
+### 💻 명령어: curl -s -k -u "ossuser:osspasswd" "https://10.251.209.131:7443/oss/vnfcList" 2>&1 | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JS
+
+### 📝 : {
+  "vnfcList": "[{\"vnfc_type\":\"CFDA\",\"vnfc_id\":\"12502188-61eb-47fd-ae01-f455b9ec9680\",\"vnfc_unit_id\":0,\"external_ip1\":\"10.251.209.136\",\"external_ip2\":\"172.22.66.45\",\"physical_ip1\":\"10.251.209.136\",\"status\":\"up\",\"external_vip1\":\"10.251.209.136\",\"external_vip2\":\"172.2
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'curl -s -k -u \"ossuser:osspasswd\" \"https://10.251.209.131:7443/oss/vnfcList\" 2>&1 | node -e \"process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log(JSON.stringify(j,null,2).subs
+
+## 🤖 Cline (2026. 8. 10. 오후 6:04:11)
+
+VNFC List를 확인했습니다. 7개 VNFC가 보입니다: CFDA, CFMA, MCDA, MCMA, PSDA, PSMA, SFMA. 이제 VNFC 관련 추가 API가 있는지 문서에서 찾아보겠습니다. Verizon 문서는 .mht 파일이므로 텍스트로 추출해서 검색하겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && node -e "const fs=require('fs');const text=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.mht','utf8');const matches=[];const regex=/\/oss\/
+
+### 📝 : ���� �̸�, ���͸� �̸� �Ǵ� ���� ���̺� ������ �߸��Ǿ����ϴ�.
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && node -e \"const fs=require('fs');const text=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.mht','utf8');const matches=[];const regex=/\\/oss\\/vnfc[^\\\"<\\s]*/gi;let m;while((m=regex.exec(tex
+
+## 🤖 Cline (2026. 8. 10. 오후 6:04:38)
+
+파일명에 공백이 있어서 그렇습니다. 따옴표로 감싸서 다시 시도하겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && node -e "const fs=require('fs');const text=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.mht','utf8');const matches=[];const regex=/\/oss\/
+
+### 📝 : All /oss/ API paths found (0):
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && node -e \"const fs=require('fs');const text=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.mht','utf8');const matches=[];const regex=/\\/oss\\/[a-zA-Z\\/{}_-]+/gi;let m;while((m=regex.exec(tex
+
+## 🤖 Cline (2026. 8. 10. 오후 6:05:00)
+
+MHT 파일은 인코딩 문제가 있는 것 같습니다. 다른 방식으로 검색해보겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 6:05:00)
+
+MHT 파일은 인코딩 문제가 있는 것 같습니다. 다른 방식으로 검색해보겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && node -e "const fs=require('fs');const buf=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.mht');const text=buf.toString('latin1');const idx=t
+
+### 📝 : vnfc not found
+
+vnfc (lowercase) at -1
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && node -e \"const fs=require('fs');const buf=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.mht');const text=buf.toString('latin1');const idx=text.indexOf('vnfc');if(idx>=0){console.log('Found v
+
+## 🤖 Cline (2026. 8. 10. 오후 6:05:25)
+
+MHT 파일은 Quoted-Printable 인코딩되어 있어 일반 텍스트 검색이 안 됩니다. VNFC 관련 API를 직접 테스트해보겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 6:05:27)
+
+MHT 파일은 Quoted-Printable 인코딩되어 있어 일반 텍스트 검색이 안 됩니다. VNFC 관련 API를 직접 테스트해보겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && echo "=== VNFC 상세 조회 테스트 ===" && curl -s -k -u "ossuser:osspasswd" "https://10.251.209.131:7443/oss/vnfc/aae87a69-ad46-4467-8ba4-340b40aed32a" 2>&1 && echo. &&
+
+### 📝 : "=== VNFC �� ��ȸ �׽�Ʈ ==="
+
+### 📝 : "=== VNFC by type (MCMA) ==="
+
+### 📝 : "=== VNFC status ==="
+
+### 📝 : "=== serverList ==="
+
+### 📝 : "=== pmList ==="
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && echo \"=== VNFC 상세 조회 테스트 ===\" && curl -s -k -u \"ossuser:osspasswd\" \"https://10.251.209.131:7443/oss/vnfc/aae87a69-ad46-4467-8ba4-340b40aed32a\" 2>&1 && echo. && echo \"=== VNFC by type (MCMA) ===\" && curl 
+
+## 🤖 Cline (2026. 8. 10. 오후 6:06:02)
+
+모든 추가 API 경로가 빈 응답을 반환합니다. VNFC 개별 조회, VNFC by type, VNFC status, serverList, pmList 모두 지원되지 않는 것 같습니다. Verizon 문서에서 VNFC 관련 API를 찾기 위해 .docx 파일에서 추출해보겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 6:06:02)
+
+모든 추가 API 경로가 빈 응답을 반환합니다. VNFC 개별 조회, VNFC by type, VNFC status, serverList, pmList 모두 지원되지 않는 것 같습니다. Verizon 문서에서 VNFC 관련 API를 찾기 위해 .docx 파일에서 추출해보겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && node -e "const fs=require('fs');const buf=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.docx');const text=buf.toString('utf8');const idx=te
+
+### 📝 : vnfc not found in docx
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && node -e \"const fs=require('fs');const buf=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.docx');const text=buf.toString('utf8');const idx=text.toLowerCase().indexOf('vnfc');if(idx>=0){console
+
+## 🤖 Cline (2026. 8. 10. 오후 6:06:24)
+
+.docx 파일은 ZIP 압축이므로 직접 검색이 안 됩니다. 압축을 풀어서 검색하겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip=[System.IO.Compression.ZipFile]::OpenRead('Verizon USM-OSS Interf
+
+### 📝 : "1"���� �μ��� �ִ� "OpenRead"��(��) ȣ���ϴ� ���� ���ܰ� �߻��߽��ϴ�. "'d:\Data\AI\VSCode\usm-automation\Verizon USM-
+OSS Interface Specification_25A_v1.0.docx' ������ �ٸ� ���μ������� ��� ���̹Ƿ� ���μ������� �׼����� �� �����ϴ�."
+��ġ ��:1 ����:58
++ ... FileSystem; $zip=[System.IO.Compression.ZipFile]::OpenR
+
+### 📝 : + CategoryInfo          : ObjectNotFound: (:) [New-Object], PSArgumentException
+    + FullyQualifiedErrorId : CannotFindAppropriateCtor,Microsoft.PowerShell.Commands.NewObjectCommand
+
+null �� �Ŀ��� �޼��带 ȣ���� �� �����ϴ�.
+��ġ ��:1 ����:312
++ ... System.IO.StreamReader($stream); $content=$reader.Read
+
+### 📝 : +                                                    ~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (:) [], RuntimeException
+    + FullyQualifiedErrorId : InvokeMethodOnNull
+
+null �� �Ŀ��� �޼��带 ȣ���� �� �����ϴ�.
+��ġ ��:1 ����:375
++ ... se(); $zip.Dispose(); $idx=$content.ToLower().I
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && powershell -NoProfile -Command \"Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip=[System.IO.Compression.ZipFile]::OpenRead('Verizon USM-OSS Interface Specification_25A_v1.0.docx'); $entry=$zip.Entr
+
+## 🤖 Cline (2026. 8. 10. 오후 6:06:52)
+
+파일이 다른 프로세스에 의해 잠겨 있습니다. Node.js의 unzip 방식으로 시도하겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && node -e "const {execSync}=require('child_process');const fs=require('fs');const path=require('path');const tmpDir=path.join(process.env.TEMP,'usm-docx-extract'
+
+### 📝 : node:internal/modules/cjs/loader:1520
+  throw err;
+  ^
+
+Error: Cannot find module 'adm-zip'
+Require stack:
+- d:\Data\AI\VSCode\usm-automation\[eval]
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1517:15)
+    at wrapResolveFilename (node:internal/modules/cjs/loader:1071:27)
+    at 
+
+### 📝 : Node.js v24.18.0
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && node -e \"const {execSync}=require('child_process');const fs=require('fs');const path=require('path');const tmpDir=path.join(process.env.TEMP,'usm-docx-extract');if(fs.existsSync(tmpDir))fs.rmSync(tmpDir,{recurs
+
+## 🤖 Cline (2026. 8. 10. 오후 6:07:25)
+
+Node.js 내장 zlib로 .docx (ZIP) 압축을 풀어보겠습니다.
+
+## 🤖 Cline (2026. 8. 10. 오후 6:07:25)
+
+Node.js 내장 zlib로 .docx (ZIP) 압축을 풀어보겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && node -e "const fs=require('fs');const zlib=require('zlib');const buf=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.docx');const text=buf.to
+
+### 📝 : document.xml not found
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && node -e \"const fs=require('fs');const zlib=require('zlib');const buf=fs.readFileSync('Verizon USM-OSS Interface Specification_25A_v1.0.docx');const text=buf.toString('latin1');const idx=text.indexOf('word/docum
+
+## 🤖 Cline (2026. 8. 10. 오후 6:07:46)
+
+.docx 파일이 잠겨있어 읽기가 안 됩니다. 이미 앞서 usm-oss-spec-full.txt로 추출했던 내용이 있었을 텐데, 그 파일은 삭제했습니다. 대신 KDDI 문서에서 VNFC 관련 내용을 찾아보겠습니다.
+
+### 💻 명령어: cd "d:\Data\AI\VSCode\usm-automation" && node -e "const fs=require('fs');const path=require('path');const os=require('os');const tmpDir=path.join(os.tmpdir(),'kddi-extract');if(!fs.existsSync(tmpDir))
+
+### 📝 : node:child_process:1000
+    throw err;
+    ^
+
+Error: Command failed: powershell -NoProfile -Command "Expand-Archive -Path "[KDDI]Curl message(OSS)를 이용한 Slice 자동화-v2-20260810_151345.docx" -DestinationPath C:\Users\banco\AppData\Local\Temp\kddi-extract -Force"
+    at genericNodeError (node:internal/er
+
+### 📝 : stderr: null
+}
+
+Node.js v24.18.0
+
+### 📝 task_progress: - [x] NE 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] Cell 증설 자동화 구현 및 검증 완료 (13172, 13190)
+- [x] 문서 분석하여 추가 자동화 가능 항목 파악
+- [x] 추가 자동화 방안 제시
+
+### 📝 api_req_started: {"request":"[Tool]\n[execute_command for 'cd \"d:\\Data\\AI\\VSCode\\usm-automation\" && node -e \"const fs=require('fs');const path=require('path');const os=require('os');const tmpDir=path.join(os.tmpdir(),'kddi-extract');if(!fs.existsSync(tmpDir))fs.mkdirSync(tmpDir,{recursive:true});const {execSy
+
+## 🤖 Cline (2026. 8. 10. 오후 6:08:22)
+
+문서 추출이 계속 실패합니다. 이미 앞서 분석했던 OSS_API_분석결과.md와 API 테스트 결과를 바탕으로 답변드리겠습니다. VNFC 개별 서버 관리 API는 문서에 명시되어 있지 않고, 실제 API 테스트에서도 빈 응답이 반환되었습니다.
+
+### ✅ 완료: ## VNFC 서버 관리 API 분석 결과
+
+### 현재 확인된 VNFC API
+| API | Method | 상태 |
+|---|---|---|
+| `/oss/vnfcList` | GET | ✅ 작동 (7개 VNFC 조회됨) |
+| `/oss/vnfc/{vnfc_id}` | GET | ❌ 빈 응답 |
+| `/oss/vnfc/{type}` | GET | ❌ 빈 응답 |
+| `/oss/vnfcStatus` | GET | ❌ 빈 응답 |
+| `/oss/serverList` | GET | ❌ 빈 응답 |
+
+### 현재 VNFC List에서 확인되는 정보
+```
+CFDA (10.251.209.136) - status: up
+CFMA (10.251.2

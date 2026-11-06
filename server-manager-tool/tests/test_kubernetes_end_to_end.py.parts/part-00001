@@ -1,0 +1,451 @@
+"""Kubernetes End-to-End Integration Contract Tests — Phase 13G-5.
+
+Verifies the full vertical integration path:
+    Fixture → Adapter → RawProviderSnapshot → Normalizer → NormalizationResult
+
+NO manual translation between adapter output and normalizer input.
+NO live Kubernetes connection. All fixtures are synthetic/in-memory.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.models.canonical import (
+    ExecutionEnvironmentType, NetworkType, PlatformType,
+    ProviderType, RelationshipEvidenceType, StorageType,
+)
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.normalizers.provider_normalizer import (
+    CanonicalIdentityGenerator, NormalizationResult,
+)
+from server_manager.orchestrator.models import ErrorCategory, OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability, KubernetesProviderAdapter, RawProviderSnapshot,
+)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE HELPERS
+# ════════════════════════════════════════════════════════════════════════
+
+def make_node(name, uid=None):
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or f"uid-node-{name}",
+                         "labels": {"kubernetes.io/hostname": name}},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}}}
+
+def make_container(name, image="nginx:1.21"):
+    return {"name": name, "image": image, "resources": {}}
+
+def make_pod(name, uid=None, namespace="default", node_name=None, containers=None):
+    spec: dict[str, Any] = {}
+    if node_name: spec["nodeName"] = node_name
+    spec["containers"] = containers or [make_container("main")]
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or f"uid-pod-{name}", "namespace": namespace},
+            "spec": spec, "status": {"phase": "Running"}}
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or f"uid-svc-{name}", "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+def make_pv(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+            "spec": {"capacity": {"storage": "10Gi"}}}
+
+def make_pvc(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}", "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}}}
+
+def make_namespace(name):
+    return {"apiVersion": "v1", "kind": "Namespace",
+            "metadata": {"name": name, "uid": f"uid-ns-{name}"}}
+
+def make_deployment(name):
+    return {"apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": name, "uid": f"uid-deploy-{name}"},
+            "spec": {"replicas": 3}}
+
+def make_full_topology_fixture():
+    """Cluster → Node → Pod(dmp+sidecar) + Service + PV + PVC + Namespace + Deployment."""
+    return {
+        "cluster": {"name": "cluster-01", "uid": "uid-cluster-01", "version": "1.28.0"},
+        "nodes": [make_node("node-01")],
+        "namespaces": [make_namespace("ran")],
+        "pods": [make_pod(
+            name="uadpf-dmp-xxxxx", uid="uid-pod-uadpf-dmp", namespace="ran",
+            node_name="node-01",
+            containers=[make_container("dmp", "dmp:1.0"), make_container("sidecar", "busybox:1.35")])],
+        "deployments": [make_deployment("uadpf-deploy")],
+        "statefulsets": [], "daemonsets": [],
+        "services": [make_service("uadpf-service")],
+        "persistent_volumes": [make_pv("uadpf-pv")],
+        "persistent_volume_claims": [make_pvc("uadpf-pvc")],
+    }
+
+def make_partial_fixture():
+    """Fixture with 403 on services — services list emptied (no data collected)."""
+    f = make_full_topology_fixture()
+    f["errors"] = {"services": "403 Forbidden: permission denied for services"}
+    f["services"] = []  # 403 → no data collected
+    return f
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-01 REPOSITORY AUDIT
+# ════════════════════════════════════════════════════════════════════════
+
+class TestRepositoryAudit:
+    """G5-01: Verify existing contracts are intact and reusable."""
+
+    def test_kubernetes_adapter_exists(self):
+        from server_manager.providers.base import ProviderAdapter
+        assert issubclass(KubernetesProviderAdapter, ProviderAdapter)
+
+    def test_kubernetes_normalizer_exists(self):
+        from server_manager.normalizers.provider_normalizer import GenericProviderNormalizer
+        assert issubclass(KubernetesProviderNormalizer, GenericProviderNormalizer)
+
+    def test_raw_provider_snapshot_contract(self):
+        snap = RawProviderSnapshot(snapshot_id="s", provider_type=ProviderType.KUBERNETES)
+        assert snap.provider_type == ProviderType.KUBERNETES
+        assert snap.collection_status == OrchestrationStatus.FAILED
+        assert snap.payload == {} and snap.capability_results == []
+        assert snap.relationship_evidence == [] and snap.errors == []
+
+    def test_normalization_result_contract(self):
+        r = NormalizationResult(snapshot_id="s", provider_type=ProviderType.KUBERNETES)
+        assert r.physicals == [] and r.os_entities == [] and r.platforms == []
+        assert r.clusters == [] and r.nodes == [] and r.execution_environments == []
+        assert r.workloads == [] and r.networks == [] and r.storages == []
+        assert r.accelerators == [] and r.relationship_evidence == []
+        assert r.errors == [] and r.warnings == []
+
+    def test_canonical_identity_generator_deterministic(self):
+        id1 = CanonicalIdentityGenerator.generate(ProviderType.KUBERNETES, "node", "node-01")
+        id2 = CanonicalIdentityGenerator.generate(ProviderType.KUBERNETES, "node", "node-01")
+        assert id1 == id2 and id1 != "node-01"
+        assert id1.startswith("canon-kubernetes-")
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-02 ADAPTER → SNAPSHOT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestAdapterToSnapshot:
+    """G5-02: KubernetesProviderAdapter produces a valid RawProviderSnapshot."""
+
+    def test_collect_returns_raw_provider_snapshot(self):
+        adapter = KubernetesProviderAdapter(
+            provider_id="cluster-01", fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert isinstance(snapshot, RawProviderSnapshot)
+
+    def test_snapshot_provider_type_is_kubernetes(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert snapshot.provider_type == ProviderType.KUBERNETES
+
+    def test_snapshot_has_snapshot_id(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert snapshot.snapshot_id
+        assert snapshot.snapshot_id.startswith("snap-k8s-")
+
+    def test_snapshot_payload_preserves_raw_k8s_data(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert snapshot.payload["cluster"]["name"] == "cluster-01"
+        assert len(snapshot.payload["nodes"]) == 1
+        assert snapshot.payload["nodes"][0]["metadata"]["name"] == "node-01"
+        assert len(snapshot.payload["pods"]) == 1
+        assert snapshot.payload["pods"][0]["metadata"]["name"] == "uadpf-dmp-xxxxx"
+
+    def test_snapshot_has_capability_results(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert len(snapshot.capability_results) > 0
+        cap_types = {cr.capability for cr in snapshot.capability_results}
+        assert AdapterCapability.PLATFORM in cap_types
+        assert AdapterCapability.NODE in cap_types
+        assert AdapterCapability.EXECUTION_ENVIRONMENT in cap_types
+
+    def test_snapshot_collection_status_success(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert snapshot.collection_status == OrchestrationStatus.SUCCESS
+
+    def test_snapshot_has_source_evidence(self):
+        adapter = KubernetesProviderAdapter(
+            provider_id="cluster-01", fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert snapshot.source_evidence is not None
+        assert snapshot.source_evidence.provider_type == ProviderType.KUBERNETES
+        assert snapshot.source_evidence.provider_id == "cluster-01"
+        assert snapshot.source_evidence.raw_data_ref == snapshot.snapshot_id
+
+    def test_snapshot_has_relationship_evidence(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snapshot = adapter.collect()
+        assert len(snapshot.relationship_evidence) > 0
+        direct_ev = [e for e in snapshot.relationship_evidence
+                     if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        derived_ev = [e for e in snapshot.relationship_evidence
+                      if e.evidence_type == RelationshipEvidenceType.DERIVED]
+        assert len(direct_ev) == 1
+        assert direct_ev[0].relationship_type == "runs_on"
+        assert direct_ev[0].target_entity_ref == "node-01"
+        assert len(derived_ev) == 2
+        assert all(e.relationship_type == "contains" for e in derived_ev)
+
+    def test_capabilities_declared_match_implementation(self):
+        adapter = KubernetesProviderAdapter(fixture={})
+        caps = adapter.capabilities()
+        for c in [AdapterCapability.PLATFORM, AdapterCapability.CLUSTER,
+                  AdapterCapability.NODE, AdapterCapability.EXECUTION_ENVIRONMENT,
+                  AdapterCapability.NETWORK, AdapterCapability.STORAGE]:
+            assert c in caps
+        for c in [AdapterCapability.ACCELERATOR, AdapterCapability.WORKLOAD,
+                  AdapterCapability.RELATIONSHIP_DISCOVERY, AdapterCapability.METRICS]:
+            assert c not in caps
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-03 SNAPSHOT → NORMALIZER
+# ════════════════════════════════════════════════════════════════════════
+
+class TestSnapshotToNormalizer:
+    """G5-03: RawProviderSnapshot feeds directly into normalizer."""
+
+    def test_normalize_accepts_raw_snapshot(self):
+        snap = KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect()
+        assert isinstance(KubernetesProviderNormalizer().normalize(snap), NormalizationResult)
+
+    def test_normalize_produces_canonical_entities(self):
+        snap = KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect()
+        assert KubernetesProviderNormalizer().normalize(snap).entity_count > 0
+
+    def test_no_manual_translation_required(self):
+        snap = KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect()
+        result = KubernetesProviderNormalizer().normalize(snap)
+        assert result.snapshot_id == snap.snapshot_id
+        assert result.provider_type == snap.provider_type
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-04 END-TO-END ADAPTER → NORMALIZER
+# ════════════════════════════════════════════════════════════════════════
+
+class TestEndToEnd:
+    """G5-04: Full adapter → snapshot → normalizer path."""
+
+    def test_full_e2e_produces_expected_entities(self):
+        adapter = KubernetesProviderAdapter(provider_id="cluster-01", fixture=make_full_topology_fixture())
+        result = KubernetesProviderNormalizer().normalize(adapter.collect())
+        assert len(result.platforms) == 1
+        assert result.platforms[0].platform_type == PlatformType.KUBERNETES
+        assert len(result.clusters) == 1
+        assert len(result.nodes) == 1 and result.nodes[0].name == "node-01"
+        assert len(result.execution_environments) == 3
+        ee_types = {ee.ee_type for ee in result.execution_environments}
+        assert ExecutionEnvironmentType.POD in ee_types
+        assert ExecutionEnvironmentType.CONTAINER in ee_types
+        assert len(result.networks) == 1 and result.networks[0].network_type == NetworkType.VIRTUAL
+        assert len(result.storages) == 2
+        assert {s.storage_type for s in result.storages} == {StorageType.PV, StorageType.PVC}
+
+    def test_full_e2e_no_physical_os_workload_accelerator(self):
+        result = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert len(result.physicals) == 0
+        assert len(result.os_entities) == 0
+        assert len(result.workloads) == 0
+        assert len(result.accelerators) == 0
+
+    def test_full_e2e_status_is_success(self):
+        result = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert result.status == OrchestrationStatus.SUCCESS
+        assert len(result.errors) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-05 CANONICAL ENTITY MAPPING
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCanonicalEntityMapping:
+    """G5-05: Verify each canonical entity maps correctly."""
+
+    def test_platform_type_is_kubernetes(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert r.platforms[0].platform_type == PlatformType.KUBERNETES
+
+    def test_platform_has_version(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert r.platforms[0].version == "1.28.0"
+
+    def test_cluster_platform_ref_resolved(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert r.clusters[0].platform_ref == r.platforms[0].canonical_id
+
+    def test_node_cluster_ref_resolved(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert r.nodes[0].cluster_ref == r.clusters[0].canonical_id
+
+    def test_pod_ee_type_is_pod(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        pods = [ee for ee in r.execution_environments if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert len(pods) == 1 and pods[0].name == "uadpf-dmp-xxxxx"
+
+    def test_container_ee_type_is_container(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        containers = [ee for ee in r.execution_environments if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert len(containers) == 2
+        assert {c.name for c in containers} == {"dmp", "sidecar"}
+
+    def test_pod_node_ref_resolved_to_canonical_id(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        pod_ee = next(ee for ee in r.execution_environments if ee.ee_type == ExecutionEnvironmentType.POD)
+        assert pod_ee.node_ref == r.nodes[0].canonical_id
+
+    def test_service_to_network_virtual(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert len(r.networks) == 1
+        assert r.networks[0].network_type == NetworkType.VIRTUAL
+        assert r.networks[0].name == "uadpf-service"
+
+    def test_pv_to_storage_pv_type(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        pvs = [s for s in r.storages if s.storage_type == StorageType.PV]
+        assert len(pvs) == 1 and pvs[0].name == "uadpf-pv"
+
+    def test_pvc_to_storage_pvc_type(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        pvcs = [s for s in r.storages if s.storage_type == StorageType.PVC]
+        assert len(pvcs) == 1 and pvcs[0].name == "uadpf-pvc"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-06 RELATIONSHIP EVIDENCE
+# ════════════════════════════════════════════════════════════════════════
+
+class TestRelationshipEvidence:
+    """G5-06: Relationship evidence is preserved from snapshot to result."""
+
+    def test_direct_evidence_preserved(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        direct = [e for e in r.relationship_evidence if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        assert len(direct) == 1 and direct[0].relationship_type == "runs_on"
+
+    def test_derived_evidence_preserved(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        derived = [e for e in r.relationship_evidence if e.evidence_type == RelationshipEvidenceType.DERIVED]
+        assert len(derived) == 2
+        assert all(e.relationship_type == "contains" for e in derived)
+
+    def test_no_inferred_evidence(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        for ev in r.relationship_evidence:
+            assert ev.evidence_type != "INFERRED"
+            assert ev.evidence_type != "UNKNOWN"
+
+    def test_pod_without_node_name_has_no_direct_evidence(self):
+        fixture = make_full_topology_fixture()
+        fixture["pods"] = [make_pod(name="orphan-pod", uid="uid-pod-orphan", node_name=None,
+                                    containers=[make_container("c1")])]
+        snap = KubernetesProviderAdapter(fixture=fixture).collect()
+        direct = [e for e in snap.relationship_evidence if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        assert len(direct) == 0
+        derived = [e for e in snap.relationship_evidence if e.evidence_type == RelationshipEvidenceType.DERIVED]
+        assert len(derived) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-07 PROVENANCE LINEAGE
+# ════════════════════════════════════════════════════════════════════════
+
+class TestProvenanceLineage:
+    """G5-07: Provenance is preserved from snapshot to canonical entities."""
+
+    def test_all_entities_have_source_evidence(self):
+        adapter = KubernetesProviderAdapter(provider_id="cluster-01", fixture=make_full_topology_fixture())
+        r = KubernetesProviderNormalizer().normalize(adapter.collect())
+        all_entities = (r.platforms + r.clusters + r.nodes + r.execution_environments
+                        + r.networks + r.storages)
+        for entity in all_entities:
+            assert entity.source_evidence is not None
+            assert entity.source_evidence.provider_type == ProviderType.KUBERNETES
+            assert entity.source_evidence.provider_id == "cluster-01"
+
+    def test_source_evidence_raw_data_ref_matches_snapshot_id(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snap = adapter.collect()
+        r = KubernetesProviderNormalizer().normalize(snap)
+        for entity in r.nodes + r.execution_environments:
+            assert entity.source_evidence.raw_data_ref == snap.snapshot_id
+
+    def test_provenance_not_lost_through_pipeline(self):
+        adapter = KubernetesProviderAdapter(provider_id="prov-test", fixture=make_full_topology_fixture())
+        snap = adapter.collect()
+        r = KubernetesProviderNormalizer().normalize(snap)
+        for node in r.nodes:
+            assert node.source_evidence.raw_data_ref == snap.snapshot_id
+            assert node.source_evidence.provider_id == "prov-test"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-08 IDENTITY STABILITY
+# ════════════════════════════════════════════════════════════════════════
+
+class TestIdentityStability:
+    """G5-08: Canonical IDs are deterministic across normalizations."""
+
+    def test_same_fixture_same_canonical_ids(self):
+        fixture = make_full_topology_fixture()
+        r1 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        r2 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        ids1 = {n.canonical_id for n in r1.nodes}
+        ids2 = {n.canonical_id for n in r2.nodes}
+        assert ids1 == ids2
+        ee_ids1 = {ee.canonical_id for ee in r1.execution_environments}
+        ee_ids2 = {ee.canonical_id for ee in r2.execution_environments}
+        assert ee_ids1 == ee_ids2
+
+    def test_canonical_id_differs_from_provider_id(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        all_entities = r.platforms + r.clusters + r.nodes + r.execution_environments + r.networks + r.storages
+        for entity in all_entities:
+            if entity.provider_id:
+                assert entity.canonical_id != entity.provider_id
+
+    def test_canonical_id_format(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        for node in r.nodes:
+            assert node.canonical_id.startswith("canon-kubernetes-node-")
+
+    def test_entity_counts_stable_across_runs(self):
+        fixture = make_full_topology_fixture()
+        r1 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        r2 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+      

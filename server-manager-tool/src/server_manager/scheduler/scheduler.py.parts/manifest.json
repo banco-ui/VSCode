@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/scheduler/scheduler.py",
+  "originalSize": 25483,
+  "sha256": "d3091c5444a60b2ba34d8247d2f59afaee74bc28c32d97448fc59d0cd0018bc5",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/scheduler/scheduler.py\""
+}

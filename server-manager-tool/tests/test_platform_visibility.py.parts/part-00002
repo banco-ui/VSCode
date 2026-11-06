@@ -1,0 +1,372 @@
+inal_count = len(report.results)
+        vis = OperationalVisibilityService()
+        vis.set_health_report(report)
+        vis.get_summary()
+        assert len(report.results) == original_count
+
+    def test_visibility_does_not_modify_fault_result(self):
+        faults = [make_fault(fault_id="f1")]
+        fr = make_fault_result(faults=faults)
+        original_count = len(fr.faults)
+        vis = OperationalVisibilityService()
+        vis.set_fault_result(fr)
+        vis.get_summary()
+        assert len(fr.faults) == original_count
+
+    def test_get_entity_status_read_only(self):
+        """get_entity_status does not mutate any source data."""
+        vis = OperationalVisibilityService()
+        status = vis.get_entity_status("canon-entity-01")
+        assert status.entity_id == "canon-entity-01"
+        assert status.active_faults == 0
+
+    def test_alert_service_no_execute_methods(self):
+        """AlertService should not have execute/recovery methods."""
+        source = inspect.getsource(AlertService)
+        assert "RecoveryExecutor" not in source
+        assert "OperationService" not in source
+        assert "subprocess" not in source
+        assert "kubectl" not in source
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GRAPH CONTEXT TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestGraphContext:
+    """Graph integration — read-only context only."""
+
+    def test_entity_status_with_graph(self):
+        from server_manager.graph.models import (
+            EntityType, GraphNode, GraphReport,
+        )
+        from server_manager.graph.service import GraphQuery
+        node = GraphNode(
+            canonical_id="canon-graph-01",
+            entity_type=EntityType.NODE,
+            provider_type=ProviderType.KUBERNETES,
+            source_evidence=make_source(),
+        )
+        report = GraphReport(nodes=[node], relationships=[])
+        gq = GraphQuery(report)
+        vis = OperationalVisibilityService()
+        vis.set_graph_query(gq)
+        status = vis.get_entity_status("canon-graph-01")
+        assert status.entity_type == "NODE"
+
+    def test_no_graph_mutation_through_visibility(self):
+        """Visibility service does not add edges or nodes."""
+        from server_manager.graph.models import GraphReport
+        vis = OperationalVisibilityService()
+        from server_manager.graph.service import GraphQuery
+        report = GraphReport(nodes=[], relationships=[])
+        gq = GraphQuery(report)
+        vis.set_graph_query(gq)
+        vis.get_summary()
+        assert gq.node_count == 0
+        assert gq.relationship_count == 0
+
+    def test_no_root_cause_inference(self):
+        """Visibility service source has no root cause inference."""
+        source = _strip_docstrings(inspect.getsource(OperationalVisibilityService))
+        assert "root_cause" not in source.lower()
+        assert "infer" not in source.lower()
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  EVIDENCE POLICY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestEvidencePolicy:
+    """Evidence preservation and no-alert-without-evidence."""
+
+    def test_no_alert_without_fault(self):
+        """Cannot create an alert without a fault."""
+        svc = AlertService()
+        assert svc.alert_count == 0
+
+    def test_no_alert_from_missing_evidence(self):
+        svc = AlertService()
+        fault = make_fault(fault_id="fault-no-ev", evidence={})
+        result = svc.create_alert(fault)
+        assert not result.created
+        assert result.alert is None
+
+    def test_evidence_fully_preserved(self):
+        svc = AlertService()
+        ev = {
+            "condition": "Ready=False",
+            "source": "kubernetes_node_condition",
+            "node": "node-01",
+            "extra": {"reason": "kubeletNotReady"},
+        }
+        fault = make_fault(fault_id="fault-ev-full", evidence=ev)
+        result = svc.create_alert(fault)
+        assert result.created
+        assert result.alert.evidence == ev
+
+    def test_fault_source_preserved_in_alert(self):
+        svc = AlertService()
+        src = make_source(provider=ProviderType.KUBERNETES)
+        fault = make_fault(fault_id="fault-src-01")
+        fault.source = src
+        result = svc.create_alert(fault)
+        assert result.created
+        assert result.alert.source is not None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  NO INFERENCE POLICY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestNoInferencePolicy:
+    """No speculative inference from alerts."""
+
+    def test_alert_does_not_generate_recovery(self):
+        svc = AlertService()
+        fault = make_fault(fault_id="fault-no-inf-01")
+        result = svc.create_alert(fault)
+        assert result.created
+        assert not hasattr(result.alert, "recovery_candidate")
+
+    def test_alert_does_not_generate_operation(self):
+        svc = AlertService()
+        fault = make_fault(fault_id="fault-no-op-01")
+        result = svc.create_alert(fault)
+        assert result.created
+        assert not hasattr(result.alert, "operation_request")
+
+    def test_no_speculative_provider_inference(self):
+        import server_manager.visibility.models as models_mod
+        source = inspect.getsource(models_mod)
+        assert "pod_name" not in source
+        assert "deployment_name" not in source
+
+    def test_acknowledge_does_not_trigger_recovery(self):
+        svc = AlertService()
+        fault = make_fault(fault_id="fault-ack-noop-01")
+        svc.create_alert(fault)
+        alert = svc.acknowledge("alert:fault-ack-noop-01")
+        assert alert.status == AlertStatus.ACKNOWLEDGED
+        assert "recovery_result" not in alert.details
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  KUBERNETES ALERT TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestKubernetesAlert:
+    """Kubernetes path: Fault → Alert → Operational Summary."""
+
+    def test_k8s_fault_to_alert(self):
+        svc = AlertService()
+        fault = make_fault(
+            fault_id="k8s:fault-01",
+            entity_id="canon-k8s-node-01",
+            provider=ProviderType.KUBERNETES,
+        )
+        result = svc.create_alert(fault)
+        assert result.created
+        assert result.alert.provider_type == ProviderType.KUBERNETES
+
+    def test_k8s_alert_lifecycle(self):
+        svc = AlertService()
+        fault = make_fault(
+            fault_id="k8s:fault-lc-01",
+            provider=ProviderType.KUBERNETES,
+        )
+        r = svc.create_alert(fault)
+        assert r.alert.status == AlertStatus.OPEN
+        svc.acknowledge(r.alert.alert_id, acknowledged_by="sre")
+        svc.resolve(r.alert.alert_id)
+        svc.close(r.alert.alert_id)
+        final = svc.get_alert(r.alert.alert_id)
+        assert final.status == AlertStatus.CLOSED
+
+    def test_k8s_operational_summary(self):
+        alert_svc = AlertService()
+        vis = OperationalVisibilityService(alert_service=alert_svc)
+        fault = make_fault(
+            fault_id="k8s:fault-vis-01",
+            provider=ProviderType.KUBERNETES,
+        )
+        alert_svc.create_alert(fault)
+        summary = vis.get_summary()
+        assert summary.alerts.total_alerts == 1
+        assert summary.alerts.open == 1
+
+    def test_k8s_provenance_preserved(self):
+        svc = AlertService()
+        src = make_source(provider=ProviderType.KUBERNETES)
+        fault = make_fault(fault_id="k8s:prov-01")
+        fault.source = src
+        result = svc.create_alert(fault)
+        assert result.created
+        assert result.alert.source is not None
+        assert result.alert.source.provider_type == ProviderType.KUBERNETES
+
+    def test_k8s_identity_stability(self):
+        svc = AlertService()
+        fault = make_fault(fault_id="k8s:stable-01")
+        r = svc.create_alert(fault)
+        original_id = r.alert.alert_id
+        svc.acknowledge(original_id)
+        svc.resolve(original_id)
+        svc.close(original_id)
+        alert = svc.get_alert(original_id)
+        assert alert.alert_id == original_id
+
+    def test_k8s_no_live_mutation(self):
+        import server_manager.visibility.service as svc_mod
+        source = _strip_docstrings(inspect.getsource(svc_mod))
+        assert "kubeconfig" not in source.lower()
+        assert "kubectl" not in source.lower()
+        assert "subprocess" not in source
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CROSS-PLATFORM ALERT CONTRACT TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCrossPlatformAlertContract:
+    """Common Alert model represents different ProviderType values."""
+
+    @pytest.mark.parametrize("provider", [
+        ProviderType.KUBERNETES,
+        ProviderType.WRCP,
+        ProviderType.VMWARE,
+        ProviderType.OPENSTACK,
+        ProviderType.SSH,
+        ProviderType.REDFISH,
+        ProviderType.UNKNOWN,
+    ])
+    def test_alert_for_each_provider(self, provider):
+        svc = AlertService()
+        fault = make_fault(
+            fault_id=f"fault-{provider.value}-01",
+            provider=provider,
+        )
+        result = svc.create_alert(fault)
+        assert result.created
+        assert result.alert.provider_type == provider
+
+    def test_no_provider_specific_fields_in_alert(self):
+        import server_manager.visibility.models as models_mod
+        source = inspect.getsource(models_mod)
+        assert "pod_name" not in source
+        assert "vm_id" not in source
+        assert "vcenter" not in source
+        assert "openstack_project" not in source
+
+    def test_same_alert_structure_across_providers(self):
+        svc = AlertService()
+        alerts = []
+        for provider in [
+            ProviderType.KUBERNETES,
+            ProviderType.WRCP,
+            ProviderType.VMWARE,
+        ]:
+            fault = make_fault(
+                fault_id=f"fault-x-{provider.value}",
+                provider=provider,
+            )
+            result = svc.create_alert(fault)
+            alerts.append(result.alert)
+        for a in alerts:
+            assert hasattr(a, "alert_id")
+            assert hasattr(a, "fault_id")
+            assert hasattr(a, "entity_id")
+            assert hasattr(a, "fault_type")
+            assert hasattr(a, "severity")
+            assert hasattr(a, "status")
+            assert hasattr(a, "provider_type")
+            assert hasattr(a, "evidence")
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MUTATION SAFETY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMutationSafety:
+    """Explicit mutation safety verification."""
+
+    def test_no_subprocess_import(self):
+        import server_manager.visibility.service as svc_mod
+        source = inspect.getsource(svc_mod)
+        assert "import subprocess" not in source
+        assert "from subprocess" not in source
+
+    def test_no_os_system(self):
+        import server_manager.visibility.service as svc_mod
+        source = inspect.getsource(svc_mod)
+        assert "os.system" not in source
+        assert "os.popen" not in source
+
+    def test_no_kubectl(self):
+        import server_manager.visibility.service as svc_mod
+        source = _strip_docstrings(inspect.getsource(svc_mod))
+        assert "kubectl" not in source
+
+    def test_no_recovery_executor_import(self):
+        import server_manager.visibility.service as svc_mod
+        source = _strip_docstrings(inspect.getsource(svc_mod))
+        assert "RecoveryExecutor" not in source
+        assert "from server_manager.recovery.service" not in source
+
+    def test_no_operation_service_import(self):
+        import server_manager.visibility.service as svc_mod
+        source = _strip_docstrings(inspect.getsource(svc_mod))
+        assert "OperationService" not in source
+        assert "from server_manager.operations.service" not in source
+
+    def test_no_database_import(self):
+        import server_manager.visibility.service as svc_mod
+        source = inspect.getsource(svc_mod)
+        assert "sqlite3" not in source
+        assert "postgresql" not in source
+        assert "redis" not in source
+        assert "sqlalchemy" not in source
+
+    def test_no_external_delivery(self):
+        import server_manager.visibility.service as svc_mod
+        source = inspect.getsource(svc_mod)
+        for term in [
+            "smtplib", "requests.post", "webhook", "slack",
+            "pagerduty", "teams", "email", "alertmanager",
+            "prometheus", "grafana",
+        ]:
+            assert term not in source.lower(), f"Found {term}"
+
+    def test_no_alert_triggered_operation(self):
+        svc = AlertService()
+        source = inspect.getsource(AlertService.create_alert)
+        assert ".execute(" not in source
+        assert "OperationRequest" not in source
+        assert "RecoveryCandidate" not in source
+
+    def test_visibility_query_methods_read_only(self):
+        for method_name in [
+            "get_summary", "get_alerts", "get_alert",
+            "get_faults", "get_entity_status",
+        ]:
+            method_source = inspect.getsource(
+                getattr(OperationalVisibilityService, method_name)
+            )
+            assert ".execute(" not in method_source
+            assert ".delete(" not in method_source
+            assert ".create(" not in method_source
+
+
+
+
+
+
+
+
+

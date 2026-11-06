@@ -1,0 +1,120 @@
+ dict):
+                alarm = dict(cli_data)
+                alarm["uuid"] = alarm_uuid
+                alarm["_sources"] = ["cli"]
+                merged.append(alarm)
+        return merged
+
+    @staticmethod
+    def _extract_relationship_evidence(
+        payload: dict[str, Any],
+    ) -> list[RawRelationshipEvidence]:
+        """Extract DIRECT evidence only — sub-resource URL pattern.
+
+        sysinv ihost.uuid → imemorys: DIRECT (URL /v1/ihosts/{uuid}/imemorys)
+        No name/IP-based inference.
+        """
+        evidence: list[RawRelationshipEvidence] = []
+        imemorys = payload.get("sysinv_imemorys", {})
+        if isinstance(imemorys, dict):
+            for host_uuid, mem_list in imemorys.items():
+                if not host_uuid:
+                    continue
+                evidence.append(RawRelationshipEvidence(
+                    source_entity_ref=host_uuid,
+                    target_entity_ref=f"{host_uuid}/imemorys",
+                    relationship_type="has_memory",
+                    evidence_type=RelationshipEvidenceType.DIRECT,
+                    raw_data={
+                        "host_uuid": host_uuid,
+                        "url_pattern": f"/v1/ihosts/{host_uuid}/imemorys",
+                        "item_count": len(mem_list) if isinstance(mem_list, list) else 0,
+                    },
+                ))
+        return evidence
+
+    def _derive_provider_id(self, payload: dict[str, Any]) -> Optional[str]:
+        """Determine provider_id from sysinv isystems or constructor."""
+        if self.provider_id:
+            return self.provider_id
+        systems = payload.get("sysinv_isystems", [])
+        if isinstance(systems, list) and systems:
+            first = systems[0]
+            if isinstance(first, dict):
+                return first.get("uuid")
+        return None
+
+    @staticmethod
+    def _make_source_evidence(
+        provider_id: Optional[str],
+        collected_at: str,
+        snapshot_id: str,
+    ) -> SourceEvidence:
+        return SourceEvidence(
+            provider_type=ProviderType.WRCP,
+            provider_id=provider_id,
+            collected_at=collected_at,
+            raw_data_ref=snapshot_id,
+            confidence=Confidence.HIGH,
+            discovery_method=RelationshipEvidenceType.DIRECT,
+        )
+
+    @staticmethod
+    def _build_capability_results(
+        payload: dict[str, Any],
+        errors: dict[str, str],
+    ) -> list[CapabilityResult]:
+        """Build per-capability results from payload and errors."""
+        cap_map: list[tuple[AdapterCapability, str, Any]] = [
+            (AdapterCapability.PLATFORM, "sysinv_isystems",
+             payload.get("sysinv_isystems")),
+            (AdapterCapability.CLUSTER, "sysinv_isystems",
+             payload.get("sysinv_isystems")),
+            (AdapterCapability.NODE, "sysinv_ihosts",
+             payload.get("sysinv_ihosts")),
+            (AdapterCapability.HEALTH, "fm_alarms",
+             payload.get("fm_alarms")),
+            (AdapterCapability.EVENTS, "fm_event_log",
+             payload.get("fm_event_log")),
+        ]
+        results: list[CapabilityResult] = []
+        for cap, key, data in cap_map:
+            if key in errors:
+                results.append(CapabilityResult(
+                    capability=cap,
+                    status=OrchestrationStatus.FAILED,
+                    errors=[errors[key]],
+                    error_category=ErrorCategory.from_error_string(errors[key]),
+                ))
+            elif data is not None:
+                item_count = len(data) if isinstance(data, (list, dict)) else 1
+                results.append(CapabilityResult(
+                    capability=cap,
+                    status=OrchestrationStatus.SUCCESS,
+                    item_count=item_count,
+                ))
+            else:
+                results.append(CapabilityResult(
+                    capability=cap,
+                    status=OrchestrationStatus.PARTIAL,
+                    warnings=["Data not collected"],
+                ))
+        return results
+
+    @staticmethod
+    def _determine_status(
+        cap_results: list[CapabilityResult],
+        errors: list[str],
+    ) -> OrchestrationStatus:
+        """Determine overall collection status."""
+        if not cap_results:
+            return OrchestrationStatus.FAILED
+        succeeded = [r for r in cap_results
+                     if r.status == OrchestrationStatus.SUCCESS]
+        failed = [r for r in cap_results
+                  if r.status == OrchestrationStatus.FAILED]
+        if not succeeded:
+            return OrchestrationStatus.FAILED
+        if failed or errors:
+            return OrchestrationStatus.PARTIAL
+        return OrchestrationStatus.SUCCESS

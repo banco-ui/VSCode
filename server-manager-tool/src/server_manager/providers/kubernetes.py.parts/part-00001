@@ -1,0 +1,503 @@
+"""Kubernetes Provider Adapter — Phase 13G-4.
+
+Collects Kubernetes resources and preserves them in a RawProviderSnapshot.
+Does NOT create canonical entities — that is the Normalizer's job.
+
+Architecture:
+
+    Kubernetes
+        ↓
+    KubernetesProviderAdapter
+        ↓
+    RawProviderSnapshot
+        ↓
+    [KubernetesProviderNormalizer → Canonical Domain Model]
+
+Phase 13G-4: fixture-based, no live connection.
+Phase 13G-8: client injection (mock/live) — sanitize_for_serialization()
+             is used ONLY at the adapter boundary to convert K8s API
+             objects to dicts. The normalizer never sees K8s client objects.
+
+Three input modes (same adapter → snapshot → normalizer path):
+    A. Fixture   — pre-built dict (Phase 13G-4)
+    B. Mock/Live — CoreV1Api-compatible client injected (Phase 13G-8)
+
+Identity:
+    provider_type = ProviderType.KUBERNETES
+    provider_id   = cluster identity (from fixture or constructor)
+
+Capabilities declared (only those with actual collection):
+    PLATFORM, CLUSTER, NODE, EXECUTION_ENVIRONMENT, NETWORK, STORAGE
+
+NOT declared (no implementation):
+    PHYSICAL, ACCELERATOR, WORKLOAD, RELATIONSHIP_DISCOVERY,
+    METRICS, EVENTS, HEALTH
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from ..models.canonical import (
+    ProviderType,
+    RelationshipEvidenceType,
+    SourceEvidence,
+)
+from ..models.enums import Confidence
+from ..orchestrator.models import ErrorCategory, OrchestrationStatus
+from .base import (
+    AdapterCapability,
+    CapabilityResult,
+    ProviderAdapter,
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Conditional kubernetes client import ───────────────────────────────
+# The kubernetes Python client is optional. If available, its
+# ApiClient.sanitize_for_serialization() is used to convert K8s API
+# objects to plain dicts at the adapter boundary.
+# If not available, a fallback serializer (to_dict / passthrough) is used.
+try:
+    from kubernetes.client import ApiClient as _K8sApiClient
+
+    _K8S_CLIENT_AVAILABLE = True
+    # ApiClient.sanitize_for_serialization is an instance method, not a
+    # staticmethod. We create a lightweight ApiClient instance once and
+    # bind the method so _sanitize_for_serialization(obj) works as a
+    # plain function call at the adapter boundary.
+    _k8s_api_client_instance = _K8sApiClient()
+
+    def _sanitize_for_serialization(obj: Any) -> Any:
+        """Serialize a K8s API object to a plain dict/list.
+
+        Delegates to kubernetes.client.ApiClient.sanitize_for_serialization.
+        Used ONLY at the adapter boundary — the normalizer never sees
+        K8s client objects, only dicts.
+
+        Falls back to to_dict() or passthrough for mock/test objects
+        that lack the openapi_types attribute required by the real serializer.
+        """
+        if obj is None:
+            return None
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, (list, tuple)):
+            return [_sanitize_for_serialization(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: _sanitize_for_serialization(v) for k, v in obj.items()}
+        # Try real K8s serializer first (works for V1Node, V1Pod, etc.)
+        try:
+            return _k8s_api_client_instance.sanitize_for_serialization(obj)
+        except (AttributeError, TypeError):
+            pass
+        # Fallback for mock objects or objects without openapi_types
+        if hasattr(obj, "to_dict"):
+            return obj.to_dict()
+        if hasattr(obj, "__dict__"):
+            return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+        return obj
+
+except ImportError:
+    _K8S_CLIENT_AVAILABLE = False
+
+    def _sanitize_for_serialization(obj: Any) -> Any:
+        """Fallback serializer when kubernetes client is not installed."""
+        if obj is None:
+            return None
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, (list, tuple)):
+            return [_sanitize_for_serialization(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: _sanitize_for_serialization(v) for k, v in obj.items()}
+        if hasattr(obj, "to_dict"):
+            return obj.to_dict()
+        return obj
+
+# ── Capabilities declared by this adapter ──────────────────────────────
+_KUBERNETES_CAPABILITIES: list[AdapterCapability] = [
+    AdapterCapability.PLATFORM,
+    AdapterCapability.CLUSTER,
+    AdapterCapability.NODE,
+    AdapterCapability.EXECUTION_ENVIRONMENT,
+    AdapterCapability.NETWORK,
+    AdapterCapability.STORAGE,
+]
+
+# Resource group keys → capability mapping
+_RESOURCE_GROUP_CAPS: list[tuple[str, AdapterCapability]] = [
+    ("nodes", AdapterCapability.NODE),
+    ("pods", AdapterCapability.EXECUTION_ENVIRONMENT),
+    ("services", AdapterCapability.NETWORK),
+    ("persistent_volumes", AdapterCapability.STORAGE),
+    ("persistent_volume_claims", AdapterCapability.STORAGE),
+]
+
+# All fixture payload keys (for preservation)
+_ALL_PAYLOAD_KEYS: tuple[str, ...] = (
+    "cluster",
+    "nodes",
+    "namespaces",
+    "pods",
+    "deployments",
+    "statefulsets",
+    "daemonsets",
+    "services",
+    "persistent_volumes",
+    "persistent_volume_claims",
+)
+
+
+class KubernetesProviderAdapter(ProviderAdapter):
+    """Kubernetes provider adapter — fixture + client injection.
+
+    Collects Kubernetes resources and preserves them in a RawProviderSnapshot.
+    The adapter does NOT create canonical entities — it only collects
+    and preserves raw data.
+
+    Input modes:
+        A. Fixture  — pass fixture dict to constructor or collect(fixture=...)
+        B. Client   — pass CoreV1Api-compatible client to constructor.
+                      The adapter calls read-only list methods and
+                      serializes K8s API objects to dicts via
+                      sanitize_for_serialization() at the adapter boundary.
+
+    Fixture format (in-memory, mimics K8s API responses)::
+
+        {
+            "cluster": {"name": "my-cluster", "version": "1.28.0"},
+            "nodes": [<K8s Node JSON>, ...],
+            "namespaces": [<K8s Namespace JSON>, ...],
+            "pods": [<K8s Pod JSON>, ...],
+            "deployments": [<K8s Deployment JSON>, ...],
+            "statefulsets": [<K8s StatefulSet JSON>, ...],
+            "daemonsets": [<K8s DaemonSet JSON>, ...],
+            "services": [<K8s Service JSON>, ...],
+            "persistent_volumes": [<K8s PV JSON>, ...],
+            "persistent_volume_claims": [<K8s PVC JSON>, ...],
+            "errors": {
+                "deployments": "403 Forbidden: permission denied",
+            }
+        }
+
+    Partial collection: per-capability results allow partial success.
+    Permission errors: distinguished from empty results (403 → FAILED).
+    Relationship evidence: DIRECT (Pod.spec.nodeName) and DERIVED
+    (Pod.spec.containers[]) only — no inference, no heuristics.
+
+    Live connection: only attempted when client is explicitly injected.
+    """
+
+    def __init__(
+        self,
+        provider_id: str = "k8s-cluster",
+        fixture: Optional[dict[str, Any]] = None,
+        client: Any = None,
+    ) -> None:
+        """Initialize the Kubernetes provider adapter.
+
+        Args:
+            provider_id: Cluster identity for this adapter target.
+            fixture: In-memory fixture dict with K8s raw data.
+            client: Optional CoreV1Api-compatible client for live/mock
+                    collection. If provided, collect() will call
+                    read-only API methods (list_node, list_pod, etc.)
+                    and serialize results via sanitize_for_serialization().
+        """
+        super().__init__(ProviderType.KUBERNETES, provider_id)
+        self._fixture = fixture or {}
+        self._client = client
+
+    def capabilities(self) -> list[AdapterCapability]:
+        """Declare what this adapter can collect.
+
+        Only capabilities with actual collection implementation.
+        ACCELERATOR, RELATIONSHIP_DISCOVERY, METRICS, EVENTS, HEALTH
+        are NOT declared.
+        """
+        return list(_KUBERNETES_CAPABILITIES)
+
+    def collect(self, **kwargs: Any) -> RawProviderSnapshot:
+        """Collect Kubernetes resources from fixture or injected client.
+
+        Args:
+            fixture: Optional fixture dict to override constructor fixture.
+                      Ignored if a client was injected and no explicit fixture
+                      override is provided.
+
+        Returns:
+            RawProviderSnapshot with raw K8s data preserved in payload,
+            per-capability results, and relationship evidence.
+        """
+        snapshot_id = f"snap-k8s-{uuid.uuid4().hex[:12]}"
+        collected_at = datetime.now(timezone.utc).isoformat()
+
+        # ── Route: client injection vs fixture ──────────────────────────
+        fixture_override = kwargs.get("fixture")
+        if self._client is not None and fixture_override is None:
+            payload, errors_map = self._collect_from_client(collected_at)
+        else:
+            fixture = fixture_override if fixture_override is not None else self._fixture
+            if not isinstance(fixture, dict):
+                fixture = {}
+            payload, errors_map = self._collect_from_fixture(fixture)
+
+        cluster_info = payload.get("cluster", {})
+        if not isinstance(cluster_info, dict):
+            cluster_info = {}
+
+        # ── Build per-capability results ─────────────────────────────────
+        capability_results: list[CapabilityResult] = []
+        snapshot_errors: list[str] = []
+
+        capability_results.append(CapabilityResult(
+            capability=AdapterCapability.PLATFORM,
+            status=OrchestrationStatus.SUCCESS,
+            item_count=1 if cluster_info else 0,
+            collected_at=collected_at,
+        ))
+        capability_results.append(CapabilityResult(
+            capability=AdapterCapability.CLUSTER,
+            status=OrchestrationStatus.SUCCESS,
+            item_count=1 if cluster_info else 0,
+            collected_at=collected_at,
+        ))
+
+        for resource_key, cap in _RESOURCE_GROUP_CAPS:
+            items = payload.get(resource_key, [])
+            resource_error = errors_map.get(resource_key)
+
+            if resource_error:
+                err_lower = resource_error.lower()
+                is_permission = (
+                    "forbidden" in err_lower
+                    or "permission" in err_lower
+                    or "403" in err_lower
+                    or "unauthorized" in err_lower
+                )
+                cap_result = CapabilityResult(
+                    capability=cap,
+                    status=OrchestrationStatus.FAILED,
+                    errors=[resource_error],
+                    error_category=(
+                        ErrorCategory.AUTHENTICATION_ERROR
+                        if is_permission
+                        else ErrorCategory.UNKNOWN_ERROR
+                    ),
+                    item_count=0,
+                    collected_at=collected_at,
+                )
+                snapshot_errors.append(
+                    f"[{cap.value}] {resource_key}: {resource_error}"
+                )
+            else:
+                cap_result = CapabilityResult(
+                    capability=cap,
+                    status=OrchestrationStatus.SUCCESS,
+                    item_count=len(items),
+                    collected_at=collected_at,
+                )
+            capability_results.append(cap_result)
+
+        relationship_evidence = self._extract_relationship_evidence(payload)
+
+        any_success = any(
+            cr.status == OrchestrationStatus.SUCCESS
+            for cr in capability_results
+        )
+        any_failed = any(
+            cr.status == OrchestrationStatus.FAILED
+            for cr in capability_results
+        )
+        if any_success and any_failed:
+            collection_status = OrchestrationStatus.PARTIAL
+        elif any_failed and not any_success:
+            collection_status = OrchestrationStatus.FAILED
+        else:
+            collection_status = OrchestrationStatus.SUCCESS
+
+        return RawProviderSnapshot(
+            snapshot_id=snapshot_id,
+            provider_type=ProviderType.KUBERNETES,
+            provider_id=self._provider_id,
+            collected_at=collected_at,
+            collection_status=collection_status,
+            declared_capabilities=self.capabilities(),
+            capability_results=capability_results,
+            payload=payload,
+            relationship_evidence=relationship_evidence,
+            source_evidence=SourceEvidence(
+                provider_type=ProviderType.KUBERNETES,
+                provider_id=self._provider_id,
+                collected_at=collected_at,
+                raw_data_ref=snapshot_id,
+                confidence=Confidence.HIGH,
+                discovery_method=RelationshipEvidenceType.DIRECT,
+            ),
+            errors=snapshot_errors,
+        )
+
+    # ── Fixture collection ─────────────────────────────────────────────
+
+    @staticmethod
+    def _collect_from_fixture(
+        fixture: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Build payload from fixture dict (Phase 13G-4 path)."""
+        errors_map = fixture.get("errors", {})
+        if not isinstance(errors_map, dict):
+            errors_map = {}
+        payload: dict[str, Any] = {}
+        for key in _ALL_PAYLOAD_KEYS:
+            data = fixture.get(key, [])
+            payload[key] = data if isinstance(data, list) else []
+        cluster_info = fixture.get("cluster", {})
+        if not isinstance(cluster_info, dict):
+            cluster_info = {}
+        payload["cluster"] = cluster_info
+        return payload, errors_map
+
+    # ── Client injection collection ─────────────────────────────────────
+
+    def _collect_from_client(
+        self, collected_at: str,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Collect from a CoreV1Api-compatible client (mock or live).
+
+        Calls read-only API methods and serializes K8s API objects to dicts
+        via sanitize_for_serialization() at the adapter boundary.
+
+        Only read-only operations:
+            - get_api_version (cluster version)
+            - list_namespace, list_node, list_pod_for_all_namespaces
+            - list_service_for_all_namespaces, list_persistent_volume
+            - list_persistent_volume_claim_for_all_namespaces
+
+        No create/update/patch/delete is ever called.
+        """
+        client = self._client
+        payload: dict[str, Any] = {key: [] for key in _ALL_PAYLOAD_KEYS}
+        errors_map: dict[str, str] = {}
+
+        # ── Cluster version ───────────────────────────────────────────
+        cluster_info: dict[str, Any] = {"name": self._provider_id}
+        try:
+            if hasattr(client, "get_api_version"):
+                version_resp = client.get_api_version()
+                version_dict = _sanitize_for_serialization(version_resp)
+                if isinstance(version_dict, dict):
+                    git_ver = version_dict.get("gitVersion", "")
+                    if git_ver:
+                        cluster_info["version"] = git_ver
+        except Exception as exc:
+            errors_map["cluster_version"] = str(exc)
+            logger.warning("Failed to get K8s API version: %s", exc)
+        payload["cluster"] = cluster_info
+
+        # ── Resource lists ────────────────────────────────────────────
+        self._collect_list_resource(client, "list_namespace", "namespaces",
+                                    payload, errors_map)
+        self._collect_list_resource(client, "list_node", "nodes",
+                                    payload, errors_map)
+        self._collect_list_resource(client, "list_pod_for_all_namespaces", "pods",
+                                    payload, errors_map)
+        self._collect_list_resource(client, "list_service_for_all_namespaces", "services",
+                                    payload, errors_map)
+        self._collect_list_resource(client, "list_persistent_volume", "persistent_volumes",
+                                    payload, errors_map)
+        self._collect_list_resource(client, "list_persistent_volume_claim_for_all_namespaces",
+                                    "persistent_volume_claims", payload, errors_map)
+
+        return payload, errors_map
+
+    @staticmethod
+    def _collect_list_resource(
+        client: Any,
+        method_name: str,
+        payload_key: str,
+        payload: dict[str, Any],
+        errors_map: dict[str, str],
+    ) -> None:
+        """Call a client list method and serialize items into payload.
+
+        Handles exceptions per-resource — 403, timeout, etc. are recorded
+        in errors_map without aborting other resources.
+        """
+        if not hasattr(client, method_name):
+            return
+        try:
+            method = getattr(client, method_name)
+            response = method()
+            items = _sanitize_for_serialization(response)
+            if isinstance(items, dict):
+                item_list = items.get("items", [])
+            elif isinstance(items, list):
+                item_list = items
+            else:
+                item_list = []
+            payload[payload_key] = item_list if isinstance(item_list, list) else []
+        except Exception as exc:
+            errors_map[payload_key] = str(exc)
+            logger.warning("K8s client call %s failed: %s", method_name, exc)
+
+    @staticmethod
+    def _extract_relationship_evidence(
+        payload: dict[str, Any],
+    ) -> list[RawRelationshipEvidence]:
+        """Extract DIRECT/DERIVED relationship evidence from raw K8s data.
+
+        Only explicitly stated relationships:
+        - Pod.spec.nodeName → DIRECT: Pod runs on Node
+        - Pod.spec.containers[] → DERIVED: Pod contains Container
+
+        Prohibited: inference, heuristics, label/name similarity, LLM.
+        """
+        evidence: list[RawRelationshipEvidence] = []
+
+        for pod in payload.get("pods", []):
+            if not isinstance(pod, dict):
+                continue
+            metadata = pod.get("metadata", {})
+            if not isinstance(metadata, dict):
+                continue
+            pod_uid = metadata.get("uid") or metadata.get("name", "")
+            if not pod_uid:
+                continue
+
+            spec = pod.get("spec", {})
+            if not isinstance(spec, dict):
+                continue
+
+            node_name = spec.get("nodeName")
+            if node_name:
+                evidence.append(RawRelationshipEvidence(
+                    source_entity_ref=pod_uid,
+                    target_entity_ref=node_name,
+                    relationship_type="runs_on",
+                    evidence_type=RelationshipEvidenceType.DIRECT,
+                    raw_data={"pod": pod_uid, "node": node_name},
+                ))
+
+            containers = spec.get("containers", [])
+            if isinstance(containers, list):
+                for container in containers:
+                    if not isinstance(container, dict):
+                        continue
+                    container_name = container.get("name", "")
+                    if not container_name:
+                        continue
+                    container_ref = f"{pod_uid}/{container_name}"
+                    evidence.append(RawRelationshipEvidence(
+                        source_entity_ref=pod_uid,
+                        target_entity_ref=container_ref,
+                        relationship_type="contains",
+                        evidence_type=RelationshipEvidenceType.DERIVED,
+                        raw_data={"pod": pod_uid, "container": container_name},
+                    ))
+
+        return evidence

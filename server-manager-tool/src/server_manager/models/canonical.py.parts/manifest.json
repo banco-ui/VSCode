@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/models/canonical.py",
+  "originalSize": 19382,
+  "sha256": "b9e06e6bf41ca8f1369522eeff6247e7603a3b880cd537a82537a17d7ee713b9",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/models/canonical.py\""
+}

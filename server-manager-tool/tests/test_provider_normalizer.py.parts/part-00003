@@ -1,0 +1,76 @@
+payload = {"os": [{"provider_id": f"os-{ot.value}",
+                               "os_type": ot.value}]}
+            result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+                make_snapshot(payload))
+            assert result.os_entities[0].os_type == ot
+
+    def test_all_ee_types_mapped(self):
+        for et in ExecutionEnvironmentType:
+            payload = {"execution_environments": [
+                {"provider_id": f"ee-{et.value}", "ee_type": et.value}]}
+            result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+                make_snapshot(payload))
+            assert result.execution_environments[0].ee_type == et
+
+    def test_all_workload_types_mapped(self):
+        for wt in WorkloadType:
+            payload = {"workloads": [{"provider_id": f"wl-{wt.value}",
+                                      "workload_type": wt.value}]}
+            result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+                make_snapshot(payload))
+            assert result.workloads[0].workload_type == wt
+
+
+class TestMultipleEntities:
+    """Tests with multiple entities of the same type."""
+
+    def test_multiple_physicals(self):
+        payload = {"physicals": [
+            {"provider_id": "srv-01"},
+            {"provider_id": "srv-02"},
+            {"provider_id": "srv-03"},
+        ]}
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(payload))
+        assert len(result.physicals) == 3
+        assert result.is_success
+
+    def test_multiple_physicals_unique_canonical_ids(self):
+        payload = {"physicals": [
+            {"provider_id": "srv-01"},
+            {"provider_id": "srv-02"},
+        ]}
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(payload))
+        ids = [p.canonical_id for p in result.physicals]
+        assert len(set(ids)) == 2
+
+    def test_mixed_valid_and_invalid(self):
+        payload = {"physicals": [
+            {"provider_id": "srv-01"},
+            {"metadata": {}},
+            {"provider_id": "srv-02"},
+        ]}
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(payload))
+        assert len(result.physicals) == 2
+        assert len(result.errors) == 1
+        assert result.is_partial
+
+
+class TestNoCanonicalModification:
+    """Canonical model must not be modified by the normalizer."""
+
+    def test_canonical_entity_extra_still_forbid(self, fixture_combined):
+        result = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(
+            make_snapshot(fixture_combined))
+        p = result.physicals[0]
+        assert p.model_config.get("extra") == "forbid"
+
+    def test_canonical_id_validator_still_active(self):
+        from server_manager.models.canonical import CanonicalEntity, SourceEvidence
+        with pytest.raises(Exception):
+            CanonicalEntity(
+                canonical_id="",
+                provider_type=ProviderType.KUBERNETES,
+                source_evidence=SourceEvidence(provider_type=ProviderType.KUBERNETES))

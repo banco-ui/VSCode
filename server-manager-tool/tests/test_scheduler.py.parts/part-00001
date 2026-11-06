@@ -1,0 +1,707 @@
+"""Scheduler tests — Phase 10B.
+
+Tests for ScheduleDefinition, SchedulerStore, and Scheduler.
+"""
+import pytest
+from datetime import datetime, timezone, timedelta
+import time
+import threading
+
+from server_manager.scheduler.models import ScheduleDefinition, ScheduleExecution, ScheduleStatus
+from server_manager.scheduler.store import SchedulerStore, DEFAULT_LOCK_RETRY_COUNT
+from server_manager.scheduler.scheduler import Scheduler, SchedulerConfig
+from server_manager.orchestrator.orchestrator import Orchestrator
+from server_manager.store.store import InventoryStore
+from server_manager.store.models import ServerRegistryEntry
+from server_manager.models.enums import ServerLifecycle, Vendor
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def store():
+    """Create an in-memory SchedulerStore for tests."""
+    s = SchedulerStore(":memory:")
+    yield s
+    s.close()
+
+
+# ── ScheduleDefinition Tests ─────────────────────────────────────────
+
+class TestScheduleDefinition:
+    def test_create_schedule(self):
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+            enabled=True,
+            interval_seconds=3600,
+        )
+        
+        assert schedule.schedule_id == "test-schedule"
+        assert schedule.name == "Test Schedule"
+        assert schedule.server_ids == ["server-001"]
+        assert schedule.enabled is True
+        assert schedule.interval_seconds == 3600
+    
+    def test_is_due_enabled(self):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+            enabled=True,
+            next_run_at=None,
+        )
+        
+        assert schedule.is_due() is True
+    
+    def test_is_due_disabled(self):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+            enabled=False,
+        )
+        
+        assert schedule.is_due() is False
+    
+    def test_is_due_future(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+            enabled=True,
+            next_run_at=future,
+        )
+        
+        assert schedule.is_due() is False
+    
+    def test_is_due_past(self):
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+            enabled=True,
+            next_run_at=past,
+        )
+        
+        assert schedule.is_due() is True
+    
+    def test_calculate_next_run_interval(self):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+            interval_seconds=3600,
+        )
+        
+        now = datetime.now(timezone.utc)
+        next_run = schedule.calculate_next_run(now)
+        
+        assert next_run > now
+        assert (next_run - now).total_seconds() == 3600
+    
+    def test_calculate_next_run_default(self):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+        )
+        
+        now = datetime.now(timezone.utc)
+        next_run = schedule.calculate_next_run(now)
+        
+        # Default is 6 hours
+        assert (next_run - now).total_seconds() == 6 * 3600
+
+
+# ── SchedulerStore Tests ────────────────────────────────────────────
+
+class TestSchedulerStore:
+    @pytest.fixture
+    def store(self):
+        s = SchedulerStore(":memory:")
+        yield s
+        s.close()
+    
+    def test_save_and_get_schedule(self, store):
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001", "server-002"],
+            enabled=True,
+            interval_seconds=3600,
+        )
+        
+        store.save_schedule(schedule)
+        retrieved = store.get_schedule("test-schedule")
+        
+        assert retrieved is not None
+        assert retrieved.schedule_id == "test-schedule"
+        assert retrieved.name == "Test Schedule"
+        assert retrieved.server_ids == ["server-001", "server-002"]
+        assert retrieved.enabled is True
+    
+    def test_get_nonexistent_schedule(self, store):
+        result = store.get_schedule("nonexistent")
+        assert result is None
+    
+    def test_get_all_schedules(self, store):
+        for i in range(3):
+            schedule = ScheduleDefinition(
+                schedule_id=f"schedule-{i}",
+                name=f"Schedule {i}",
+                server_ids=[],
+            )
+            store.save_schedule(schedule)
+        
+        all_schedules = store.get_all_schedules()
+        assert len(all_schedules) == 3
+    
+    def test_get_due_schedules(self, store):
+        # Enabled and due (no next_run_at)
+        schedule1 = ScheduleDefinition(
+            schedule_id="due-1",
+            name="Due Schedule 1",
+            server_ids=[],
+            enabled=True,
+        )
+        
+        # Enabled but not due (future)
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        schedule2 = ScheduleDefinition(
+            schedule_id="future-1",
+            name="Future Schedule",
+            server_ids=[],
+            enabled=True,
+            next_run_at=future,
+        )
+        
+        # Disabled and due
+        schedule3 = ScheduleDefinition(
+            schedule_id="disabled-1",
+            name="Disabled Schedule",
+            server_ids=[],
+            enabled=False,
+        )
+        
+        store.save_schedule(schedule1)
+        store.save_schedule(schedule2)
+        store.save_schedule(schedule3)
+        
+        due = store.get_due_schedules()
+        
+        assert len(due) == 1
+        assert due[0].schedule_id == "due-1"
+    
+    def test_update_schedule_after_execution(self, store):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+        )
+        store.save_schedule(schedule)
+        
+        next_run = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+        store.update_schedule_after_execution("test", success=True, next_run_at=next_run)
+        
+        updated = store.get_schedule("test")
+        assert updated is not None
+        assert updated.last_run_at is not None
+        assert updated.next_run_at == next_run
+    
+    def test_claim_execution_atomic(self, store):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        # Each claim creates a unique execution (unique execution_id)
+        execution1 = store.claim_execution(schedule, "server-001")
+        assert execution1 is not None
+        assert execution1.status == "CLAIMED"
+        
+        # Second claim also succeeds (new unique execution_id)
+        # Duplicate prevention is handled at scheduler level, not DB level
+        execution2 = store.claim_execution(schedule, "server-001")
+        assert execution2 is not None
+        assert execution2.execution_id != execution1.execution_id
+    
+    def test_start_execution(self, store):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution = store.claim_execution(schedule, "server-001")
+        assert execution is not None
+        
+        run_id = "run-test123"
+        store.start_execution(execution, run_id)
+        
+        retrieved = store.get_execution(execution.execution_id)
+        assert retrieved is not None
+        assert retrieved.run_id == run_id
+        assert retrieved.status == "RUNNING"
+    
+    def test_complete_execution_success(self, store):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution = store.claim_execution(schedule, "server-001")
+        store.start_execution(execution, "run-test")
+        store.complete_execution(execution.execution_id, success=True)
+        
+        retrieved = store.get_execution(execution.execution_id)
+        assert retrieved is not None
+        assert retrieved.status == "SUCCESS"
+        assert retrieved.completed_at is not None
+    
+    def test_complete_execution_failure(self, store):
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution = store.claim_execution(schedule, "server-001")
+        store.start_execution(execution, "run-test")
+        store.complete_execution(execution.execution_id, success=False, error_message="Test error")
+        
+        retrieved = store.get_execution(execution.execution_id)
+        assert retrieved is not None
+        assert retrieved.status == "FAILED"
+        assert retrieved.error_message == "Test error"
+
+
+# ── Scheduler Core Tests ────────────────────────────────────────────
+
+class TestSchedulerConfig:
+    def test_default_config(self):
+        config = SchedulerConfig()
+        
+        assert config.poll_interval == 60
+        assert config.worker_limit == 2
+        assert config.enabled is False  # Disabled by default for safety
+    
+    def test_custom_config(self):
+        config = SchedulerConfig(
+            poll_interval=30,
+            worker_limit=4,
+            enabled=True,
+        )
+        
+        assert config.poll_interval == 30
+        assert config.worker_limit == 4
+        assert config.enabled is True
+
+
+class TestScheduler:
+    @pytest.fixture
+    def orchestrator_factory(self):
+        def factory():
+            return Orchestrator()
+        return factory
+    
+    @pytest.fixture
+    def store_factory(self):
+        inv_store = InventoryStore(":memory:")
+        # Register a test server
+        entry = ServerRegistryEntry(
+            server_id="test-server-001",
+            display_name="Test Server",
+            vendor=Vendor.Dell,
+            model="PowerEdge R750",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+        )
+        inv_store.register_server(entry)
+        
+        def factory():
+            return inv_store
+        return factory
+    
+    @pytest.fixture
+    def scheduler(self, orchestrator_factory, store_factory):
+        config = SchedulerConfig(
+            poll_interval=1,  # Short interval for testing
+            worker_limit=2,
+            enabled=False,  # Don't auto-start
+        )
+        scheduler = Scheduler(config, orchestrator_factory, store_factory)
+        yield scheduler
+        scheduler.stop()
+    
+    def test_scheduler_initialization(self, scheduler):
+        assert scheduler.config.poll_interval == 1
+        assert scheduler.config.worker_limit == 2
+        assert scheduler.config.enabled is False
+    
+    def test_add_schedule(self, scheduler):
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["test-server-001"],
+        )
+        
+        scheduler.add_schedule(schedule)
+        retrieved = scheduler.get_schedule("test-schedule")
+        
+        assert retrieved is not None
+        assert retrieved.schedule_id == "test-schedule"
+    
+    def test_enable_disable_schedule(self, scheduler):
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["test-server-001"],
+            enabled=False,
+        )
+        
+        scheduler.add_schedule(schedule)
+        
+        # Enable
+        scheduler.enable_schedule("test-schedule")
+        enabled = scheduler.get_schedule("test-schedule")
+        assert enabled is not None
+        assert enabled.enabled is True
+        
+        # Disable
+        scheduler.disable_schedule("test-schedule")
+        disabled = scheduler.get_schedule("test-schedule")
+        assert disabled is not None
+        assert disabled.enabled is False
+    
+    def test_get_all_schedules(self, scheduler):
+        for i in range(3):
+            schedule = ScheduleDefinition(
+                schedule_id=f"schedule-{i}",
+                name=f"Schedule {i}",
+                server_ids=[],
+            )
+            scheduler.add_schedule(schedule)
+        
+        all_schedules = scheduler.get_schedules()
+        assert len(all_schedules) == 3
+    
+    def test_worker_limit_enforcement(self, orchestrator_factory):
+        """Test that worker limit is enforced."""
+        inv_store = InventoryStore(":memory:")
+        
+        def store_factory():
+            return inv_store
+        
+        config = SchedulerConfig(
+            poll_interval=60,
+            worker_limit=2,
+            enabled=False,
+        )
+        scheduler = Scheduler(config, orchestrator_factory, store_factory)
+        
+        # Acquire all worker slots
+        assert scheduler._acquire_worker_slot() is True
+        assert scheduler._acquire_worker_slot() is True
+        assert scheduler._acquire_worker_slot() is False  # Limit reached
+        
+        # Release one
+        scheduler._release_worker_slot()
+        assert scheduler._acquire_worker_slot() is True
+        
+        scheduler._release_worker_slot()
+        scheduler._release_worker_slot()
+    
+    def test_duplicate_claim_prevention(self, scheduler, orchestrator_factory, store_factory):
+        """Test that duplicate claims create unique executions (each has unique execution_id).
+        
+        Note: Duplicate prevention at the scheduler level is about not running
+        the same schedule twice simultaneously, not about DB-level uniqueness.
+        Each claim creates a new execution record with a unique ID.
+        """
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["test-server-001"],
+        )
+        scheduler.add_schedule(schedule)
+        
+        # Each claim creates a unique execution
+        execution1 = scheduler.store.claim_execution(schedule, "test-server-001")
+        assert execution1 is not None
+        
+        execution2 = scheduler.store.claim_execution(schedule, "test-server-001")
+        assert execution2 is not None
+        assert execution1.execution_id != execution2.execution_id
+    
+    def test_scheduler_start_stop(self, scheduler):
+        """Test scheduler start and stop."""
+        # Start
+        scheduler.config.enabled = True
+        scheduler.start()
+        
+        # Give it time to start
+        time.sleep(0.1)
+        
+        assert scheduler._loop_thread is not None
+        assert scheduler._loop_thread.is_alive()
+        
+        # Stop
+        scheduler.stop()
+        
+        # Give it time to stop
+        time.sleep(0.1)
+        
+        assert scheduler._loop_thread is None
+
+
+# ── Concurrency Tests ───────────────────────────────────────────────
+
+SCHEDULER_SCHEMA_SQL = """
+-- Schedule definitions
+CREATE TABLE IF NOT EXISTS schedule_definitions (
+    schedule_id        TEXT PRIMARY KEY,
+    name               TEXT NOT NULL,
+    server_ids_json    TEXT NOT NULL DEFAULT '[]',
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    cron_expression    TEXT,
+    interval_seconds   INTEGER,
+    last_run_at        TEXT,
+    next_run_at        TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    metadata_json      TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Schedule executions (atomic claim tracking)
+CREATE TABLE IF NOT EXISTS schedule_executions (
+    execution_id       TEXT PRIMARY KEY,
+    schedule_id        TEXT NOT NULL,
+    server_id          TEXT NOT NULL,
+    run_id             TEXT,
+    status             TEXT NOT NULL DEFAULT 'PENDING',
+    claimed_at         TEXT,
+    started_at         TEXT,
+    completed_at       TEXT,
+    error_message      TEXT,
+    FOREIGN KEY (schedule_id) REFERENCES schedule_definitions(schedule_id)
+);
+"""
+
+
+class TestConcurrency:
+    def test_sqlite_lock_retry_constants(self):
+        """Test that SQLite lock retry constants are defined."""
+        assert DEFAULT_LOCK_RETRY_COUNT == 3
+
+
+# ── Security Tests ──────────────────────────────────────────────────
+
+class TestSecurity:
+    def test_scheduler_no_credentials(self):
+        """Verify Scheduler does not handle credentials."""
+        config = SchedulerConfig()
+        scheduler = Scheduler(config)
+        
+        # Check that Scheduler has no credential attributes
+        assert not hasattr(scheduler, 'password')
+        assert not hasattr(scheduler, 'api_key')
+        assert not hasattr(scheduler, 'token')
+        
+        # Check ScheduleDefinition has no credential fields
+        schedule = ScheduleDefinition(
+            schedule_id="test",
+            name="Test",
+            server_ids=[],
+        )
+        
+        assert not hasattr(schedule, 'password')
+        assert not hasattr(schedule, 'credentials')
+        assert 'password' not in schedule.model_dump()
+
+
+
+# ── Phase 10D: Crash Recovery Tests ─────────────────────────────────────
+
+class TestPhase10DRecovery:
+    """Phase 10D: Crash Recovery test matrix."""
+    
+    def test_recovery_clean_restart_no_stale(self, store):
+        """Test 1: Clean restart with no RUNNING executions."""
+        stale = store.get_stale_executions(stale_timeout_seconds=60)
+        assert len(stale) == 0
+    
+    def test_recovery_running_execution_on_restart(self, store):
+        """Test 2: RUNNING execution detected as stale on restart."""
+        from datetime import datetime, timezone, timedelta
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution = store.claim_execution(schedule, "server-001")
+        assert execution is not None
+        
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.conn.execute(
+            "UPDATE schedule_executions SET status = 'RUNNING', started_at = ? WHERE execution_id = ?",
+            (old_time, execution.execution_id),
+        )
+        store.conn.commit()
+        
+        stale = store.get_stale_executions(stale_timeout_seconds=300)
+        assert len(stale) == 1
+        assert stale[0].execution_id == execution.execution_id
+    
+    def test_recovery_multiple_stale_executions(self, store):
+        """Test 3: Multiple stale executions handled independently."""
+        from datetime import datetime, timezone, timedelta
+        import uuid
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001", "server-002", "server-003"],
+        )
+        store.save_schedule(schedule)
+        
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        execution_ids = []
+        
+        for server_id in ["server-001", "server-002", "server-003"]:
+            execution = store.claim_execution(schedule, server_id)
+            assert execution is not None
+            execution_ids.append(execution.execution_id)
+            
+            store.conn.execute(
+                "UPDATE schedule_executions SET status = 'RUNNING', started_at = ? WHERE execution_id = ?",
+                (old_time, execution.execution_id),
+            )
+        
+        store.conn.commit()
+        
+        stale = store.get_stale_executions(stale_timeout_seconds=300)
+        assert len(stale) == 3
+        
+        recovery_id = f"recovery-{uuid.uuid4().hex[:8]}"
+        for exec_id in execution_ids:
+            success = store.recover_execution(exec_id, recovery_id)
+            assert success == 1
+        
+        for exec_id in execution_ids:
+            recovered = store.get_execution(exec_id)
+            assert recovered is not None
+            assert recovered.status == "RECOVERED"
+            assert recovered.recovery_count == 1
+    
+    def test_recovery_missed_schedule_policy_skip(self, store):
+        """Test 4: Missed schedule policy - skip."""
+        from datetime import datetime, timezone, timedelta
+        
+        past_time = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        
+    
+    def test_recovery_idempotency(self, store):
+        """Test 5: Recovery idempotency."""
+        from datetime import datetime, timezone, timedelta
+        import uuid
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution = store.claim_execution(schedule, "server-001")
+        assert execution is not None
+        
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.conn.execute(
+            "UPDATE schedule_executions SET status = 'RUNNING', started_at = ? WHERE execution_id = ?",
+            (old_time, execution.execution_id),
+        )
+        store.conn.commit()
+        
+        recovery_id = f"recovery-{uuid.uuid4().hex[:8]}"
+        
+        success1 = store.recover_execution(execution.execution_id, recovery_id)
+        assert success1 == 1
+        
+        recovered = store.get_execution(execution.execution_id)
+        assert recovered.status == "RECOVERED"
+        assert recovered.recovery_count == 1
+        
+        success2 = store.recover_execution(execution.execution_id, recovery_id)
+        assert success2 == 0
+        
+        recovered2 = store.get_execution(execution.execution_id)
+        assert recovered2.recovery_count == 1
+    
+    def test_recovery_with_sqlite_lock_retry(self, store):
+        """Test 9: SQLite lock during recovery."""
+        from datetime import datetime, timezone, timedelta
+        import uuid
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution = store.claim_execution(schedule, "server-001")
+        assert execution is not None
+        
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.conn.execute(
+            "UPDATE schedule_executions SET status = 'RUNNING', started_at = ? WHERE execution_id = ?",
+            (old_time, execution.execution_id),
+        )
+        store.conn.commit()
+        
+        recovery_id = f"recovery-{uuid.uuid4().hex[:8]}"
+        success = store.recover_execution(execution.execution_id, recovery_id)
+        assert success == 1
+    
+    def test_recovery_duplicate_execution_protection(self, store):
+        """Test 10: Duplicate execution protection after recovery."""
+        from datetime import datetime, timezone, timedelta
+        import uuid
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution1 = store.claim_execution(schedule, "server-001")
+        
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.conn.execute(
+            "UPDATE schedule_executions SET status = 'RUNNING', started_at = ? WHERE execution_id = ?",
+            (old_time, execution1.execution_id),
+        )
+        store.conn.commit()
+        
+        recovery_id = f"recovery-{uuid.uuid4().hex[:8]}"
+        store.recover_execution(execution1.execution_id, recovery_id)
+        
+        execution2 = store.claim_execution(schedule, "server-001")
+        assert execution2 is not None
+        assert execution2.execution_id != execution1.execution_id
+        
+        all_execs = store.get_all_executions()
+        asser

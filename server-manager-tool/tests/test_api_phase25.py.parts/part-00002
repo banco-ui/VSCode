@@ -1,0 +1,128 @@
+    assert "css/styles.css" in c.get("/dashboard/").text
+
+    def test_html_escaping_present(self):
+        content = _read_ui("js/app.js")
+        assert "function esc(" in content
+
+    def test_no_eval_in_ui(self):
+        for f in ["index.html", "js/api-client.js", "js/app.js"]:
+            content = _read_ui(f)
+            assert "eval(" not in content
+            assert "Function(" not in content
+
+    def test_no_subprocess_in_ui(self):
+        for f in ["index.html", "js/api-client.js", "js/app.js"]:
+            assert "subprocess" not in _read_ui(f).lower()
+
+    def test_no_kubectl_in_ui(self):
+        for f in ["index.html", "js/api-client.js", "js/app.js"]:
+            assert "kubectl" not in _read_ui(f).lower()
+
+    def test_responsive_media_queries(self, client):
+        c, _ = client
+        css = c.get("/dashboard/css/styles.css").text
+        assert "@media" in css
+        assert "max-width" in css
+
+    def test_only_get_and_post_in_api_client(self):
+        content = _read_ui("js/api-client.js")
+        for m in ["PUT", "DELETE", "PATCH"]:
+            assert f"method: '{m}'" not in content
+            assert f'method: "{m}"' not in content
+
+
+# ── 12. Regression — Phase 24 Discovery ────────────────────────────
+
+class TestPhase24Regression:
+    def test_discovery_nav_link_present(self, client):
+        html = client[0].get("/dashboard/").text
+        assert 'href="#discovery"' in html
+        assert 'data-route="discovery"' in html
+
+    def test_discovery_run_method_in_api_client(self):
+        content = _read_ui("js/api-client.js")
+        assert "discoveryRun" in content
+        assert "/discovery/run" in content
+
+    def test_discovery_view_in_app_js(self):
+        content = _read_ui("js/app.js")
+        assert "_renderDiscovery" in content
+        assert "_runDiscovery" in content
+        assert "_renderDiscoveryResult" in content
+        assert "_loadDiscoveryCurrentStatus" in content
+
+    def test_discovery_button_disabled_during_run(self):
+        content = _read_ui("js/app.js")
+        assert "_discoveryRunning" in content
+        assert "btn.disabled = true" in content
+
+    def test_discovery_no_auto_repeat(self):
+        content = _read_ui("js/app.js")
+        assert "discoveryRun" in content
+
+    def test_discovery_status_badge_displayed(self):
+        content = _read_ui("js/app.js")
+        assert "discovery_status" in content
+
+    def test_discovery_errors_and_warnings_displayed(self):
+        content = _read_ui("js/app.js")
+        assert "r.errors" in content
+        assert "r.warnings" in content
+
+    def test_discovery_no_execute_endpoints(self):
+        content = _read_ui("js/api-client.js")
+        assert "/operations/execute" not in content
+        assert "/recovery/execute" not in content
+
+    def test_discovery_no_put_delete_patch(self):
+        content = _read_ui("js/api-client.js")
+        for m in ["PUT", "DELETE", "PATCH"]:
+            assert f"method: '{m}'" not in content
+            assert f'method: "{m}"' not in content
+
+    def test_discovery_css_styles_present(self, client):
+        css = client[0].get("/dashboard/css/styles.css").text
+        assert "text-success" in css
+        assert "text-error" in css
+        assert "discovery-spinner" in css
+
+    def test_discovery_loading_state(self):
+        content = _read_ui("js/app.js")
+        assert "Running discovery" in content
+
+    def test_discovery_empty_state(self):
+        content = _read_ui("js/app.js")
+        assert "Inventory is empty" in content
+
+
+# ── 13. Mutation Safety (Phase 22 Compatible) ─────────────────────
+
+class TestMutationSafety:
+    def test_no_execute_calls_in_management_routes(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert ".execute(" not in source
+        assert "svc.preview(" in source
+
+    def test_management_context_no_mutation(self):
+        source = inspect.getsource(ManagementContext)
+        assert "subprocess" not in source.lower()
+        assert "kubectl" not in source.lower()
+        assert ".execute(" not in source
+        assert "svc.execute" not in source
+
+    def test_all_endpoints_are_read_only_or_preview(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert "@router.put" not in source
+        assert "@router.delete" not in source
+        assert "@router.patch" not in source
+        post_lines = [l for l in source.split('\n') if '@router.post' in l]
+        for line in post_lines:
+            assert 'preview' in line.lower() or 'discovery' in line.lower()
+
+    def test_app_py_no_new_mutation_endpoints(self):
+        source = inspect.getsource(create_app)
+        assert "@router.put" not in source
+        assert "@router.delete" not in source
+        assert "@router.patch" not in source

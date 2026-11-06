@@ -1,0 +1,646 @@
+"""Cross-Platform Operations Service — Phase 19.
+
+Provider-neutral operation service for safely resolving, evaluating,
+previewing, executing, and verifying infrastructure operations.
+
+    OperationRequest
+        ↓
+    Target Resolution
+        ↓
+    Capability Resolution
+        ↓
+    Safety / Authorization Gate
+        ↓
+    Preview (dry-run, no mutation)
+        ↓
+    Execution (if execution_enabled=True)
+        ↓
+    Post-Action Verification
+        ↓
+    OperationResult
+
+SAFETY PRINCIPLES:
+    - Execution disabled by default
+    - No provider API calls unless execution_enabled=True AND safety PASS
+    - No inference: target must be deterministically resolved
+    - UNKNOWN capability is NOT SUPPORTED
+    - No escalation: failure does not auto-trigger other operations
+    - Idempotency: same (target, op_type, params) → no duplicate
+    - Reuses Phase 18 AuthorizationLevel semantics
+    - Graph used for context only — not causality
+"""
+from __future__ import annotations
+
+import logging
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from server_manager.graph.service import GraphQuery
+from server_manager.models.canonical import ProviderType
+
+from .models import (
+    CapabilityDecision,
+    OperationBlockReason,
+    OperationParameters,
+    OperationPreview,
+    OperationRequest,
+    OperationResult,
+    OperationSafetyGateResult,
+    OperationStatus,
+    OperationType,
+    TargetResolution,
+)
+from server_manager.recovery.models import AuthorizationLevel, SafetyResult
+
+logger = logging.getLogger(__name__)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  OPERATION GRAPH CONTEXT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class OperationGraphContext:
+    """Read-only graph context for operations.
+
+    Uses Phase 16 GraphQuery for context lookup ONLY.
+    Graph relationship ≠ Operation causality.
+    No graph mutation, no inference.
+    """
+
+    def __init__(self, graph_query: Optional[GraphQuery] = None) -> None:
+        self._query = graph_query
+
+    def get_node(self, canonical_id: str) -> Optional[Any]:
+        """Get graph node by canonical_id."""
+        if self._query is None:
+            return None
+        return self._query.get_node(canonical_id)
+
+    def get_neighbors(self, canonical_id: str) -> list[str]:
+        """Get neighbor canonical_ids (read-only context)."""
+        if self._query is None:
+            return []
+        return self._query.get_neighbors(canonical_id)
+
+    def get_relationships(self, canonical_id: str) -> list[Any]:
+        """Get relationships for a node (read-only context)."""
+        if self._query is None:
+            return []
+        return self._query.get_relationships(canonical_id)
+
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CAPABILITY RESOLVER
+# ════════════════════════════════════════════════════════════════════════
+
+
+class CapabilityResolver:
+    """Resolves whether a provider supports a given operation type.
+
+    Provider capability must be explicitly registered.
+    UNKNOWN → CapabilityDecision.UNKNOWN (NOT SUPPORTED).
+    No inference: capability is not assumed from operation name existence.
+    """
+
+    def __init__(self) -> None:
+        self._capabilities: dict[ProviderType, set[OperationType]] = {}
+
+    def register(
+        self,
+        provider_type: ProviderType,
+        operations: set[OperationType],
+    ) -> None:
+        """Explicitly register supported operations for a provider."""
+        self._capabilities[provider_type] = set(operations)
+
+    def resolve(
+        self,
+        provider_type: ProviderType,
+        operation_type: OperationType,
+    ) -> CapabilityDecision:
+        """Resolve capability for a provider + operation."""
+        if provider_type == ProviderType.UNKNOWN:
+            return CapabilityDecision.UNKNOWN
+        supported = self._capabilities.get(provider_type)
+        if supported is None:
+            return CapabilityDecision.UNKNOWN
+        if operation_type in supported:
+            return CapabilityDecision.SUPPORTED
+        return CapabilityDecision.UNSUPPORTED
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  TARGET RESOLVER
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TargetResolver:
+    """Resolves operation targets deterministically.
+
+    Primary identity: canonical_id.
+    No inference from hostname, naming conventions, or labels.
+    If target cannot be resolved deterministically → TARGET_UNRESOLVED.
+    """
+
+    def __init__(self) -> None:
+        self._targets: dict[str, TargetResolution] = {}
+
+    def register_target(
+        self,
+        canonical_id: str,
+        provider_type: ProviderType,
+        provider_id: Optional[str] = None,
+        entity_type: str = "",
+        evidence: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Register a known target for resolution."""
+        self._targets[canonical_id] = TargetResolution(
+            resolved=True,
+            canonical_id=canonical_id,
+            provider_id=provider_id,
+            provider_type=provider_type,
+            entity_type=entity_type,
+            evidence=evidence or {},
+            ambiguous=False,
+        )
+
+    def resolve(
+        self,
+        canonical_id: str,
+        graph_context: Optional[OperationGraphContext] = None,
+    ) -> TargetResolution:
+        """Resolve a target by canonical_id."""
+        target = self._targets.get(canonical_id)
+        if target is not None:
+            return target
+        if graph_context is not None:
+            node = graph_context.get_node(canonical_id)
+            if node is not None:
+                return TargetResolution(
+                    resolved=True,
+                    canonical_id=canonical_id,
+                    provider_type=node.provider_type,
+                    entity_type=node.entity_type.value
+                    if hasattr(node.entity_type, "value")
+                    else str(node.entity_type),
+                    evidence={"graph_node": True},
+                    ambiguous=False,
+                )
+        return TargetResolution(
+            resolved=False,
+            canonical_id=canonical_id,
+            ambiguous=False,
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  OPERATION SAFETY GATE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class OperationSafetyGate:
+    """Safety gate for cross-platform operations.
+
+    Checks (all must pass for execution):
+        1. target resolved and unambiguous
+        2. provider known
+        3. capability supported (NOT UNKNOWN)
+        4. authorization sufficient
+        5. execution explicitly enabled
+        6. no duplicate/ongoing operation
+        7. parameters valid
+        8. evidence present (for mutating ops)
+
+    Failure of any check → BLOCKED with explicit reason.
+    """
+
+    def __init__(
+        self,
+        active_identity_keys: Optional[set[str]] = None,
+    ) -> None:
+        self._active = active_identity_keys or set()
+
+    def evaluate(
+        self,
+        request: OperationRequest,
+        target_resolution: TargetResolution,
+        capability: CapabilityDecision,
+        authorization: AuthorizationLevel,
+    ) -> OperationSafetyGateResult:
+        """Evaluate all safety checks for an operation request."""
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+
+        # 1. Target resolved
+        if not target_resolution.resolved:
+            checks_failed.append("target_resolved")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.TARGET_UNRESOLVED,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        if target_resolution.ambiguous:
+            checks_failed.append("target_unambiguous")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.AMBIGUOUS_TARGET,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("target_resolved")
+
+        # 2. Provider known (check both request and resolved target)
+        if request.provider_type == ProviderType.UNKNOWN:
+            checks_failed.append("provider_known")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.UNKNOWN_PROVIDER,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        if target_resolution.provider_type == ProviderType.UNKNOWN:
+            checks_failed.append("provider_known")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.UNKNOWN_PROVIDER,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("provider_known")
+
+        # 3. Capability supported
+        if not capability.is_supported:
+            checks_failed.append("capability_supported")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.UNSUPPORTED_ACTION,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("capability_supported")
+
+        # 4. Authorization sufficient
+        if request.operation_type.requires_execute_auth:
+            if authorization < AuthorizationLevel.EXECUTE:
+                checks_failed.append("authorization")
+                return OperationSafetyGateResult(
+                    result=SafetyResult.BLOCKED,
+                    reason=OperationBlockReason.INSUFFICIENT_AUTHORIZATION,
+                    checks_passed=checks_passed,
+                    checks_failed=checks_failed,
+                )
+        else:
+            # QUERY_STATUS requires at least READ_ONLY
+            if authorization < AuthorizationLevel.READ_ONLY:
+                checks_failed.append("authorization")
+                return OperationSafetyGateResult(
+                    result=SafetyResult.BLOCKED,
+                    reason=OperationBlockReason.INSUFFICIENT_AUTHORIZATION,
+                    checks_passed=checks_passed,
+                    checks_failed=checks_failed,
+                )
+        checks_passed.append("authorization")
+
+        # 5. Execution enabled
+        if request.operation_type.is_mutating and not request.execution_enabled:
+            checks_failed.append("execution_enabled")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.EXECUTION_NOT_ENABLED,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("execution_enabled")
+
+        # 6. Duplicate check
+        if request.identity_key in self._active:
+            checks_failed.append("duplicate")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.DUPLICATE_OPERATION,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("not_duplicate")
+
+        # 7. Parameters valid
+        if request.parameters.replicas is not None and request.parameters.replicas < 0:
+            checks_failed.append("parameters_valid")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.INVALID_PARAMETERS,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("parameters_valid")
+
+        # 8. Evidence (for mutating ops)
+        if request.operation_type.is_mutating and not request.evidence:
+            checks_failed.append("evidence")
+            return OperationSafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=OperationBlockReason.MISSING_EVIDENCE,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("evidence")
+
+        return OperationSafetyGateResult(
+            result=SafetyResult.PASS,
+            checks_passed=checks_passed,
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  OPERATION EXECUTOR (ABC)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class OperationExecutor(ABC):
+    """Provider-neutral operation executor contract.
+
+    Lifecycle: preview() → execute() → verify()
+    Execution must never bypass target resolution, capability check,
+    safety gate, or authorization gate.
+    """
+
+    @abstractmethod
+    def preview(
+        self,
+        request: OperationRequest,
+        target: TargetResolution,
+        capability: CapabilityDecision,
+    ) -> OperationPreview:
+        """Generate a deterministic preview without mutation."""
+        ...
+
+    @abstractmethod
+    def execute(
+        self,
+        request: OperationRequest,
+        target: TargetResolution,
+    ) -> OperationResult:
+        """Execute the operation. Returns EXECUTED/FAILED status."""
+        ...
+
+    @abstractmethod
+    def verify(
+        self,
+        request: OperationRequest,
+        target: TargetResolution,
+        execution_result: OperationResult,
+    ) -> OperationResult:
+        """Verify post-action state. Returns VERIFIED/VERIFICATION_FAILED."""
+        ...
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MOCK OPERATION EXECUTOR
+# ════════════════════════════════════════════════════════════════════════
+
+
+class MockOperationExecutor(OperationExecutor):
+    """Mock executor for testing operation semantics.
+
+    Simulates success/failure/timeout without real provider calls.
+    Configurable per-request behavior via simulate_failure flag.
+    """
+
+    def __init__(
+        self,
+        simulate_failure: bool = False,
+        simulate_verification_failure: bool = False,
+    ) -> None:
+        self._simulate_failure = simulate_failure
+        self._simulate_verification_failure = simulate_verification_failure
+        self._mutation_count: int = 0
+
+    @property
+    def mutation_count(self) -> int:
+        """Number of actual mutations performed (for safety tests)."""
+        return self._mutation_count
+
+    def reset(self) -> None:
+        self._mutation_count = 0
+
+    def preview(
+        self,
+        request: OperationRequest,
+        target: TargetResolution,
+        capability: CapabilityDecision,
+    ) -> OperationPreview:
+        """Generate a deterministic preview — NO mutation."""
+        return OperationPreview(
+            request=request,
+            resolved_target=target,
+            capability_decision=capability,
+            expected_effect=f"Would {request.operation_type.value} "
+            f"on {target.canonical_id}",
+        )
+
+    def execute(
+        self,
+        request: OperationRequest,
+        target: TargetResolution,
+    ) -> OperationResult:
+        """Simulate execution — increments mutation counter."""
+        self._mutation_count += 1
+        if self._simulate_failure:
+            return OperationResult(
+                operation_id=request.operation_id,
+                status=OperationStatus.FAILED,
+                started_at=datetime.now(timezone.utc).isoformat(),
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                provider=target.provider_type,
+                target=target.canonical_id,
+                resolved_target=target,
+                error="Simulated execution failure",
+            )
+        return OperationResult(
+            operation_id=request.operation_id,
+            status=OperationStatus.EXECUTED,
+            started_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            provider=target.provider_type,
+            target=target.canonical_id,
+            resolved_target=target,
+            evidence={"mock": True},
+        )
+
+    def verify(
+        self,
+        request: OperationRequest,
+        target: TargetResolution,
+        execution_result: OperationResult,
+    ) -> OperationResult:
+        """Simulate post-action verification."""
+        if execution_result.status != OperationStatus.EXECUTED:
+            return execution_result
+        if self._simulate_verification_failure:
+            return OperationResult(
+                operation_id=request.operation_id,
+                status=OperationStatus.VERIFICATION_FAILED,
+                started_at=execution_result.started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                provider=target.provider_type,
+                target=target.canonical_id,
+                resolved_target=target,
+                evidence=execution_result.evidence,
+                error="Simulated verification failure",
+            )
+        return OperationResult(
+            operation_id=request.operation_id,
+            status=OperationStatus.VERIFIED,
+            started_at=execution_result.started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            provider=target.provider_type,
+            target=target.canonical_id,
+            resolved_target=target,
+            evidence={"verified": True, **execution_result.evidence},
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  OPERATION SERVICE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class OperationService:
+    """Orchestrates the full cross-platform operation pipeline.
+
+    Ties together target resolution, capability resolution, safety gate,
+    preview, execution, and post-action verification.
+
+    Usage::
+
+        service = OperationService(
+            target_resolver=resolver,
+            capability_resolver=cap_resolver,
+            executor=mock_executor,
+        )
+        preview = service.preview(request)
+        result = service.execute(request)  # only if execution_enabled
+    """
+
+    def __init__(
+        self,
+        target_resolver: TargetResolver,
+        capability_resolver: CapabilityResolver,
+        executor: OperationExecutor,
+        graph_context: Optional[OperationGraphContext] = None,
+    ) -> None:
+        self._target_resolver = target_resolver
+        self._capability_resolver = capability_resolver
+        self._executor = executor
+        self._graph_context = graph_context
+        self._active_keys: set[str] = set()
+        self._completed_keys: set[str] = set()
+
+    def preview(self, request: OperationRequest) -> OperationPreview:
+        """Generate a deterministic preview without mutation.
+
+        Preview performs no provider API calls and no mutations.
+        """
+        target = self._target_resolver.resolve(
+            request.target_canonical_id,
+            self._graph_context,
+        )
+        capability = self._capability_resolver.resolve(
+            target.provider_type if target.resolved else request.provider_type,
+            request.operation_type,
+        )
+        return self._executor.preview(request, target, capability)
+
+    def evaluate_safety(
+        self, request: OperationRequest,
+    ) -> OperationSafetyGateResult:
+        """Evaluate safety gate without executing."""
+        target = self._target_resolver.resolve(
+            request.target_canonical_id,
+            self._graph_context,
+        )
+        capability = self._capability_resolver.resolve(
+            target.provider_type if target.resolved else request.provider_type,
+            request.operation_type,
+        )
+        gate = OperationSafetyGate(active_identity_keys=self._active_keys)
+        return gate.evaluate(
+            request=request,
+            target_resolution=target,
+            capability=capability,
+            authorization=request.authorization,
+        )
+
+    def execute(self, request: OperationRequest) -> OperationResult:
+        """Execute an operation through the full pipeline.
+
+        Only executes if all safety gates pass and execution is enabled.
+        """
+        # 1. Target resolution
+        target = self._target_resolver.resolve(
+            request.target_canonical_id,
+            self._graph_context,
+        )
+
+        # 2. Capability resolution
+        capability = self._capability_resolver.resolve(
+            target.provider_type if target.resolved else request.provider_type,
+            request.operation_type,
+        )
+
+        # 3. Safety gate
+        gate = OperationSafetyGate(
+            active_identity_keys=self._active_keys | self._completed_keys
+        )
+        safety = gate.evaluate(
+            request=request,
+            target_resolution=target,
+            capability=capability,
+            authorization=request.authorization,
+        )
+
+        if safety.result != SafetyResult.PASS:
+            return OperationResult(
+                operation_id=request.operation_id,
+                status=OperationStatus.BLOCKED,
+                provider=target.provider_type,
+                target=request.target_canonical_id,
+                resolved_target=target if target.resolved else None,
+                error=safety.reason.value if safety.reason else "BLOCKED",
+            )
+
+        # 4. Register active for idempotency
+        self._active_keys.add(request.identity_key)
+
+        # 5. Execute
+        execution_result = self._executor.execute(request, target)
+
+        # 6. Verify (only if execution succeeded)
+        if execution_result.status == OperationStatus.EXECUTED:
+            verified = self._executor.verify(request, target, execution_result)
+            if verified.status == OperationStatus.VERIFIED:
+                self._active_keys.discard(request.identity_key)
+                self._completed_keys.add(request.identity_key)
+            elif verified.status == OperationStatus.VERIFICATION_FAILED:
+                self._active_keys.discard(request.identity_key)
+            return verified
+
+        # Execution failed — remove from active
+        self._active_keys.discard(request.identity_key)
+        return execution_result
+
+    def dry_run(self, request: OperationRequest) -> OperationResult:
+        """Perform a dry-run — never mutates.
+
+        Returns a DRY_RUN result with resolved target and capability.
+        """
+        target = self._target_resolver.resolve(
+            request.target_canonical_id,
+            self._graph_context,
+        )
+        capability = self._capability_resolver.resolve(
+            target.provider_type i

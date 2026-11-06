@@ -1,0 +1,523 @@
+"""Phase 28H — Cross-Provider Integration & Contract Regression Validation.
+
+Validates that StarlingX (WRCP) satisfies the same cross-provider contract
+rules that Kubernetes and OpenStack already satisfy in
+``test_cross_provider_contract.py`` (Phase 27).
+
+All fixtures are synthetic/in-memory. No live connection.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.discovery.service import PlatformDiscovery
+from server_manager.graph.service import GraphBuilder, GraphQuery
+from server_manager.health.service import HealthService
+from server_manager.health.models import HealthStatus
+from server_manager.models.canonical import (
+    ProviderType,
+    RelationshipEvidenceType,
+)
+from server_manager.normalizers.starlingx_normalizer import (
+    StarlingXProviderNormalizer,
+)
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability,
+    ProviderAdapter,
+    RawProviderSnapshot,
+)
+from server_manager.providers.starlingx import StarlingXProviderAdapter
+
+SYSTEM_UUID = "f3c8a1b2-1234-5678-9abc-def012345678"
+HOST_UUID = "a7aa8774-c383-4641-ba1d-dc13c1dee91d"
+ALARM_UUID = "fe7e9b1e-4a8e-4f76-9d6a-8c2c1a3b4c5d"
+
+
+def _make_starlingx_fixture(
+    *,
+    host_availability: str = "available",
+    host_operational: str = "enabled",
+    fm_alarms: list[dict[str, Any]] | None = None,
+    fm_event_log: list[dict[str, Any]] | None = None,
+    platform_memory_used: float | None = 90.26,
+    system_health: dict[str, Any] | None = None,
+    bm_type: str = "none",
+    bm_ip: str | None = None,
+    bm_hostname: str | None = None,
+    hostname: str = "controller-0",
+) -> dict[str, Any]:
+    """Build a StarlingX fixture with configurable health states."""
+    if fm_alarms is None:
+        fm_alarms = []
+    if fm_event_log is None:
+        fm_event_log = []
+    if system_health is None:
+        system_health = {"System Health": "OK"}
+
+    mem_entry: dict[str, Any] = {
+        "platform_reserved_mib": 10000,
+        "platform_total_mib": 16384,
+    }
+    if platform_memory_used is not None:
+        mem_entry["platform_used_percent"] = platform_memory_used
+
+    host: dict[str, Any] = {
+        "uuid": HOST_UUID,
+        "hostname": hostname,
+        "personality": "controller",
+        "administrative": "unlocked",
+        "operational": host_operational,
+        "availability": host_availability,
+        "subfunctions": "controller,worker,lowlatency",
+        "uptime": 15244220,
+        "reboot_needed": False,
+        "bm_type": bm_type,
+        "capabilities": {},
+        "location": {"locn": "samsung"},
+    }
+    if bm_ip is not None:
+        host["bm_ip"] = bm_ip
+    if bm_hostname is not None:
+        host["bm_hostname"] = bm_hostname
+
+    return {
+        "sysinv_isystems": [{
+            "uuid": SYSTEM_UUID, "name": "wrcp-ctrlr",
+            "sw_version": "24.09", "system_mode": "simplex",
+            "system_type": "All-in-one", "timezone": "UTC",
+        }],
+        "sysinv_ihosts": [host],
+        "sysinv_imemorys": {HOST_UUID: [mem_entry]},
+        "fm_alarms": fm_alarms,
+        "fm_event_log": fm_event_log,
+        "smapi_nodes": [{
+            "id": 1, "name": hostname,
+            "administrative_state": "unlocked",
+            "operational_state": "enabled",
+            "availability_status": "available",
+        }],
+        "system_health": system_health,
+        "software_list": [
+            {"release": "wrcp-24.09.0", "state": "deployed"},
+        ],
+    }
+
+
+def _critical_alarm(
+    alarm_id: str = "100.103",
+    uuid: str = ALARM_UUID,
+    entity: str = "host=controller-0",
+) -> dict[str, Any]:
+    return {
+        "uuid": uuid, "alarm_id": alarm_id, "severity": "critical",
+        "entity_instance_id": entity,
+        "reason_text": f"{alarm_id} threshold exceeded",
+    }
+
+
+def _starlingx_provider():
+    return (
+        StarlingXProviderAdapter(
+            fixture=_make_starlingx_fixture(),
+            provider_id="wrcp-test-01",
+        ),
+        StarlingXProviderNormalizer(),
+        ProviderType.WRCP,
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  A. ADAPTER CONTRACT BEHAVIOR
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXAdapterContract:
+
+    def test_adapter_inherits_provider_adapter(self):
+        adapter, _, _ = _starlingx_provider()
+        assert isinstance(adapter, ProviderAdapter)
+
+    def test_capabilities_returns_list(self):
+        adapter, _, _ = _starlingx_provider()
+        caps = adapter.capabilities
+        assert isinstance(caps, list)
+        assert len(caps) > 0
+        for cap in caps:
+            assert isinstance(cap, AdapterCapability)
+
+    def test_collect_returns_raw_snapshot(self):
+        adapter, _, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        assert isinstance(snapshot, RawProviderSnapshot)
+
+    def test_collect_safe_returns_snapshot(self):
+        adapter, _, _ = _starlingx_provider()
+        snapshot = adapter.collect_safe()
+        assert isinstance(snapshot, RawProviderSnapshot)
+
+    def test_snapshot_has_identity_fields(self):
+        adapter, _, expected_type = _starlingx_provider()
+        snapshot = adapter.collect()
+        assert snapshot.provider_type == expected_type
+        assert snapshot.provider_id is not None
+        assert snapshot.snapshot_id
+        assert snapshot.collected_at
+        assert snapshot.collection_status in (
+            OrchestrationStatus.SUCCESS,
+            OrchestrationStatus.PARTIAL,
+        )
+
+    def test_declared_vs_capability_results(self):
+        adapter, _, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        declared = set(snapshot.declared_capabilities)
+        result_caps = {cr.capability for cr in snapshot.capability_results}
+        assert result_caps.issubset(declared)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  B. DETERMINISTIC CANONICAL IDS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXDeterministicIds:
+
+    def test_repeated_normalization_same_ids(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        snap1 = adapter.collect()
+        snap2 = adapter.collect()
+        r1 = normalizer.normalize(snap1)
+        r2 = normalizer.normalize(snap2)
+        ids1 = {e.canonical_id for e in r1.platforms + r1.nodes + r1.clusters}
+        ids2 = {e.canonical_id for e in r2.platforms + r2.nodes + r2.clusters}
+        assert ids1 == ids2
+
+    def test_canonical_id_differs_from_provider_id(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        result = normalizer.normalize(snapshot)
+        all_entities = result.platforms + result.clusters + result.nodes
+        for entity in all_entities:
+            assert entity.canonical_id != entity.provider_id
+            assert entity.canonical_id.startswith("canon-")
+
+    def test_starlingx_ids_contain_wrcp_namespace(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        result = normalizer.normalize(snapshot)
+        for entity in result.platforms + result.nodes + result.clusters:
+            assert "wrcp" in entity.canonical_id
+
+    def test_starlingx_ids_differ_from_k8s_and_openstack(self):
+        from server_manager.normalizers.provider_normalizer import (
+            CanonicalIdentityGenerator,
+        )
+        ref = "test-ref-001"
+        sx_id = CanonicalIdentityGenerator.generate(ProviderType.WRCP, "node", ref)
+        k8s_id = CanonicalIdentityGenerator.generate(ProviderType.KUBERNETES, "node", ref)
+        os_id = CanonicalIdentityGenerator.generate(ProviderType.OPENSTACK, "node", ref)
+        assert sx_id != k8s_id
+        assert sx_id != os_id
+        assert k8s_id != os_id
+        assert "wrcp" in sx_id
+        assert "kubernetes" in k8s_id
+        assert "openstack" in os_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  C. SOURCE EVIDENCE PRESERVATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXSourceEvidence:
+
+    def test_all_entities_have_source_evidence(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        result = normalizer.normalize(snapshot)
+        all_entities = result.platforms + result.clusters + result.nodes
+        for entity in all_entities:
+            assert entity.source_evidence is not None
+            assert entity.source_evidence.provider_type == ProviderType.WRCP
+
+    def test_source_evidence_confidence_not_none(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        result = normalizer.normalize(snapshot)
+        for entity in result.platforms + result.nodes + result.clusters:
+            assert entity.source_evidence.confidence is not None
+
+    def test_source_evidence_has_collected_at(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        result = normalizer.normalize(snapshot)
+        for entity in result.platforms + result.nodes + result.clusters:
+            assert entity.source_evidence.collected_at is not None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  D. NO UNKNOWN-TO-HEALTHY CONVERSION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXNoUnknownToHealthy:
+
+    def test_unknown_availability_not_healthy(self):
+        """UNKNOWN availability must NOT be converted to HEALTHY."""
+        fixture = _make_starlingx_fixture(host_availability="unknown")
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-unk")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        hp = HealthService().assess(dr)
+        for hr in hp.results:
+            if hr.entity_id.startswith("canon-wrcp"):
+                assert hr.status != HealthStatus.HEALTHY
+
+    def test_empty_availability_not_healthy(self):
+        """Empty availability must NOT be converted to HEALTHY."""
+        fixture = _make_starlingx_fixture(host_availability="")
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-empty")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        hp = HealthService().assess(dr)
+        for hr in hp.results:
+            if hr.entity_id.startswith("canon-wrcp-node"):
+                assert hr.status != HealthStatus.HEALTHY
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  E. NO MISSING DATA → ZERO CONVERSION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXNoMissingToZero:
+
+    def test_missing_memory_not_zero(self):
+        """Missing platform_used_percent must NOT be treated as 0%."""
+        fixture = _make_starlingx_fixture(platform_memory_used=None)
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-nomem")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        node = dr.inventory.nodes[0]
+        mem_list = node.metadata["starlingx"]["platform_memory"]
+        if mem_list:
+            assert "platform_used_percent" not in mem_list[0] or mem_list[0].get("platform_used_percent") is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  F. GRAPH SAFETY — NO INFERRED EDGES
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXGraphSafety:
+
+    def test_graph_no_inferred_edges(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        graph = GraphBuilder().build(dr)
+        for rel in graph.relationships:
+            assert rel.evidence_type.value in ("DIRECT", "DERIVED")
+
+    def test_graph_no_unknown_edges(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        graph = GraphBuilder().build(dr)
+        for rel in graph.relationships:
+            assert rel.evidence_type.value != "INFERRED"
+
+    def test_graph_is_valid(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        graph = GraphBuilder().build(dr)
+        assert graph.is_valid
+        assert len(graph.validation_errors) == 0
+
+    def test_graph_node_count_matches_inventory(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        graph = GraphBuilder().build(dr)
+        inv_count = (
+            len(dr.inventory.platforms) + len(dr.inventory.clusters)
+            + len(dr.inventory.nodes)
+        )
+        assert graph.node_count == inv_count
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G. CROSS-PROVIDER ISOLATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCrossProviderIsolation:
+
+    def test_starlingx_provider_type_is_wrcp(self):
+        adapter, _, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        assert snapshot.provider_type == ProviderType.WRCP
+
+    def test_starlingx_does_not_produce_kubernetes_entities(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        for node in dr.inventory.nodes:
+            assert node.provider_type == ProviderType.WRCP
+
+    def test_starlingx_normalizer_does_not_use_k8s_namespace(self):
+        adapter, normalizer, _ = _starlingx_provider()
+        snapshot = adapter.collect()
+        result = normalizer.normalize(snapshot)
+        for entity in result.platforms + result.nodes + result.clusters:
+            assert "kubernetes" not in entity.canonical_id
+
+    def test_starlingx_empty_data_no_fabrication(self):
+        """Empty StarlingX data must not fabricate entities."""
+        adapter = StarlingXProviderAdapter(
+            fixture={"sysinv_isystems": [], "sysinv_ihosts": []},
+            provider_id="wrcp-fail",
+        )
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        assert dr.inventory is not None
+        assert len(dr.inventory.nodes) == 0
+        assert len(dr.inventory.platforms) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  H. PHYSICAL-NODE SEMANTIC SEPARATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPhysicalNodeSeparation:
+
+    def test_bm_type_none_no_physical_created(self):
+        fixture = _make_starlingx_fixture(bm_type="none")
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-bm-none")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        assert len(dr.inventory.physicals) == 0
+        assert len(dr.inventory.nodes) == 1
+
+    def test_node_physical_ref_is_none(self):
+        fixture = _make_starlingx_fixture(bm_type="none")
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-bm-none")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        node = dr.inventory.nodes[0]
+        assert node.physical_ref is None
+
+# ════════════════════════════════════════════════════════════════════════
+#  I. PARTIAL FAILURE & ERROR HANDLING
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXPartialFailure:
+
+    def test_empty_fixture_produces_no_entities(self):
+        """Empty StarlingX fixture produces SUCCESS but zero entities."""
+        adapter = StarlingXProviderAdapter(
+            fixture={"sysinv_isystems": [], "sysinv_ihosts": []},
+            provider_id="wrcp-empty",
+        )
+        snapshot = adapter.collect()
+        assert snapshot.collection_status == OrchestrationStatus.SUCCESS
+        # But normalization should produce zero entities
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        assert len(dr.inventory.nodes) == 0
+        assert len(dr.inventory.platforms) == 0
+
+    def test_missing_fixture_fields_handled_gracefully(self):
+        """Missing fixture fields should not crash collection."""
+        adapter = StarlingXProviderAdapter(
+            fixture={"sysinv_isystems": [], "sysinv_ihosts": []},
+            provider_id="wrcp-minimal",
+        )
+        snapshot = adapter.collect()
+        assert isinstance(snapshot, RawProviderSnapshot)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  J. FAULT/ALERT LIFECYCLE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestStarlingXFaultAlertLifecycle:
+
+    def _setup_pipeline(self, fixture=None):
+        from server_manager.fault import FaultDetectionService
+        from server_manager.monitoring.service import MonitoringService
+        from server_manager.visibility.service import AlertService
+        if fixture is None:
+            fixture = _make_starlingx_fixture(
+                fm_alarms=[_critical_alarm()],
+            )
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-lifecycle")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        hp = HealthService().assess(dr)
+        mon = MonitoringService().monitor(hp)
+        fr = FaultDetectionService().detect(
+            mon.observations, mon.state_changes)
+        alert_svc = AlertService()
+        for fault in fr.faults:
+            alert_svc.create_alert(fault)
+        return dr, hp, fr, alert_svc
+
+    def test_fm_critical_creates_fault(self):
+        _, _, fr, _ = self._setup_pipeline()
+        assert len(fr.faults) >= 1
+
+    def test_fm_fault_has_correct_entity(self):
+        dr, _, fr, _ = self._setup_pipeline()
+        node = dr.inventory.nodes[0]
+        assert any(node.canonical_id in f.entity_id for f in fr.faults)
+
+    def test_fm_alert_has_open_status(self):
+        _, _, _, alert_svc = self._setup_pipeline()
+        alerts = alert_svc.get_alerts()
+        assert len(alerts) >= 1
+        for a in alerts:
+            assert a.status.value == "OPEN"
+
+    def test_no_duplicate_alerts_for_same_fault(self):
+        _, _, fr, alert_svc = self._setup_pipeline()
+        initial_count = len(alert_svc.get_alerts())
+        for fault in fr.faults:
+            result = alert_svc.create_alert(fault)
+            assert not result.created
+        assert len(alert_svc.get_alerts()) == initial_count
+
+    def test_alert_can_be_resolved(self):
+        _, _, _, alert_svc = self._setup_pipeline()
+        alerts = alert_svc.get_alerts()
+        for a in alerts:
+            alert_svc.resolve(a.alert_id)
+        for a in alert_svc.get_alerts():
+            assert a.status.value == "RESOLVED"
+
+
+    def test_bm_type_ipmi_still_no_physical(self):
+        """Even with bm_type=ipmi, Physical must not be created from sysinv data."""
+        fixture = _make_starlingx_fixture(
+            bm_type="ipmi", bm_ip="10.254.174.17",
+            bm_hostname="bmc-ctrl-0",
+        )
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-ipmi")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        assert len(dr.inventory.physicals) == 0
+        node = dr.inventory.nodes[0]
+        assert node.physical_ref is None
+        assert node.metadata["starlingx"]["bm_type"] == "ipmi"
+
+    def test_node_canonical_id_is_node_not_physical(self):
+        fixture = _make_starlingx_fixture()
+        adapter = StarlingXProviderAdapter(fixture=fixture, provider_id="wrcp-id-test")
+        normalizer = StarlingXProviderNormalizer()
+        dr = PlatformDiscovery().discover(adapter, normalizer)
+        node = dr.inventory.nodes[0]
+        assert "node" in node.canonical_id
+        assert "physical" not in node.canonical_id
+

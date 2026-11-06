@@ -1,0 +1,14 @@
+f target.resolved else request.provider_type,
+            request.operation_type,
+        )
+        return OperationResult(
+            operation_id=request.operation_id,
+            status=OperationStatus.DRY_RUN,
+            provider=target.provider_type,
+            target=target.canonical_id if target.resolved else request.target_canonical_id,
+            resolved_target=target if target.resolved else None,
+            evidence={
+                "dry_run": True,
+                "capability": capability.value,
+            },
+        )

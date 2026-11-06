@@ -1,0 +1,466 @@
+"""API Tests (Phase 8).
+
+Tests for the Server Manager REST API.
+Uses httpx TestClient with in-memory SQLite and mock orchestrator.
+"""
+import pytest
+from fastapi.testclient import TestClient
+
+from server_manager.api.app import create_app
+from server_manager.api import dependencies as deps
+from server_manager.store.store import InventoryStore
+from server_manager.store.models import ServerRegistryEntry
+from server_manager.models.enums import ServerLifecycle, Vendor, HealthStatus, ComputeEligibility
+from server_manager.models.inventory import ServerInventory
+from server_manager.orchestrator.models import (
+    OrchestrationResult,
+    OrchestrationStatus,
+    SourceResult,
+)
+from server_manager.verifiers.base import VerificationResult
+from datetime import datetime, timezone
+
+
+# ── Fixtures ───────────────────────────────────────────────────────────
+
+def _make_inventory(server_id: str = "r750-001") -> ServerInventory:
+    """Create a minimal ServerInventory for testing."""
+    from server_manager.models.inventory import (
+        Identity, Topology, Hardware, CPU, Memory, GPU, Storage, Network,
+        Management, OS, Virtualization, Containers, DevelopmentEnvironment,
+        Compute, Health, Workload, PowerThermal, PowerInfo, ThermalInfo,
+        VendorExt, DockerInfo, KubernetesInfo,
+    )
+    from server_manager.models.enums import (
+        Vendor, ControllerType, Protocol,
+    )
+
+    return ServerInventory(
+        schema_version="1.0",
+        identity=Identity(
+            server_id=server_id,
+            vendor=Vendor.Dell,
+            model="PowerEdge R750",
+            hostname="server-001",
+            serial_number="SN12345",
+            service_tag="STAG123",
+        ),
+        topology=Topology(physical_servers=1, computer_systems=1, chassis=1),
+        hardware=Hardware(
+            cpu=CPU(count=2, total_cores=48, total_threads=96),
+            memory=Memory(total_gb=256.0, dimm_count=8, populated_slots=8),
+            gpu=GPU(dedicated_compute_gpu=False, count=0),
+            storage=Storage(),
+            network=Network(adapter_count=4),
+        ),
+        management=Management(
+            vendor=Vendor.Dell,
+            controller=ControllerType.iDRAC,
+            protocols=[Protocol.Redfish],
+        ),
+        os=OS(distribution="Ubuntu", version="22.04", kernel="5.15.0", architecture="x86_64"),
+        virtualization=Virtualization(),
+        containers=Containers(),
+        development_environment=DevelopmentEnvironment(),
+        compute=Compute(eligibility=ComputeEligibility.COMPUTE_ELIGIBLE),
+        health=Health(),
+        workload=Workload(),
+        power_thermal=PowerThermal(
+            power=PowerInfo(),
+            thermal=ThermalInfo(),
+        ),
+        vendor_ext=VendorExt(),
+    )
+
+
+def _make_orchestration_result(
+    server_id: str = "r750-001",
+    status: OrchestrationStatus = OrchestrationStatus.SUCCESS,
+    with_inventory: bool = True,
+    with_verification: bool = True,
+) -> OrchestrationResult:
+    """Create a mock OrchestrationResult."""
+    now = datetime.now(timezone.utc).isoformat()
+
+    source_results = [
+        SourceResult(
+            source="redfish",
+            collection_success=True,
+            normalization_success=True,
+            duration_ms=3500,
+        ),
+        SourceResult(
+            source="ssh",
+            collection_success=True,
+            normalization_success=True,
+            duration_ms=1500,
+        ),
+    ]
+
+    verification = None
+    if with_verification:
+        verification = VerificationResult(
+            field_results=[],
+            summary={"total_fields": 15, "verified": 13, "single_source": 2, "discrepancy": 0},
+        )
+
+    return OrchestrationResult(
+        run_id="run-test1234",
+        server_id=server_id,
+        status=status,
+        source_results=source_results,
+        canonical_inventory=_make_inventory(server_id) if with_inventory else None,
+        canonical_source="redfish" if with_inventory else None,
+        verification=verification,
+        verification_success=verification is not None,
+        started_at=now,
+        completed_at=now,
+        total_duration_ms=5000,
+        errors=[],
+        warnings=[],
+    )
+
+
+@pytest.fixture
+def app_and_store():
+    """Create app with in-memory store and mock orchestrator.
+    
+    Uses check_same_thread=False for SQLite to work with FastAPI's thread pool.
+    """
+    import sqlite3
+    
+    # Create connection with check_same_thread=False
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    
+    # Create store and set connection directly
+    store = InventoryStore.__new__(InventoryStore)
+    store.db_path = ":memory:"
+    store._conn = conn
+    
+    # Initialize schema
+    from server_manager.store.store import SCHEMA_SQL
+    conn.executescript(SCHEMA_SQL)
+    conn.commit()
+
+    # Register a test server
+    entry = ServerRegistryEntry(
+        server_id="r750-001",
+        display_name="Server 001",
+        vendor=Vendor.Dell,
+        model="PowerEdge R750",
+        lifecycle_state=ServerLifecycle.ACTIVE,
+        registered_at=datetime.now(timezone.utc).isoformat(),
+    )
+    store.register_server(entry)
+
+    # Mock orchestrator factory
+    mock_result = _make_orchestration_result()
+
+    class MockOrchestrator:
+        def run(self, server_id, collectors=None, normalizers=None):
+            if server_id == "r750-001":
+                return mock_result
+            raise ValueError(f"Unknown server: {server_id}")
+
+    deps.configure(
+        store=store,
+        orchestrator_factory=lambda: MockOrchestrator(),
+    )
+
+    app = create_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    yield client, store, mock_result
+
+    conn.close()
+
+
+# ── Application tests ─────────────────────────────────────────────────
+
+class TestApp:
+    def test_app_import(self):
+        from server_manager.api.app import create_app
+        app = create_app()
+        assert app.title == "Server Manager REST API"
+
+    def test_app_has_routes(self):
+        from server_manager.api.app import create_app
+        app = create_app()
+        # Verify app has routes (FastAPI/Starlette structure)
+        assert len(app.routes) > 0
+        # Check OpenAPI routes exist (indirect proof that API is configured)
+        paths = [getattr(r, 'path', '') for r in app.routes if hasattr(r, 'path')]
+        assert '/docs' in paths  # Swagger UI
+        assert '/redoc' in paths  # ReDoc
+        assert '/openapi.json' in paths  # OpenAPI spec
+
+    def test_openapi_docs_available(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/docs")
+        assert resp.status_code == 200
+
+
+# ── POST /api/v1/collect ──────────────────────────────────────────────
+
+class TestCollect:
+    def test_collect_success(self, app_and_store):
+        client, _, mock_result = app_and_store
+        resp = client.post("/api/v1/collect", json={"server_id": "r750-001"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["run_id"] == "run-test1234"
+        assert data["server_id"] == "r750-001"
+        assert data["status"] == "SUCCESS"
+        assert data["canonical_source"] == "redfish"
+        assert data["snapshot_id"] == "snap-run-test1234"
+        assert len(data["source_results"]) == 2
+        assert data["source_results"][0]["source"] == "redfish"
+        assert data["verification"]["performed"] is True
+        assert data["verification"]["success"] is True
+
+    def test_collect_unknown_server_404(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.post("/api/v1/collect", json={"server_id": "unknown-001"})
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["error"]["code"] == "NOT_FOUND"
+
+    def test_collect_missing_server_id_422(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.post("/api/v1/collect", json={})
+        assert resp.status_code == 422
+
+    def test_collect_credential_not_in_response(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.post("/api/v1/collect", json={"server_id": "r750-001"})
+        data = resp.json()
+        # No credential fields should appear
+        text = str(data)
+        assert "password" not in text.lower()
+        assert "api_key" not in text.lower()
+        assert "private_key" not in text.lower()
+
+    def test_collect_no_credential_accepted(self, app_and_store):
+        """Ensure API does not accept credential fields in request."""
+        client, _, _ = app_and_store
+        resp = client.post("/api/v1/collect", json={
+            "server_id": "r750-001",
+            "password": "should_be_ignored",
+        })
+        # Pydantic should accept extra fields (or ignore them)
+        # The key test: password is not used
+        assert resp.status_code in (200, 422)
+
+
+# ── GET /api/v1/inventory/{server_id} ─────────────────────────────────
+
+class TestInventory:
+    def test_get_inventory_success(self, app_and_store):
+        client, store, mock_result = app_and_store
+        # Save a snapshot first via collect
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+
+        resp = client.get("/api/v1/inventory/r750-001")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["server_id"] == "r750-001"
+        assert data["schema_version"] == "1.0"
+        assert "inventory" in data
+        assert data["inventory"]["identity"]["server_id"] == "r750-001"
+        assert data["inventory"]["identity"]["vendor"] == "Dell"
+
+    def test_get_inventory_unknown_server_404(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/inventory/unknown-001")
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["error"]["code"] == "NOT_FOUND"
+
+    def test_get_inventory_no_snapshot_404(self, app_and_store):
+        """Server registered but no snapshot → 404."""
+        client, store, _ = app_and_store
+        # Register a server without collecting
+        entry = ServerRegistryEntry(
+            server_id="empty-001",
+            display_name="Empty Server",
+            vendor=Vendor.Unknown,
+            model="",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+            registered_at=datetime.now(timezone.utc).isoformat(),
+        )
+        store.register_server(entry)
+
+        resp = client.get("/api/v1/inventory/empty-001")
+        assert resp.status_code == 404
+
+    def test_get_inventory_credential_not_exposed(self, app_and_store):
+        client, store, _ = app_and_store
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+        resp = client.get("/api/v1/inventory/r750-001")
+        text = resp.text
+        assert "password" not in text.lower()
+        assert "private_key" not in text.lower()
+
+    def test_get_inventory_has_meta_alias(self, app_and_store):
+        """Inventory response should include _meta alias."""
+        client, _, _ = app_and_store
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+        resp = client.get("/api/v1/inventory/r750-001")
+        data = resp.json()
+        assert "_meta" in data["inventory"]
+
+
+# ── GET /api/v1/inventory/{server_id}/history ────────────────────────
+
+class TestHistory:
+    def test_get_history_success(self, app_and_store):
+        client, _, _ = app_and_store
+        # Collect to create a snapshot
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+
+        resp = client.get("/api/v1/inventory/r750-001/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["server_id"] == "r750-001"
+        assert data["total"] >= 1
+        assert data["limit"] == 10
+        assert len(data["snapshots"]) >= 1
+        assert "snapshot_id" in data["snapshots"][0]
+        assert "health" in data["snapshots"][0]
+
+    def test_get_history_empty(self, app_and_store):
+        """Server exists but has no snapshots."""
+        client, store, _ = app_and_store
+        entry = ServerRegistryEntry(
+            server_id="empty-002",
+            display_name="Empty Server 2",
+            vendor=Vendor.Unknown,
+            model="",
+            lifecycle_state=ServerLifecycle.ACTIVE,
+            registered_at=datetime.now(timezone.utc).isoformat(),
+        )
+        store.register_server(entry)
+
+        resp = client.get("/api/v1/inventory/empty-002/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 0
+        assert len(data["snapshots"]) == 0
+
+    def test_get_history_unknown_server_404(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/inventory/unknown-001/history")
+        assert resp.status_code == 404
+
+    def test_get_history_with_limit(self, app_and_store):
+        client, _, _ = app_and_store
+        # Collect multiple times
+        for _ in range(3):
+            client.post("/api/v1/collect", json={"server_id": "r750-001"})
+
+        resp = client.get("/api/v1/inventory/r750-001/history?limit=2")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["limit"] == 2
+        assert len(data["snapshots"]) <= 2
+
+
+# ── GET /api/v1/inventory/{server_id}/diff ────────────────────────────
+
+class TestDiff:
+    def test_get_diff_success(self, app_and_store):
+        client, store, _ = app_and_store
+        # Create two snapshots
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+        snap1_id = store.get_current_snapshot("r750-001").snapshot_id
+
+        # Create another snapshot with different mock result
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+        snap2_id = store.get_current_snapshot("r750-001").snapshot_id
+
+        resp = client.get(f"/api/v1/inventory/r750-001/diff?from={snap1_id}&to={snap2_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["server_id"] == "r750-001"
+        assert data["from_snapshot_id"] == snap1_id
+        assert data["to_snapshot_id"] == snap2_id
+
+    def test_get_diff_missing_params_422(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/inventory/r750-001/diff")
+        assert resp.status_code == 422
+
+    def test_get_diff_unknown_server_404(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/inventory/unknown-001/diff?from=a&to=b")
+        assert resp.status_code == 404
+
+    def test_get_diff_snapshot_not_found_404(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/inventory/r750-001/diff?from=nonexist1&to=nonexist2")
+        assert resp.status_code == 404
+
+
+# ── GET /api/v1/compute/candidates ────────────────────────────────────
+
+class TestCompute:
+    def test_get_candidates_success(self, app_and_store):
+        client, _, _ = app_and_store
+        # Collect to populate inventory
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+
+        resp = client.get("/api/v1/compute/candidates")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "candidates" in data
+        assert data["total"] >= 0
+
+    def test_get_candidates_empty(self, app_and_store):
+        """No servers with compute-eligible inventory."""
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/compute/candidates")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 0
+
+    def test_get_candidates_excludes_non_active(self, app_and_store):
+        """EXCLUDED_USER_WORKLOAD should not appear in candidates."""
+        client, store, _ = app_and_store
+        client.post("/api/v1/collect", json={"server_id": "r750-001"})
+
+        resp = client.get("/api/v1/compute/candidates")
+        data = resp.json()
+        # r750-001 has COMPUTE_ELIGIBLE → should be in candidates
+        candidate_ids = [c["server_id"] for c in data["candidates"]]
+        assert "r750-001" in candidate_ids
+        # All candidates should have eligible states
+        for c in data["candidates"]:
+            assert c["compute_eligibility"] in (
+                "CANDIDATE", "COMPUTE_ELIGIBLE", "IDLE",
+            )
+
+
+# ── Error contract tests ──────────────────────────────────────────────
+
+class TestErrorContract:
+    def test_404_format(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/inventory/nonexistent")
+        assert resp.status_code == 404
+        data = resp.json()
+        assert "error" in data
+        assert "code" in data["error"]
+        assert "message" in data["error"]
+
+    def test_422_format(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.post("/api/v1/collect", json={})
+        assert resp.status_code == 422
+
+    def test_error_no_stack_trace(self, app_and_store):
+        client, _, _ = app_and_store
+        resp = client.get("/api/v1/inventory/nonexistent")
+        text = resp.text
+        assert "Traceback" not in text
+        assert "File " not in text

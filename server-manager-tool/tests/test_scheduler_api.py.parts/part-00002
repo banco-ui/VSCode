@@ -1,0 +1,71 @@
+rify_enabled = client.get(f"/api/v1/schedules/{schedule_id}")
+        assert verify_enabled.json()["enabled"] is True
+        
+        # Disable
+        disable_response = client.post(f"/api/v1/schedules/{schedule_id}/disable")
+        assert disable_response.status_code == 200
+        assert disable_response.json()["enabled"] is False
+        
+        # Verify disable persisted
+        verify_disabled = client.get(f"/api/v1/schedules/{schedule_id}")
+        assert verify_disabled.json()["enabled"] is False
+    
+    def test_delete_soft_delete_persistence(self, client):
+        """Verify soft delete persists and execution history is preserved."""
+        # Create schedule
+        create_request = {
+            "name": "Delete Test",
+            "server_ids": ["test-server-001"],
+            "interval_seconds": 3600,
+        }
+        create_response = client.post("/api/v1/schedules", json=create_request)
+        assert create_response.status_code == 201
+        schedule_id = create_response.json()["schedule_id"]
+        
+        # Delete
+        delete_response = client.delete(f"/api/v1/schedules/{schedule_id}")
+        assert delete_response.status_code == 204
+        
+        # Verify schedule still exists but is disabled
+        get_response = client.get(f"/api/v1/schedules/{schedule_id}")
+        assert get_response.status_code == 200
+        assert get_response.json()["enabled"] is False
+        
+        # Verify it appears in list (soft deleted schedules are still listed)
+        list_response = client.get("/api/v1/schedules")
+        schedules = list_response.json()["schedules"]
+        assert any(s["schedule_id"] == schedule_id for s in schedules)
+
+
+# ── Security Tests ───────────────────────────────────────────────────
+
+class TestSecurity:
+    """Test security-related concerns."""
+    
+    def test_no_credentials_in_response(self, client):
+        """API responses do not contain credentials."""
+        # Create schedule
+        response = client.post("/api/v1/schedules", json={
+            "name": "Test",
+            "server_ids": ["test-server-001"],
+            "interval_seconds": 3600,
+        })
+        
+        data = response.json()
+        response_text = str(data)
+        
+        # Check for sensitive strings
+        assert "password" not in response_text.lower()
+        assert "secret" not in response_text.lower()
+        assert "token" not in response_text.lower()
+        assert "key" not in response_text.lower() or "api_key" not in response_text.lower()
+    
+    def test_no_internal_error_details_leaked(self, client):
+        """Internal errors do not leak sensitive details."""
+        # This test verifies error handling doesn't expose internals
+        response = client.get("/api/v1/schedules/nonexistent")
+        
+        data = response.json()
+        # Error should be sanitized
+        assert "traceback" not in str(data).lower()
+        assert "sqlite" not in str(data).lower()

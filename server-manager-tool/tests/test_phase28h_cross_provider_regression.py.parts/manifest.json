@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/tests/test_phase28h_cross_provider_regression.py",
+  "originalSize": 23243,
+  "sha256": "177ff6e540b9a23aa8b8a761d271bacdc960f5b9843b01f66f01ec155c6b3d4e",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_phase28h_cross_provider_regression.py\""
+}

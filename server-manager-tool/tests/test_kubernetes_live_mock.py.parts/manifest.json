@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_kubernetes_live_mock.py",
+  "originalSize": 25911,
+  "sha256": "0d330c9971536d9dad8553f06416efc818ca00645d4b5113e74dc8cc8ca87e59",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_kubernetes_live_mock.py\""
+}

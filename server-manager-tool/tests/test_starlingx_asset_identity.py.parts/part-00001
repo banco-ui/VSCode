@@ -1,0 +1,554 @@
+"""Redfish–StarlingX Asset Identity & API/Dashboard Integration Validation — Phase 28G.
+
+Validates that the Redfish legacy pipeline and the StarlingX canonical pipeline
+maintain correct asset identity semantics, and that no unauthorized identity
+inference (name/IP-based matching) occurs.
+
+Pipeline under test:
+    StarlingXProviderAdapter(fixture)
+        → StarlingXProviderNormalizer
+        → CanonicalInventory (Node, Platform, Cluster — NO Physical)
+        → HealthService / FaultDetectionService / AlertService
+        → GraphBuilder
+
+Test scenarios:
+    1. bm_type/bm_ip/bm_hostname preservation in Node metadata
+    2. bm_type=none → no Physical entity created
+    3. No graph edges from name/IP similarity
+    4. FM Critical and Redfish Critical remain separate faults
+    5. Serial/UUID mismatch → separate entities maintained
+    6. Missing identification → separate entities, no auto-merge
+    7. Hostname/IP-only match → NOT treated as same asset
+    8. Management API handles both providers without regression
+    9. Graph builder follows existing rules (DIRECT/DERIVED only)
+    10. UNKNOWN is not converted to HEALTHY
+    11. Node ≠ Physical — semantic boundary preserved
+    12. Node.physical_ref is None when no Physical evidence
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.discovery import PlatformDiscovery
+from server_manager.fault import (
+    FaultDetectionService,
+    FaultType,
+    Severity,
+)
+from server_manager.graph.service import GraphBuilder, GraphQuery
+from server_manager.health import (
+    HealthService,
+    HealthStatus,
+)
+from server_manager.monitoring.service import MonitoringService
+from server_manager.normalizers.starlingx_normalizer import (
+    StarlingXProviderNormalizer,
+)
+from server_manager.models.canonical import ProviderType
+from server_manager.providers.starlingx import StarlingXProviderAdapter
+from server_manager.visibility.service import AlertService
+
+SYSTEM_UUID = "f3c8a1b2-1234-5678-9abc-def012345678"
+HOST_UUID = "a7aa8774-c383-4641-ba1d-dc13c1dee91d"
+ALARM_UUID = "fe7e9b1e-4a8e-4f76-9d6a-8c2c1a3b4c5d"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE BUILDERS
+# ════════════════════════════════════════════════════════════════════════
+
+
+def _make_fixture(
+    *,
+    host_uuid: str = HOST_UUID,
+    hostname: str = "controller-0",
+    bm_type: str = "none",
+    bm_ip: Any = None,
+    bm_hostname: Any = None,
+    fm_alarms: list[dict[str, Any]] | None = None,
+    host_availability: str = "available",
+) -> dict[str, Any]:
+    """Build a StarlingX fixture with configurable BMC/identity fields."""
+    if fm_alarms is None:
+        fm_alarms = []
+    return {
+        "sysinv_isystems": [{
+            "uuid": SYSTEM_UUID, "name": "wrcp-ctrlr",
+            "sw_version": "24.09", "system_mode": "simplex",
+            "system_type": "All-in-one", "timezone": "UTC",
+        }],
+        "sysinv_ihosts": [{
+            "uuid": host_uuid, "hostname": hostname,
+            "personality": "controller", "administrative": "unlocked",
+            "operational": "enabled",
+            "availability": host_availability,
+            "subfunctions": "controller,worker,lowlatency",
+            "uptime": 15244220, "reboot_needed": False,
+            "bm_type": bm_type,
+            "bm_ip": bm_ip,
+            "bm_hostname": bm_hostname,
+            "capabilities": {},
+            "location": {"locn": "samsung"},
+        }],
+        "sysinv_imemorys": {
+            host_uuid: [{
+                "platform_reserved_mib": 10000,
+                "platform_total_mib": 16384,
+                "platform_used_percent": 45.0,
+            }],
+        },
+        "fm_alarms": fm_alarms,
+        "fm_event_log": [],
+        "smapi_nodes": [{
+            "id": 1, "name": hostname,
+            "administrative_state": "unlocked",
+            "operational_state": "enabled",
+            "availability_status": "available",
+        }],
+        "system_health": {"System Health": "OK"},
+        "software_list": [{"release": "wrcp-24.09.0", "state": "deployed"}],
+    }
+
+
+def _make_critical_alarm(
+    alarm_id: str = "100.103",
+    entity: str = "host=controller-0",
+    uuid: str = ALARM_UUID,
+    severity: str = "critical",
+) -> dict[str, Any]:
+    return {
+        "uuid": uuid, "alarm_id": alarm_id, "severity": severity,
+        "entity_instance_id": entity,
+        "reason_text": f"{alarm_id} threshold exceeded",
+    }
+
+
+def _discover(fixture: dict[str, Any]):
+    """Run StarlingX discovery. Returns DiscoveryResult."""
+    adapter = StarlingXProviderAdapter(fixture=fixture)
+    normalizer = StarlingXProviderNormalizer()
+    discovery = PlatformDiscovery()
+    return discovery.discover(adapter, normalizer)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  A. BMC IDENTITY PRESERVATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestBmcIdentityPreservation:
+    """Verify bm_type, bm_ip, bm_hostname are preserved in Node metadata."""
+
+    def test_bm_type_preserved(self):
+        """bm_type=none should be preserved in Node metadata."""
+        fixture = _make_fixture(bm_type="none")
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert node.metadata["starlingx"]["bm_type"] == "none"
+
+    def test_bm_ip_null_preserved(self):
+        """bm_ip=None should be preserved as None (not omitted)."""
+        fixture = _make_fixture(bm_ip=None)
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert "bm_ip" in node.metadata["starlingx"]
+        assert node.metadata["starlingx"]["bm_ip"] is None
+
+    def test_bm_ip_value_preserved(self):
+        """bm_ip with a value should be preserved exactly."""
+        fixture = _make_fixture(bm_ip="10.254.174.17", bm_type="ipmi")
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert node.metadata["starlingx"]["bm_ip"] == "10.254.174.17"
+        assert node.metadata["starlingx"]["bm_type"] == "ipmi"
+
+    def test_bm_hostname_preserved(self):
+        """bm_hostname should be preserved in Node metadata."""
+        fixture = _make_fixture(bm_hostname="controller-0-bmc")
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert node.metadata["starlingx"]["bm_hostname"] == "controller-0-bmc"
+
+    def test_bm_hostname_null_preserved(self):
+        """bm_hostname=None should be preserved."""
+        fixture = _make_fixture(bm_hostname=None)
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert "bm_hostname" in node.metadata["starlingx"]
+        assert node.metadata["starlingx"]["bm_hostname"] is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  B. PHYSICAL ENTITY SEMANTICS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPhysicalEntitySemantics:
+    """Verify bm_type=none does not trigger Physical entity creation."""
+
+    def test_no_physical_from_bm_type_none(self):
+        """StarlingX with bm_type=none must NOT create Physical entities."""
+        fixture = _make_fixture(bm_type="none")
+        dr = _discover(fixture)
+        assert len(dr.inventory.physicals) == 0
+
+    def test_node_has_no_physical_ref(self):
+        """Node.physical_ref must be None when no Physical evidence."""
+        fixture = _make_fixture(bm_type="none")
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert node.physical_ref is None
+
+    def test_node_not_treated_as_physical(self):
+        """Node and Physical are distinct entity types."""
+        fixture = _make_fixture(bm_type="none")
+        dr = _discover(fixture)
+        assert len(dr.inventory.nodes) == 1
+        assert len(dr.inventory.physicals) == 0
+        node = dr.inventory.nodes[0]
+        assert node.canonical_id.startswith("canon-wrcp-node-")
+        assert not node.canonical_id.startswith("canon-wrcp-physical-")
+
+    def test_bm_type_ipmi_still_no_physical(self):
+        """Even with bm_type=ipmi, no Physical from StarlingX normalizer."""
+        fixture = _make_fixture(
+            bm_type="ipmi", bm_ip="10.254.174.17",
+            bm_hostname="bmc-ctrl-0",
+        )
+        dr = _discover(fixture)
+        assert len(dr.inventory.physicals) == 0
+        node = dr.inventory.nodes[0]
+        assert node.metadata["starlingx"]["bm_ip"] == "10.254.174.17"
+        assert node.physical_ref is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  C. NO NAME/IP-BASED IDENTITY INFERENCE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestNoNameIpInference:
+    """Verify no relationship inference from name or IP similarity."""
+
+    def test_no_graph_edge_from_hostname(self):
+        """No graph relationship should be created based on hostname alone."""
+        fixture = _make_fixture(hostname="controller-0")
+        dr = _discover(fixture)
+        graph = GraphBuilder().build_from_inventory(dr.inventory)
+        for rel in graph.relationships:
+            assert rel.evidence_type.value in ("DIRECT", "DERIVED")
+
+    def test_no_graph_edge_from_ip(self):
+        """No graph relationship should be created based on IP alone."""
+        fixture = _make_fixture(
+            bm_type="ipmi", bm_ip="10.254.174.17",
+            bm_hostname="controller-0-bmc",
+        )
+        dr = _discover(fixture)
+        graph = GraphBuilder().build_from_inventory(dr.inventory)
+        for rel in graph.relationships:
+            if rel.raw_data:
+                raw_str = str(rel.raw_data)
+                # IP may appear in url_pattern but NOT as identity evidence
+                assert "10.254.174.17" not in raw_str or "url_pattern" in raw_str
+
+    def test_no_cross_provider_inference(self):
+        """StarlingX Node canonical_id must NOT match any Redfish identity."""
+        fixture = _make_fixture(hostname="controller-0")
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert node.canonical_id.startswith("canon-wrcp-node-")
+        assert node.provider_type == ProviderType.WRCP
+        assert node.provider_type != ProviderType.KUBERNETES
+
+    def test_no_inferred_relationship_evidence(self):
+        """Relationship evidence must be DIRECT only (sub-resource URL pattern)."""
+        fixture = _make_fixture()
+        dr = _discover(fixture)
+        for ev in dr.inventory.relationship_evidence:
+            assert ev.evidence_type.value == "DIRECT"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  D. FAULT/ALERT SEPARATION (FM vs Redfish)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestFaultAlertSeparation:
+    """Verify FM Critical and Redfish Critical are separate fault/alert."""
+
+    def test_fm_critical_creates_independent_fault(self):
+        """FM alarm 100.103 critical should create its own fault."""
+        fixture = _make_fixture(
+            fm_alarms=[_make_critical_alarm(alarm_id="100.103")],
+        )
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        mon = MonitoringService().monitor(hp)
+        fr = FaultDetectionService().detect(
+            mon.observations, mon.state_changes)
+        assert len(fr.faults) >= 1
+        fault_entity_ids = {f.entity_id for f in fr.faults}
+        node = dr.inventory.nodes[0]
+        assert node.canonical_id in fault_entity_ids or any(
+            node.canonical_id in eid for eid in fault_entity_ids
+        )
+
+    def test_fm_and_redfish_faults_have_different_entity_ids(self):
+        """FM fault on Node and Redfish fault on Physical must have different entity_ids."""
+        fixture = _make_fixture(
+            fm_alarms=[_make_critical_alarm(alarm_id="100.103")],
+        )
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        mon = MonitoringService().monitor(hp)
+        fr = FaultDetectionService().detect(
+            mon.observations, mon.state_changes)
+        for fault in fr.faults:
+            assert "canon-wrcp-" in fault.entity_id
+
+    def test_software_fault_not_merged_with_hardware(self):
+        """Software memory threshold (100.103) and hardware fault are separate."""
+        fixture = _make_fixture(
+            fm_alarms=[_make_critical_alarm(alarm_id="100.103")],
+        )
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        mon = MonitoringService().monitor(hp)
+        fr = FaultDetectionService().detect(
+            mon.observations, mon.state_changes)
+        fault_ids = {f.fault_id for f in fr.faults}
+        assert len(fault_ids) == len(fr.faults)
+
+    def test_alert_lifecycle_independent_per_fault(self):
+        """Alerts from FM faults follow OPEN→RESOLVED lifecycle independently."""
+        fixture = _make_fixture(
+            fm_alarms=[_make_critical_alarm(alarm_id="100.103")],
+        )
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        mon = MonitoringService().monitor(hp)
+        fr = FaultDetectionService().detect(
+            mon.observations, mon.state_changes)
+        alert_svc = AlertService()
+        for fault in fr.faults:
+            result = alert_svc.create_alert(fault)
+            assert result.created or result.reason == "duplicate_active"
+        alerts = alert_svc.get_alerts()
+        alert_ids = {a.alert_id for a in alerts}
+        assert len(alert_ids) == len(alerts)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  E. IDENTIFIER MISMATCH & MISSING IDENTITY
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestIdentifierMismatch:
+    """Verify different host_uuids produce different canonical_ids (no auto-merge)."""
+
+    def test_different_uuids_different_canonical_ids(self):
+        """Two hosts with different UUIDs must get different canonical IDs."""
+        fixture_a = _make_fixture(host_uuid="uuid-aaa", hostname="ctrl-0")
+        fixture_b = _make_fixture(host_uuid="uuid-bbb", hostname="ctrl-0")
+        dr_a = _discover(fixture_a)
+        dr_b = _discover(fixture_b)
+        id_a = dr_a.inventory.nodes[0].canonical_id
+        id_b = dr_b.inventory.nodes[0].canonical_id
+        assert id_a != id_b
+
+    def test_same_hostname_different_uuid_not_merged(self):
+        """Same hostname but different UUID must NOT be treated as same asset."""
+        fixture_a = _make_fixture(host_uuid="uuid-aaa", hostname="controller-0")
+        fixture_b = _make_fixture(host_uuid="uuid-bbb", hostname="controller-0")
+        dr_a = _discover(fixture_a)
+        dr_b = _discover(fixture_b)
+        node_a = dr_a.inventory.nodes[0]
+        node_b = dr_b.inventory.nodes[0]
+        assert node_a.canonical_id != node_b.canonical_id
+        assert node_a.provider_id != node_b.provider_id
+
+    def test_missing_uuid_no_entity(self):
+        """Host with empty UUID should not produce a Node."""
+        fixture = _make_fixture(host_uuid="")
+        dr = _discover(fixture)
+        assert len(dr.inventory.nodes) == 0
+
+    def test_different_system_uuid_different_platform(self):
+        """Different system UUIDs produce different platform canonical IDs."""
+        fixture_a = _make_fixture()
+        fixture_b = _make_fixture(host_uuid="uuid-x")
+        fixture_b["sysinv_isystems"][0]["uuid"] = "sys-uuid-bbb"
+        dr_a = _discover(fixture_a)
+        dr_b = _discover(fixture_b)
+        plat_a = dr_a.inventory.platforms[0]
+        plat_b = dr_b.inventory.platforms[0]
+        assert plat_a.canonical_id != plat_b.canonical_id
+
+    def test_hostname_only_match_not_identity(self):
+        """Same hostname + different UUID → NOT same asset (hostname is not identity)."""
+        fixture = _make_fixture(host_uuid="uuid-aaa", hostname="compute-1")
+        dr = _discover(fixture)
+        node = dr.inventory.nodes[0]
+        assert node.provider_id == "uuid-aaa"
+        assert node.name == "compute-1"
+        assert "compute-1" not in node.canonical_id
+
+# ════════════════════════════════════════════════════════════════════════
+#  F. UNKNOWN NOT CONVERTED TO HEALTHY
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestUnknownNotHealthy:
+    """Verify UNKNOWN availability is not converted to HEALTHY."""
+
+    def test_unknown_availability_not_healthy(self):
+        """Unknown availability must produce UNKNOWN health, not HEALTHY."""
+        fixture = _make_fixture(host_availability="nonexistent")
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        node_health = [r for r in hp.results if r.entity_type == "Node"]
+        assert len(node_health) >= 1
+        assert node_health[0].status == HealthStatus.UNKNOWN
+
+    def test_in_test_availability_is_unknown(self):
+        """in-test availability must produce UNKNOWN health, not HEALTHY."""
+        fixture = _make_fixture(host_availability="in-test")
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        node_health = [r for r in hp.results if r.entity_type == "Node"]
+        assert len(node_health) >= 1
+        assert node_health[0].status == HealthStatus.UNKNOWN
+
+    def test_empty_availability_is_unknown(self):
+        """Empty availability must produce UNKNOWN health, not HEALTHY."""
+        fixture = _make_fixture(host_availability="")
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        node_health = [r for r in hp.results if r.entity_type == "Node"]
+        assert len(node_health) >= 1
+        assert node_health[0].status == HealthStatus.UNKNOWN
+
+    def test_available_no_alarms_is_healthy(self):
+        """Available + no alarms = HEALTHY (valid evidence)."""
+        fixture = _make_fixture(host_availability="available")
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        node_health = [r for r in hp.results if r.entity_type == "Node"]
+        assert len(node_health) >= 1
+        assert node_health[0].status == HealthStatus.HEALTHY
+
+    def test_platform_no_events_is_unknown(self):
+        """Platform with no FM events must be UNKNOWN, not HEALTHY."""
+        fixture = _make_fixture()
+        dr = _discover(fixture)
+        hp = HealthService().assess(dr)
+        platform_health = [r for r in hp.results if r.entity_type == "Platform"]
+        assert len(platform_health) >= 1
+        assert platform_health[0].status == HealthStatus.UNKNOWN
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G. MANAGEMENT API INTEGRATION
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestManagementApiIntegration:
+    """Verify ManagementContext integrates StarlingX discovery correctly."""
+
+    def test_context_inventory_has_starlingx_entities(self):
+        """ManagementContext.inventory should contain StarlingX entities."""
+        from server_manager.api.dependencies import ManagementContext
+        fixture = _make_fixture()
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (
+            StarlingXProviderAdapter(fixture=fixture),
+            StarlingXProviderNormalizer(),
+        )
+        ctx.run_discovery()
+        inv = ctx.inventory
+        assert inv is not None
+        assert len(inv.nodes) == 1
+        assert inv.provider_type == ProviderType.WRCP
+
+    def test_context_health_report_built(self):
+        """ManagementContext should build health report after discovery."""
+        from server_manager.api.dependencies import ManagementContext
+        fixture = _make_fixture()
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (
+            StarlingXProviderAdapter(fixture=fixture),
+            StarlingXProviderNormalizer(),
+        )
+        ctx.run_discovery()
+        assert ctx.health_report is not None
+        assert len(ctx.health_report.results) >= 2
+
+    def test_context_graph_query_built(self):
+        """ManagementContext should build graph query after discovery."""
+        from server_manager.api.dependencies import ManagementContext
+        fixture = _make_fixture()
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (
+            StarlingXProviderAdapter(fixture=fixture),
+            StarlingXProviderNormalizer(),
+        )
+        ctx.run_discovery()
+        assert ctx.graph_query is not None
+        assert ctx.graph_query.node_count >= 2
+
+    def test_context_fault_alerts_built(self):
+        """ManagementContext should build fault + alert services."""
+        from server_manager.api.dependencies import ManagementContext
+        fixture = _make_fixture(fm_alarms=[_make_critical_alarm()])
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (
+            StarlingXProviderAdapter(fixture=fixture),
+            StarlingXProviderNormalizer(),
+        )
+        ctx.run_discovery()
+        assert ctx.fault_result is not None
+        assert ctx.alert_service is not None
+        if ctx.fault_result.faults:
+            alerts = ctx.alert_service.get_alerts()
+            assert len(alerts) >= 1
+
+    def test_context_visibility_built(self):
+        """ManagementContext should build operational visibility."""
+        from server_manager.api.dependencies import ManagementContext
+        fixture = _make_fixture()
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (
+            StarlingXProviderAdapter(fixture=fixture),
+            StarlingXProviderNormalizer(),
+        )
+        ctx.run_discovery()
+        assert ctx.visibility is not None
+        summary = ctx.visibility.get_summary()
+        assert summary.infrastructure.nodes >= 1
+
+    def test_failed_discovery_no_fake_entities(self):
+        """Failed discovery must not produce fake entities."""
+        from server_manager.api.dependencies import ManagementContext
+        fixture = {"__force_fail": True}
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (
+            StarlingXProviderAdapter(fixture=fixture),
+            StarlingXProviderNormalizer(),
+        )
+        ctx.run_discovery()
+        assert ctx.inventory is None or ctx.inventory.entity_count == 0
+
+    def test_no_phantom_health_on_empty_hosts(self):
+        """Empty hosts list should not produce phantom node health."""
+        from server_manager.api.dependencies import ManagementContext
+        fixture = _make_fixture()
+        fixture["sysinv_ihosts"] = []
+        ctx = ManagementContext()
+        ctx.discovery_factory = lambda: (
+            StarlingXProviderAdapter(fixture=fixture),
+            StarlingXProviderNormalizer(),
+        )
+        ctx.run_disc

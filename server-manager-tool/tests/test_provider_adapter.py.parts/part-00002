@@ -1,0 +1,230 @@
+:
+        evidence = RawRelationshipEvidence(
+            source_entity_ref="pod-1",
+            target_entity_ref="node-1",
+            relationship_type="pod_to_node",
+            evidence_type=RelationshipEvidenceType.DIRECT,
+        )
+        assert evidence.evidence_type == RelationshipEvidenceType.DIRECT
+
+    def test_derived_evidence(self):
+        evidence = RawRelationshipEvidence(
+            source_entity_ref="pod-1",
+            target_entity_ref="pod-2",
+            relationship_type="same_node",
+            evidence_type=RelationshipEvidenceType.DERIVED,
+        )
+        assert evidence.evidence_type == RelationshipEvidenceType.DERIVED
+
+    def test_relationship_evidence_in_snapshot(self):
+        adapter = FakeProviderAdapter()
+        snap = adapter.collect()
+        assert len(snap.relationship_evidence) > 0
+        ev = snap.relationship_evidence[0]
+        assert ev.source_entity_ref == "pod-default/nginx-deployment-abc"
+        assert ev.target_entity_ref == "node-1"
+        assert ev.evidence_type == RelationshipEvidenceType.DIRECT
+
+    def test_relationship_refs_are_provider_side(self):
+        """Relationship refs are provider-side, NOT canonical_id."""
+        evidence = RawRelationshipEvidence(
+            source_entity_ref="pod-1",
+            target_entity_ref="node-1",
+            relationship_type="pod_to_node",
+        )
+        # These are provider-side refs, not canonical IDs
+        assert "canonical" not in evidence.source_entity_ref
+        assert "canonical" not in evidence.target_entity_ref
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  13. INFERRED / UNKNOWN CANNOT BECOME CANONICAL RELATIONSHIP
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestRelationshipEvidenceProhibition:
+    """Test that INFERRED and UNKNOWN cannot become canonical relationships."""
+
+    def test_relationship_evidence_type_has_no_inferred(self):
+        assert not hasattr(RelationshipEvidenceType, "INFERRED")
+
+    def test_relationship_evidence_type_has_no_unknown(self):
+        assert not hasattr(RelationshipEvidenceType, "UNKNOWN")
+
+    def test_only_direct_and_derived(self):
+        values = {e.value for e in RelationshipEvidenceType}
+        assert values == {"DIRECT", "DERIVED"}
+
+    def test_inferred_string_rejected(self):
+        with pytest.raises(ValidationError):
+            RawRelationshipEvidence(
+                source_entity_ref="a", target_entity_ref="b",
+                relationship_type="inferred", evidence_type="INFERRED",
+            )
+
+    def test_unknown_string_rejected(self):
+        with pytest.raises(ValidationError):
+            RawRelationshipEvidence(
+                source_entity_ref="a", target_entity_ref="b",
+                relationship_type="unknown", evidence_type="UNKNOWN",
+            )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  14. PROVIDER-NEUTRAL CONTRACT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderNeutralContract:
+    """Test that the contract is provider-neutral."""
+
+    def test_snapshot_for_kubernetes(self):
+        snap = RawProviderSnapshot(
+            snapshot_id="snap-k8s",
+            provider_type=ProviderType.KUBERNETES,
+            payload={"pods": []},
+        )
+        assert snap.provider_type == ProviderType.KUBERNETES
+
+    def test_snapshot_for_wrcp(self):
+        snap = RawProviderSnapshot(
+            snapshot_id="snap-wrcp",
+            provider_type=ProviderType.WRCP,
+            payload={"clusters": []},
+        )
+        assert snap.provider_type == ProviderType.WRCP
+
+    def test_snapshot_for_vmware(self):
+        snap = RawProviderSnapshot(
+            snapshot_id="snap-vmware",
+            provider_type=ProviderType.VMWARE,
+            payload={"vms": []},
+        )
+        assert snap.provider_type == ProviderType.VMWARE
+
+    def test_no_provider_specific_entity_classes(self):
+        """No KubernetesPod, WRCPCluster, or VMwareVM classes exist."""
+        import server_manager.providers as pkg
+        exported = dir(pkg)
+        assert "KubernetesPod" not in exported
+        assert "WRCPCluster" not in exported
+        assert "VMwareVM" not in exported
+
+    def test_extra_forbid_on_all_models(self):
+        for model_cls in [
+            CapabilityResult, RawRelationshipEvidence, RawProviderSnapshot,
+        ]:
+            assert model_cls.model_config.get("extra") == "forbid"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  15. COLLECT_SAFE ERROR HANDLING
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCollectSafe:
+    """Test collect_safe error handling."""
+
+    def test_collect_safe_success(self):
+        adapter = FakeProviderAdapter(fail=False)
+        snap = adapter.collect_safe()
+        assert snap.collection_status == OrchestrationStatus.SUCCESS
+
+    def test_collect_safe_handles_failure(self):
+        adapter = FakeProviderAdapter(fail=True)
+        snap = adapter.collect_safe()
+        assert snap.collection_status == OrchestrationStatus.FAILED
+        assert len(snap.errors) > 0
+        assert "CONNECTION_ERROR" in snap.errors[0]
+
+    def test_collect_safe_returns_snapshot(self):
+        """collect_safe always returns a RawProviderSnapshot, never raises."""
+        adapter = FakeProviderAdapter(fail=True)
+        snap = adapter.collect_safe()
+        assert isinstance(snap, RawProviderSnapshot)
+
+    def test_collect_safe_generates_snapshot_id(self):
+        adapter = FakeProviderAdapter(fail=True)
+        snap = adapter.collect_safe()
+        assert snap.snapshot_id.startswith("snap-")
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  16. NO CANONICAL LEAKAGE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestNoCanonicalLeakage:
+    """Test that canonical entities do not leak into the provider layer."""
+
+    def test_snapshot_has_no_canonical_entities(self):
+        adapter = FakeProviderAdapter()
+        snap = adapter.collect()
+        for attr in ["physical", "os", "platform", "cluster", "node",
+                      "execution_environment", "workload", "network",
+                      "storage", "accelerator"]:
+            assert not hasattr(snap, attr), (
+                f"Snapshot must not have canonical entity: {attr}"
+            )
+
+    def test_adapter_does_not_import_canonical_entities(self):
+        """ProviderAdapter module does NOT import canonical entity classes."""
+        from server_manager.providers import base as provider_base
+        from server_manager.models.canonical import (
+            Physical, Platform, Cluster, Node, OS,
+            ExecutionEnvironment, Workload, Network,
+            Storage, Accelerator,
+        )
+        forbidden = [
+            "Physical", "Platform", "Cluster", "Node", "OS",
+            "ExecutionEnvironment", "Workload", "Network",
+            "Storage", "Accelerator",
+        ]
+        for name in forbidden:
+            assert not hasattr(provider_base, name), (
+                f"Provider module must not import canonical entity: {name}"
+            )
+
+    def test_snapshot_does_not_create_canonical(self):
+        snap = RawProviderSnapshot(
+            snapshot_id="snap-001",
+            provider_type=ProviderType.KUBERNETES,
+            payload={"nodes": [{"name": "node-1"}]},
+        )
+        assert isinstance(snap.payload, dict)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  17. NO DUPLICATE ABSTRACTIONS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestNoDuplicateAbstractions:
+    """Test that no duplicate abstractions were created."""
+
+    def test_orchestration_status_reused(self):
+        import server_manager.providers.base as pb
+        from server_manager.orchestrator.models import OrchestrationStatus as OS
+        assert pb.OrchestrationStatus is OS
+
+    def test_error_category_reused(self):
+        import server_manager.providers.base as pb
+        from server_manager.orchestrator.models import ErrorCategory as EC
+        assert pb.ErrorCategory is EC
+
+    def test_provider_type_reused(self):
+        import server_manager.providers.base as pb
+        from server_manager.models.canonical import ProviderType as PT
+        assert pb.ProviderType is PT
+
+    def test_source_evidence_reused(self):
+        import server_manager.providers.base as pb
+        from server_manager.models.canonical import SourceEvidence as SE
+        assert pb.SourceEvidence is SE
+
+    def test_no_new_status_enum(self):
+        """No SnapshotStatus, AdapterStatus, or ProviderStatus was created."""
+        import server_manager.providers.base as pb
+        assert not hasattr(pb, "SnapshotStatus")
+        assert not hasattr(pb, "AdapterStatus")
+        assert not hasattr(pb, "ProviderStatus")

@@ -1,0 +1,604 @@
+/* ===== 미니 PC 통합 관리 프론트엔드 ===== */
+
+let currentData = null;
+let selectedDevice = null;
+let selectedInstallDevice = null;
+let pollTimer = null;
+let installLogTimer = null;
+
+/* ── 초기화 ── */
+document.addEventListener('DOMContentLoaded', () => {
+  fetchStatus();
+  pollTimer = setInterval(fetchStatus, 5000);
+});
+
+/* ── API 호출 ── */
+async function api(url, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  return res.json();
+}
+
+/* ── 상태 조회 ── */
+async function fetchStatus() {
+  try {
+    const data = await api('/api/status');
+    currentData = data;
+    renderDashboard(data);
+    renderInstallDevices(data);
+    renderTerminalDevices(data);
+    updateSummary(data);
+    document.getElementById('serverTime').textContent = new Date(data.serverTime).toLocaleString('ko-KR');
+  } catch (err) {
+    console.error('상태 조회 실패:', err);
+  }
+}
+
+/* ── 요약 정보 ── */
+function updateSummary(data) {
+  const online = data.rows.filter(r => r.status === 'online').length;
+  const offline = data.rows.filter(r => r.status === 'offline').length;
+  const total = data.rows.length;
+  document.getElementById('summary').textContent = `전체 ${total}대 | 정상 ${online}대 | 장애 ${offline}대`;
+}
+
+/* ── 이름 오름차순 정렬 ── */
+function sortByName(rows) {
+  return rows.slice().sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+}
+
+
+/* ── 대시보드 필터링 ── */
+function getFilteredDevices(data) {
+  if (!data) return [];
+  let rows = data.rows;
+  const search = document.getElementById('searchInput')?.value?.toLowerCase() || '';
+  const statusFilter = document.getElementById('filterStatus')?.value || '';
+  const setupFilter = document.getElementById('filterSetup')?.value || '';
+
+  if (search) {
+    rows = rows.filter(r => r.name.toLowerCase().includes(search) || r.ip.includes(search));
+  }
+  if (statusFilter) {
+    rows = rows.filter(r => r.status === statusFilter);
+  }
+  if (setupFilter === 'setup') {
+    rows = rows.filter(r => r.setupDone);
+  } else if (setupFilter === 'notsetup') {
+    rows = rows.filter(r => !r.setupDone);
+  }
+  return sortByName(rows);
+}
+
+
+/* ── 대시보드 렌더링 ── */
+function renderDashboard(data) {
+  const grid = document.getElementById('deviceGrid');
+  if (!data || !data.rows.length) {
+    grid.innerHTML = '<div class="loading">등록된 장비가 없습니다. "장비 추가" 버튼으로 장비를 등록하세요.</div>';
+    return;
+  }
+  const rows = getFilteredDevices(data);
+  if (!rows.length) {
+    grid.innerHTML = '<div class="loading">검색 결과가 없습니다.</div>';
+    return;
+  }
+  grid.innerHTML = rows.map(device => `
+    <div class="device-card ${device.status === 'offline' ? 'offline' : ''}">
+      <div class="device-card-header">
+        <div>
+          <div class="device-name">${escapeHtml(device.name)}</div>
+          <div class="device-ip">${device.ip}${device.group ? ' · ' + escapeHtml(device.group) : ''}</div>
+        </div>
+        <span class="status-badge status-${device.status}">${statusLabel(device.status)}</span>
+      </div>
+      <div class="device-info">
+        <span>⏱ ${device.latency !== null ? device.latency + 'ms' : '-'}</span>
+        <span class="${device.sshOk ? 'port-ok' : 'port-fail'}">SSH: ${device.sshOk ? '✓' : '✗'}</span>
+        <span class="${device.rdpOk ? 'port-ok' : 'port-fail'}">RDP: ${device.rdpOk ? '✓' : '✗'}</span>
+        ${device.setupDone ? '<span class="port-ok">✓ 세팅완료</span>' : '<span class="port-fail">미세팅</span>'}
+        ${device.installStatus ? `<span class="install-badge install-${device.installStatus}">${device.installStatus}</span>` : ''}
+      </div>
+      <div class="device-actions">
+        <button class="btn btn-sm" onclick="downloadRdp('${device.ip}')">🖥️ RDP</button>
+        <button class="btn btn-sm" onclick="sshConnect('${device.ip}')">⌨️ SSH</button>
+        <button class="btn btn-sm" onclick="pingTest('${device.ip}')">📡 Ping</button>
+        <button class="btn btn-sm" onclick="showDetail('${device.ip}')">📊 상세</button>
+        <button class="btn btn-sm" onclick="editDevice('${device.ip}')">✏️ 편집</button>
+        <button class="btn btn-sm btn-danger" onclick="removeDevice('${device.ip}')">🗑️</button>
+
+
+      </div>
+
+    </div>
+  `).join('');
+}
+
+/* ── 설치 관리 탭 렌더링 ── */
+function renderInstallDevices(data) {
+  const list = document.getElementById('installDeviceList');
+  if (!data || !data.rows.length) {
+    list.innerHTML = '<div class="loading">등록된 장비가 없습니다.</div>';
+    return;
+  }
+  list.innerHTML = sortByName(data.rows).map(device => `
+    <div class="install-device-item ${selectedInstallDevice === device.ip ? 'selected' : ''}" onclick="selectInstallDevice('${device.ip}')">
+
+      <div class="install-device-info">
+        <div class="install-device-name">${escapeHtml(device.name)} ${device.setupDone ? '✅' : '⏳'}</div>
+        <div class="install-device-ip">${device.ip} | ${statusLabel(device.status)} | SSH: ${device.sshOk ? '✓' : '✗'}</div>
+        ${device.installStatus ? `<div class="install-badge install-${device.installStatus}">${device.installStatus}</div>` : ''}
+      </div>
+      <div class="install-device-actions">
+        <button class="btn btn-sm" onclick="event.stopPropagation();downloadRdp('${device.ip}')">🖥️ RDP</button>
+        ${device.sshOk
+          ? `<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();remoteInstall('${device.ip}')">설치</button>`
+          : `<button class="btn btn-sm" disabled style="opacity:0.4;cursor:not-allowed" title="Step 1에서 OpenSSH 설치 후 사용 가능">SSH 필요</button>`}
+        ${device.installStatus ? `<button class="btn btn-sm" onclick="event.stopPropagation();selectInstallDevice('${device.ip}')">로그</button>` : ''}
+      </div>
+
+    </div>
+  `).join('');
+
+}
+
+/* ── 설치 장비 선택 ── */
+function selectInstallDevice(ip) {
+  selectedInstallDevice = ip;
+  renderInstallDevices(currentData);
+  pollInstallLog(ip);
+}
+
+/* ── 원격 설치 ── */
+async function remoteInstall(ip) {
+  if (!confirm(`${ip}에 원격 설치를 시작하시겠습니까?\nbootstrap.ps1이 전송되어 자동 설치됩니다.`)) return;
+  selectedInstallDevice = ip;
+  const result = await api('/api/remote-install', 'POST', { ip });
+  if (result.ok) {
+    pollInstallLog(ip);
+  } else {
+    alert('설치 시작 실패: ' + (result.error || ''));
+  }
+}
+
+/* ── 설치 로그 폴링 ── */
+function pollInstallLog(ip) {
+  if (installLogTimer) clearInterval(installLogTimer);
+  const panel = document.getElementById('installLogPanel');
+  panel.innerHTML = '<div class="terminal-placeholder">로그를 불러오는 중...</div>';
+
+  const fetchLog = async () => {
+    try {
+      const job = await api(`/api/install-log?ip=${ip}`);
+      const panel = document.getElementById('installLogPanel');
+      if (job.log && job.log.length) {
+        panel.innerHTML = job.log.map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('');
+        panel.scrollTop = panel.scrollHeight;
+      } else {
+        panel.innerHTML = '<div class="terminal-placeholder">로그 대기 중...</div>';
+      }
+      if (job.status === 'done' || job.status === 'failed') {
+        clearInterval(installLogTimer);
+        installLogTimer = null;
+      }
+    } catch (err) {
+      console.error('로그 조회 실패:', err);
+    }
+  };
+  fetchLog();
+  installLogTimer = setInterval(fetchLog, 2000);
+}
+
+/* ── 터미널 탭 렌더링 ── */
+function renderTerminalDevices(data) {
+  const list = document.getElementById('terminalDeviceList');
+  if (!data || !data.rows.length) {
+    list.innerHTML = '<div class="loading">등록된 장비가 없습니다.</div>';
+    return;
+  }
+  const search = document.getElementById('terminalSearch')?.value?.toLowerCase() || '';
+  let rows = data.rows;
+  if (search) {
+    rows = rows.filter(r => r.name.toLowerCase().includes(search) || r.ip.includes(search));
+  }
+  list.innerHTML = sortByName(rows).map(device => `
+
+    <div class="terminal-device-item ${selectedDevice === device.ip ? 'selected' : ''}" onclick="selectDevice('${device.ip}')">
+      <div class="td-name">${escapeHtml(device.name)}</div>
+      <div class="td-ip">${device.ip} | ${device.sshOk ? 'SSH ✓' : 'SSH ✗'}</div>
+    </div>
+  `).join('');
+}
+
+/* ── 탭 전환 ── */
+function switchTab(event, tabName) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + tabName).classList.add('active');
+  if (tabName === 'packages') loadPackages();
+}
+
+/* ── 장비 선택 (터미널) ── */
+function selectDevice(ip) {
+  selectedDevice = ip;
+  const device = currentData.rows.find(r => r.ip === ip);
+  document.getElementById('terminalTarget').textContent = device ? `${device.name} (${ip})` : ip;
+  renderTerminalDevices(currentData);
+}
+
+/* ── 명령 실행 ── */
+async function execCmd() {
+  const input = document.getElementById('cmdInput');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  if (!selectedDevice) {
+    alert('장비를 먼저 선택하세요.');
+    return;
+  }
+  input.value = '';
+  const output = document.getElementById('terminalOutput');
+  if (output.querySelector('.terminal-placeholder')) output.innerHTML = '';
+  output.innerHTML += `<div class="cmd-line">> ${escapeHtml(cmd)}</div>`;
+  output.scrollTop = output.scrollHeight;
+
+  const result = await api('/api/ssh-exec', 'POST', { ip: selectedDevice, command: cmd });
+  if (result.ok) {
+    output.innerHTML += `<div class="cmd-result">${escapeHtml(result.stdout || '(출력 없음)')}</div>`;
+    if (result.stderr) output.innerHTML += `<div class="cmd-error">${escapeHtml(result.stderr)}</div>`;
+  } else {
+    output.innerHTML += `<div class="cmd-error">오류: ${escapeHtml(result.error || result.stderr || '실행 실패')}</div>`;
+  }
+  output.scrollTop = output.scrollHeight;
+}
+
+function quickCmd(cmd) {
+  document.getElementById('cmdInput').value = cmd;
+  execCmd();
+}
+
+/* ── RDP 파일 다운로드 ── */
+async function downloadRdp(ip) {
+  // RDP 파일을 다운로드하고 자동으로 실행
+  const response = await fetch('/api/rdp-file', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ip })
+  });
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `mini-pc-${ip}.rdp`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* ── SSH 연결 (웹 터미널 새 창) ── */
+function sshConnect(ip) {
+  const device = currentData?.rows?.find(r => r.ip === ip);
+  const username = device?.username || '1';
+  const port = device?.sshPort || 22;
+  // 새 창에서 웹 터미널 열기
+  const w = window.open('', `ssh-${ip}`, 'width=900,height=600,resizable=yes,scrollbars=yes');
+  if (!w) {
+    // 팝업 차단 시 클립보드 복사로 폴백
+    const cmd = `ssh ${username}@${ip} -p ${port}`;
+    navigator.clipboard?.writeText(cmd).then(() => {
+      alert(`팝업이 차단되었습니다.\n\nSSH 명령을 클립보드에 복사했습니다:\n${cmd}\n\nWindows 터미널에 붙여넣기 하세요.`);
+    }).catch(() => {
+      alert(`SSH 접속 명령:\n\n${cmd}\n\nWindows 터미널에서 실행하세요.`);
+    });
+    return;
+  }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>SSH - ${ip}</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#1e1e1e; color:#e0e0e0; font-family:'Cascadia Code','Consolas',monospace; font-size:14px; padding:12px; }
+    .header { background:#252526; padding:8px 12px; border-radius:4px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; }
+    .header b { color:#4ec9b0; }
+    .output { background:#1e1e1e; border:1px solid #3c3c3c; border-radius:4px; padding:8px; height:calc(100vh - 140px); overflow-y:auto; white-space:pre-wrap; word-break:break-all; }
+    .cmd-line { color:#569cd6; }
+    .cmd-result { color:#dcdcdc; margin-bottom:8px; }
+    .cmd-error { color:#f44747; }
+    .input-bar { display:flex; gap:8px; margin-top:8px; }
+    .input-bar input { flex:1; background:#2d2d2d; border:1px solid #3c3c3c; color:#e0e0e0; padding:8px 12px; border-radius:4px; font-family:inherit; font-size:14px; }
+    .input-bar button { background:#0e639c; color:#fff; border:none; padding:8px 16px; border-radius:4px; cursor:pointer; font-size:14px; }
+    .input-bar button:hover { background:#1177bb; }
+    .quick { display:flex; gap:4px; flex-wrap:wrap; margin-top:4px; }
+    .quick button { background:#3c3c3c; color:#ccc; border:none; padding:4px 8px; border-radius:3px; cursor:pointer; font-size:12px; }
+    .quick button:hover { background:#505050; }
+  </style></head><body>
+  <div class="header"><b>SSH 터미널: ${username}@${ip}:${port}</b><span style="color:#888;font-size:12px;">명령어 입력 후 Enter</span></div>
+  <div id="output" class="output"><div style="color:#4ec9b0;">✅ SSH 연결 완료 — 명령어를 입력하세요.</div></div>
+
+  <div class="input-bar">
+    <input type="text" id="cmd" placeholder="명령어 입력 (예: hostname, ipconfig, dir)" onkeydown="if(event.key==='Enter')exec()">
+    <button onclick="exec()">실행</button>
+  </div>
+  <div class="quick">
+    <button onclick="q('hostname')">hostname</button>
+    <button onclick="q('ipconfig')">ipconfig</button>
+    <button onclick="q('whoami')">whoami</button>
+    <button onclick="q('node --version')">node -v</button>
+    <button onclick="q('python --version')">python -v</button>
+    <button onclick="q('sc query sshd')">sshd 상태</button>
+    <button onclick="q('powershell -Command \"Get-Volume | Format-Table -AutoSize\"')">디스크</button>
+    <button onclick="q('powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Format-Table Id,ProcessName,CPU -AutoSize\"')">node 프로세스</button>
+
+  </div>
+  <script>
+    const ip = '${ip}';
+    const output = document.getElementById('output');
+    function esc(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
+    async function exec() {
+
+      const cmd = document.getElementById('cmd').value.trim();
+      if (!cmd) return;
+      document.getElementById('cmd').value = '';
+      if (output.querySelector('div[style]')) output.innerHTML = '';
+      output.innerHTML += '<div class="cmd-line">> ' + esc(cmd) + '</div>';
+      output.scrollTop = output.scrollHeight;
+      try {
+        const res = await fetch('/api/ssh-exec', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip, command: cmd })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          output.innerHTML += '<div class="cmd-result">' + esc(data.stdout || '(출력 없음)') + '</div>';
+          if (data.stderr) output.innerHTML += '<div class="cmd-error">' + esc(data.stderr) + '</div>';
+        } else {
+          output.innerHTML += '<div class="cmd-error">오류: ' + esc(data.error || data.stderr || '실행 실패') + '</div>';
+        }
+
+      } catch (e) {
+        output.innerHTML += '<div class="cmd-error">요청 실패: ' + e.message + '</div>';
+      }
+      output.scrollTop = output.scrollHeight;
+    }
+    function q(cmd) { document.getElementById('cmd').value = cmd; exec(); }
+    document.getElementById('cmd').focus();
+  <\/script>
+  </body></html>`);
+  w.document.close();
+}
+
+
+/* ── 장비 편집 ── */
+function editDevice(ip) {
+  const device = currentData.rows.find(r => r.ip === ip);
+  if (!device) return;
+  document.getElementById('editDeviceIp').value = device.ip;
+  document.getElementById('editDeviceName').value = device.name;
+  document.getElementById('editDeviceGroup').value = device.group || '';
+  document.getElementById('editDeviceEnabled').checked = device.enabled;
+  document.getElementById('editDeviceSetupDone').checked = device.setupDone;
+  document.getElementById('editDeviceModal').style.display = 'flex';
+}
+
+async function saveEditDevice() {
+  const originalIp = document.getElementById('editDeviceIp').value;
+  const name = document.getElementById('editDeviceName').value.trim();
+  const group = document.getElementById('editDeviceGroup').value.trim();
+  const enabled = document.getElementById('editDeviceEnabled').checked;
+  const setupDone = document.getElementById('editDeviceSetupDone').checked;
+  if (!name) { alert('이름을 입력하세요.'); return; }
+
+  const devices = currentData.rows.map(d => ({
+    name: d.ip === originalIp ? name : d.name,
+    ip: d.ip,
+    enabled: d.ip === originalIp ? enabled : d.enabled,
+    setupDone: d.ip === originalIp ? setupDone : d.setupDone,
+    group: d.ip === originalIp ? group : (d.group || ''),
+    sshPort: d.sshPort,
+    rdpPort: d.rdpPort
+  }));
+  const result = await api('/api/devices', 'PUT', devices);
+  if (result.ok) {
+    closeModal('editDeviceModal');
+    fetchStatus();
+  } else {
+    alert('수정 실패: ' + (result.error || ''));
+  }
+}
+
+
+/* ── Ping 테스트 ── */
+async function pingTest(ip) {
+  const result = await api('/api/ping-test', 'POST', { ip });
+  if (result.ok) {
+    alert(`${ip} Ping 성공!\n\n${result.output.substring(0, 500)}`);
+  } else {
+    alert(`${ip} Ping 실패!\n\n${result.output.substring(0, 500)}`);
+  }
+}
+
+/* ── 장비 상세 ── */
+async function showDetail(ip) {
+  const device = currentData.rows.find(r => r.ip === ip);
+  if (!device) return;
+  document.getElementById('detailTitle').textContent = `${device.name} (${device.ip}) 상세`;
+
+  let html = `
+    <div class="device-info" style="flex-direction:column;gap:8px;">
+      <div>상태: <span class="status-badge status-${device.status}">${statusLabel(device.status)}</span></div>
+      <div>지연시간: ${device.latency !== null ? device.latency + 'ms' : '-'}</div>
+      <div>SSH: ${device.sshOk ? '✅ 가능' : '❌ 불가'} (포트 ${device.sshPort || 22})</div>
+      <div>RDP: ${device.rdpOk ? '✅ 가능' : '❌ 불가'} (포트 ${device.rdpPort || 3389})</div>
+      <div>세팅: ${device.setupDone ? '✅ 완료' : '⏳ 미완료'}</div>
+      <div>마지막 확인: ${device.checkedAt ? new Date(device.checkedAt).toLocaleString('ko-KR') : '-'}</div>
+      <div>마지막 온라인: ${device.lastOnlineAt ? new Date(device.lastOnlineAt).toLocaleString('ko-KR') : '-'}</div>
+    </div>
+  `;
+
+  if (device.sshOk) {
+    html += '<h3 style="margin:16px 0 8px;">시스템 정보 (SSH 조회)</h3><div id="sysInfoLoading">조회 중...</div>';
+    document.getElementById('detailContent').innerHTML = html;
+    document.getElementById('deviceDetailModal').style.display = 'flex';
+
+    const result = await api('/api/system-info', 'POST', { ip });
+    const loading = document.getElementById('sysInfoLoading');
+    if (loading) {
+      if (result.ok) {
+        loading.innerHTML = `<pre class="code-block">${escapeHtml(result.stdout)}</pre>`;
+      } else {
+        loading.innerHTML = `<div class="cmd-error">조회 실패: ${escapeHtml(result.error || '')}</div>`;
+      }
+    }
+  } else {
+    document.getElementById('detailContent').innerHTML = html;
+    document.getElementById('deviceDetailModal').style.display = 'flex';
+  }
+}
+
+/* ── 장비 추가 ── */
+function showAddDevice() {
+  document.getElementById('addDeviceModal').style.display = 'flex';
+  document.getElementById('newDeviceName').focus();
+}
+
+async function addDevice() {
+  const name = document.getElementById('newDeviceName').value.trim();
+  const ip = document.getElementById('newDeviceIp').value.trim();
+  const group = document.getElementById('newDeviceGroup').value.trim();
+  if (!name || !ip) { alert('이름과 IP를 입력하세요.'); return; }
+
+  const devices = currentData.rows.map(d => ({
+    name: d.name, ip: d.ip, enabled: d.enabled, setupDone: d.setupDone,
+    group: d.group || '', sshPort: d.sshPort, rdpPort: d.rdpPort
+  }));
+  devices.push({ name, ip, enabled: true, setupDone: false, group });
+
+  const result = await api('/api/devices', 'PUT', devices);
+  if (result.ok) {
+    closeModal('addDeviceModal');
+    document.getElementById('newDeviceName').value = '';
+    document.getElementById('newDeviceIp').value = '';
+    document.getElementById('newDeviceGroup').value = '';
+    fetchStatus();
+  } else {
+    alert('추가 실패: ' + (result.error || ''));
+  }
+}
+
+/* ── 장비 삭제 ── */
+async function removeDevice(ip) {
+  if (!confirm(`${ip} 장비를 삭제하시겠습니까?`)) return;
+  const devices = currentData.rows.filter(d => d.ip !== ip).map(d => ({
+    name: d.name, ip: d.ip, enabled: d.enabled, setupDone: d.setupDone,
+    group: d.group || '', sshPort: d.sshPort, rdpPort: d.rdpPort
+  }));
+  await api('/api/devices', 'PUT', devices);
+  fetchStatus();
+}
+
+/* ── 세팅 완료 ── */
+async function setupDone(ip) {
+  await api('/api/setup-done', 'POST', { ip });
+  fetchStatus();
+}
+
+/* ── 즉시 확인 ── */
+async function checkNow() {
+  await api('/api/check-now', 'POST');
+  fetchStatus();
+}
+
+/* ── 패키지 목록 ── */
+async function loadPackages() {
+  const result = await api('/api/packages');
+  const list = document.getElementById('packageList');
+  if (result.ok && result.files) {
+    list.innerHTML = result.files.map(f => `
+      <div class="package-item">
+        <div class="package-name">${f.isDir ? '📁' : '📄'} ${escapeHtml(f.name)}</div>
+        <div class="package-size">${f.sizeMB} MB</div>
+        <a href="/Mini_PC/${encodeURIComponent(f.name)}" target="_blank" class="btn btn-sm">다운로드</a>
+      </div>
+    `).join('');
+  } else {
+    list.innerHTML = '<div class="loading">패키지를 불러올 수 없습니다.</div>';
+  }
+}
+
+/* ── 일괄 명령 모달 ── */
+function showBatchModal() {
+  const list = document.getElementById('batchDeviceList');
+  list.innerHTML = sortByName(currentData.rows).map(d => `
+    <label class="batch-device-item">
+
+      <input type="checkbox" value="${d.ip}" ${d.status === 'online' ? 'checked' : ''}>
+      <span>${escapeHtml(d.name)} (${d.ip})</span>
+    </label>
+  `).join('');
+  document.getElementById('batchResult').innerHTML = '';
+  document.getElementById('batchModal').style.display = 'flex';
+}
+
+async function execBatch() {
+  const checked = document.querySelectorAll('#batchDeviceList input:checked');
+  const ips = Array.from(checked).map(c => c.value);
+  const cmd = document.getElementById('batchCmd').value.trim();
+  if (!ips.length) { alert('장비를 선택하세요.'); return; }
+  if (!cmd) { alert('명령어를 입력하세요.'); return; }
+
+  const resultDiv = document.getElementById('batchResult');
+  resultDiv.innerHTML = '<div class="loading">실행 중...</div>';
+
+  const result = await api('/api/ssh-batch', 'POST', { ips, command: cmd });
+  resultDiv.innerHTML = result.results.map(r => `
+    <div class="batch-result-item">
+      <div class="br-ip">${r.ip} ${r.ok ? '✅' : '❌'}</div>
+      <div class="br-output">${escapeHtml(r.stdout || r.error || r.stderr || '(출력 없음)')}</div>
+    </div>
+  `).join('');
+}
+
+/* ── 모달 닫기 ── */
+function closeModal(id) {
+  document.getElementById(id).style.display = 'none';
+}
+
+/* ── 유틸 ── */
+function statusLabel(status) {
+  const labels = { online: '정상', offline: '장애', degraded: '불안정', checking: '확인중', disabled: '비활성', unknown: '알수없음' };
+  return labels[status] || status;
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// 모달 외부 클릭 시 닫기
+window.onclick = function(event) {
+  if (event.target.classList && event.target.classList.contains('modal')) {
+    event.target.style.display = 'none';
+  }
+};
+
+/* ════════════════════════════════════════
+   GTC 파일서버 기능
+   ════════════════════════════════════════ */
+
+// GTC 탭이 선택되면 파일 목록 로드
+let gtcLoaded = false;
+let gtcCurrentPath = '';
+const originalSwitchTab = window.switchTab;
+window.switchTab = function(event, tabName) {
+  if (originalSwitchTab) originalSwitchTab(event, tabName);
+  
+  if (tabName === 'gtc' && !gtcLoaded) {
+    loadGtcFiles();
+    gtcLoaded = true;
+  }
+};
+
+// GTC 파일 목록 조회 (디렉토리 탐색 지�

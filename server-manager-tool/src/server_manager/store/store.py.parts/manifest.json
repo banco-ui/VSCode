@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/store/store.py",
+  "originalSize": 22223,
+  "sha256": "80654b41e87f147e7da9d9842b70ee7d995cd44f82e50cb723514f6c1ad8b196",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/store/store.py\""
+}

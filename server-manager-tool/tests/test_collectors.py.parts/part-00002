@@ -1,0 +1,538 @@
+ce(path):
+            call_count[0] += 1
+            raise urllib.error.URLError(
+                reason=ssl.SSLCertVerificationError("certificate verify failed")
+            )
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        monkeypatch.setattr(coll, '_get_once', mock_get_once)
+        result = coll._get_with_retry("/test")
+        assert call_count[0] == 1
+        assert result is None
+
+    def test_urlerror_dns_still_retried(self, monkeypatch):
+        """P1-RF.4.2: URLError with DNS error should still be retried."""
+        import urllib.error
+        call_count = [0]
+        def mock_get_once(path):
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise urllib.error.URLError(reason="Name or service not known")
+            return {"success": True}
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        monkeypatch.setattr(coll, '_get_once', mock_get_once)
+        result = coll._get_with_retry("/test")
+        assert call_count[0] == 2
+        assert result == {"success": True}
+
+    def test_401_not_retried_with_ca_bundle(self, monkeypatch):
+        """P1-RF.4.1: 401 should not be retried even with CA bundle."""
+        import urllib.error
+        call_count = [0]
+        def mock_get_once(path):
+            call_count[0] += 1
+            raise urllib.error.HTTPError(
+                url=f"http://test{path}",
+                code=401,
+                msg="Unauthorized",
+                hdrs={},
+                fp=None,
+            )
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            username="root",
+            password="pass",
+            ca_bundle="/tmp/test.pem",
+        )
+        monkeypatch.setattr(coll, '_get_once', mock_get_once)
+        result = coll._get_with_retry("/test")
+        assert call_count[0] == 1
+        assert result is None
+
+    def test_verify_ssl_true_default(self):
+        """P1-RF.4.1: verify_ssl should default to True (TLS enabled)."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        assert coll.verify_ssl is True
+        assert coll.ca_bundle is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  Phase 1-RF.8 — Redfish collect() Mock Flow Tests
+# ════════════════════════════════════════════════════════════════════════
+
+
+class _FakeHTTPResponse:
+    """Minimal context-manager response for mocking urllib.request.urlopen."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class TestRedfishCollectMock:
+    """P1-RF.8: collect() flow tests with mocked _get_once.
+
+    Unlike the storage tests above (which mock _get and bypass the retry
+    layer), these tests mock _get_once so the real _get_with_retry policy
+    stays active inside the collect() flow.
+    """
+
+    def _routes(self):
+        return {
+            "/redfish/v1/": {
+                "RedfishVersion": "1.14.0",
+                "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                "Managers": {"@odata.id": "/redfish/v1/Managers"},
+            },
+            "/redfish/v1/Systems": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            },
+            "/redfish/v1/Systems/1": {
+                "Manufacturer": "Dell Inc.",
+                "Model": "PowerEdge R750",
+                "SerialNumber": "SN12345",
+                "Status": {"Health": "OK"},
+                "Processors": {"@odata.id": "/redfish/v1/Systems/1/Processors"},
+                "Memory": {"@odata.id": "/redfish/v1/Systems/1/Memory"},
+                "NetworkInterfaces": {"@odata.id": "/redfish/v1/Systems/1/NetworkInterfaces"},
+                "PCIeDevices": {"@odata.id": "/redfish/v1/Systems/1/PCIeDevices"},
+                "Storage": {"@odata.id": "/redfish/v1/Systems/1/Storage"},
+            },
+            "/redfish/v1/Systems/1/Processors": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1/Processors/0"}],
+            },
+            "/redfish/v1/Systems/1/Processors/0": {
+                "Model": "Intel Xeon Gold 6248R",
+                "TotalCores": 24,
+                "TotalThreads": 48,
+                "Status": {"Health": "OK"},
+            },
+            "/redfish/v1/Systems/1/Memory": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1/Memory/0"}],
+            },
+            "/redfish/v1/Systems/1/Memory/0": {
+                "DeviceLocator": "A1",
+                "CapacityMiB": 16384,
+                "Status": {"Health": "OK"},
+            },
+            "/redfish/v1/Systems/1/NetworkInterfaces": {"Members": []},
+            "/redfish/v1/Systems/1/PCIeDevices": {"Members": []},
+            "/redfish/v1/Systems/1/Storage": {"Members": []},
+            "/redfish/v1/Chassis": {
+                "Members": [{"@odata.id": "/redfish/v1/Chassis/1"}],
+            },
+            "/redfish/v1/Chassis/1": {
+                "Power": {"@odata.id": "/redfish/v1/Chassis/1/Power"},
+                "Thermal": {"@odata.id": "/redfish/v1/Chassis/1/Thermal"},
+            },
+            "/redfish/v1/Chassis/1/Power": {
+                "PowerSupplies": [{"Name": "PSU0", "Status": {"Health": "OK"}}],
+            },
+            "/redfish/v1/Chassis/1/Thermal": {
+                "Temperatures": [
+                    {"Name": "CPU", "ReadingCelsius": 40, "Status": {"Health": "OK"}}
+                ],
+                "Fans": [],
+            },
+            "/redfish/v1/Managers": {
+                "Members": [{"@odata.id": "/redfish/v1/Managers/0"}],
+            },
+            "/redfish/v1/Managers/0": {"FirmwareVersion": "7.10.30", "Model": "iDRAC9"},
+        }
+
+    def _install_mock(self, coll, routes, call_log=None):
+        """Install a route-based _get_once mock; unknown paths fail fast (404, no retry)."""
+        import urllib.error
+
+        def mock_get_once(path):
+            if call_log is not None:
+                call_log.append(path)
+            if path in routes:
+                resp = routes[path]
+                if isinstance(resp, Exception):
+                    raise resp
+                return resp
+            raise urllib.error.HTTPError(
+                url=path, code=404, msg="Not Found", hdrs={}, fp=None
+            )
+
+        coll._get_once = mock_get_once
+
+    def test_collect_full_resources(self):
+        """P1-RF.8: Successful responses yield all expected top-level resources."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        self._install_mock(coll, self._routes())
+
+        data = coll.collect()
+
+        assert data["redfish_version"] == "1.14.0"
+        assert data["system"]["SerialNumber"] == "SN12345"
+        assert data["processors"][0]["Model"] == "Intel Xeon Gold 6248R"
+        assert data["memory"][0]["CapacityMiB"] == 16384
+        assert data["chassis"] is not None
+        assert data["power"]["PowerSupplies"][0]["Name"] == "PSU0"
+        assert data["thermal"]["Temperatures"][0]["ReadingCelsius"] == 40
+        assert data["manager"]["Model"] == "iDRAC9"
+
+
+    def test_collect_empty_collections_is_valid(self):
+        """P1-RF.8: Empty Members lists are valid — no system/chassis/manager keys."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = {
+            "/redfish/v1/": {
+                "RedfishVersion": "1.9.0",
+                "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                "Managers": {"@odata.id": "/redfish/v1/Managers"},
+            },
+            "/redfish/v1/Systems": {"Members": []},
+            "/redfish/v1/Chassis": {"Members": []},
+            "/redfish/v1/Managers": {"Members": []},
+        }
+        self._install_mock(coll, routes)
+
+        data = coll.collect()
+
+        assert data["redfish_version"] == "1.9.0"
+        assert "system" not in data
+        assert "chassis" not in data
+        assert "manager" not in data
+
+    def test_collect_endpoint_failure_preserves_others(self):
+        """P1-RF.8: One endpoint failure (404 → no retry) preserves independent endpoints."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        # Remove Memory resources → every Memory path fails with 404 (fast, no retry)
+        del routes["/redfish/v1/Systems/1/Memory"]
+        del routes["/redfish/v1/Systems/1/Memory/0"]
+        call_log = []
+        self._install_mock(coll, routes, call_log)
+
+        data = coll.collect()
+
+        assert "memory" not in data
+        # Independent endpoints preserved
+        assert data["processors"][0]["Model"] == "Intel Xeon Gold 6248R"
+        assert data["system"]["SerialNumber"] == "SN12345"
+        assert data["manager"]["FirmwareVersion"] == "7.10.30"
+        # 404 must not be retried — Memory collection attempted exactly once
+        memory_calls = [p for p in call_log if "Memory" in p]
+        assert len(memory_calls) == 1
+
+    def test_collect_member_without_odata_id_skipped(self):
+        """P1-RF.8: Collection members lacking @odata.id are skipped, not fatal."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        routes["/redfish/v1/Systems/1/Processors"] = {"Members": [{"Model": "NoRef"}]}
+        self._install_mock(coll, routes)
+
+        data = coll.collect()
+
+        assert data["processors"] == []
+        # Rest of the flow unaffected
+        assert data["system"]["SerialNumber"] == "SN12345"
+
+    def test_missing_odata_id_skip_logs_warning(self, caplog):
+        """P1-RF.12: Skipping a member without @odata.id emits a WARNING that
+        includes the collection identifier for traceability. Valid members are
+        still processed unchanged."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        routes["/redfish/v1/Systems/1/Processors"] = {
+            "@odata.id": "/redfish/v1/Systems/1/Processors",
+            "Members": [
+                {"@odata.id": "/redfish/v1/Systems/1/Processors/0"},
+                {"Model": "NoRef"},  # no @odata.id — skipped with warning
+            ],
+        }
+        self._install_mock(coll, routes)
+
+        with caplog.at_level(logging.WARNING):
+            data = coll.collect()
+
+        # Valid member still processed — behavior unchanged
+        assert data["processors"][0]["Model"] == "Intel Xeon Gold 6248R"
+        warns = [r for r in caplog.records if "skipping member without @odata.id" in r.getMessage()]
+        assert len(warns) == 1
+        # Warning points to the collection path (standard Redfish URI — safe)
+        assert "/redfish/v1/Systems/1/Processors" in warns[0].getMessage()
+
+    def test_missing_odata_id_warning_contains_no_member_payload(self, caplog):
+        """P1-RF.12: The skip warning must not expose member payload
+        attributes — only the collection identifier."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        routes["/redfish/v1/Systems/1/Memory"] = {
+            "@odata.id": "/redfish/v1/Systems/1/Memory",
+            "Members": [
+                {"DeviceLocator": "SECRET_DIMM_NAME", "SerialNumber": "SERIAL-999"}
+            ],
+        }
+        self._install_mock(coll, routes)
+
+        with caplog.at_level(logging.WARNING):
+            data = coll.collect()
+
+        assert data["memory"] == []
+        msgs = " ".join(r.getMessage() for r in caplog.records)
+        assert "SECRET_DIMM_NAME" not in msgs
+        assert "SERIAL-999" not in msgs
+
+    def test_member_fetch_failure_logs_warning_preserves_good_members(self, caplog):
+        """P1-RF.15: A falsy fetch result (404) is skipped but warned. Good
+        members are still collected — partial-failure preservation unchanged."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        # Processor 0 exists (good); Processor 1 has no route → 404 → falsy
+        routes["/redfish/v1/Systems/1/Processors"] = {
+            "@odata.id": "/redfish/v1/Systems/1/Processors",
+            "Members": [
+                {"@odata.id": "/redfish/v1/Systems/1/Processors/0"},
+                {"@odata.id": "/redfish/v1/Systems/1/Processors/1"},
+            ],
+        }
+        self._install_mock(coll, routes)
+
+        with caplog.at_level(logging.WARNING):
+            data = coll.collect()
+
+        # Good member preserved; failed member skipped (return value unchanged)
+        assert data["processors"][0]["Model"] == "Intel Xeon Gold 6248R"
+        assert len(data["processors"]) == 1
+        warns = [r for r in caplog.records if "failed to fetch member" in r.getMessage()]
+        assert len(warns) == 1
+        # Warning identifies the collection and the failed member (URIs only)
+        assert "/redfish/v1/Systems/1/Processors" in warns[0].getMessage()
+
+    def test_member_fetch_failure_warning_contains_no_member_payload(self, caplog):
+        """P1-RF.15: The fetch-failure warning must not expose member payload
+        attributes — only standard Redfish URIs."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        routes["/redfish/v1/Systems/1/Memory"] = {
+            "@odata.id": "/redfish/v1/Systems/1/Memory",
+            # Member carries attributes that must never appear in logs
+            "Members": [
+                {
+                    "@odata.id": "/redfish/v1/Systems/1/Memory/0",
+                    "DeviceLocator": "SECRET_DIMM_NAME",
+                    "SerialNumber": "SERIAL-999",
+                }
+            ],
+        }
+        # Memory/0 route deliberately removed → 404 → falsy result
+        del routes["/redfish/v1/Systems/1/Memory/0"]
+        self._install_mock(coll, routes)
+
+        with caplog.at_level(logging.WARNING):
+            data = coll.collect()
+
+        assert data["memory"] == []
+        msgs = " ".join(r.getMessage() for r in caplog.records)
+        # No payload, serials or credentials in any log record
+        assert "SECRET_DIMM_NAME" not in msgs
+        assert "SERIAL-999" not in msgs
+        assert "root" not in msgs
+        assert "pass" not in msgs
+
+    def test_empty_members_collection_emits_no_fetch_warning(self, caplog):
+        """P1-RF.15: A legitimately empty collection (Members: []) emits no
+        fetch-failure warning — empty is not reinterpreted as failure."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        routes["/redfish/v1/Systems/1/Processors"] = {
+            "@odata.id": "/redfish/v1/Systems/1/Processors",
+            "Members": [],
+        }
+        self._install_mock(coll, routes)
+
+        with caplog.at_level(logging.WARNING):
+            data = coll.collect()
+
+        # Return value unchanged: key present with empty list
+        assert data["processors"] == []
+        assert not [r for r in caplog.records if "failed to fetch member" in r.getMessage()]
+
+    def test_collect_inline_first_member_without_odata_id(self):
+        """P1-RF.8: First member without @odata.id is used as-is (inline member)."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = self._routes()
+        inline_system = {
+            "Manufacturer": "Dell Inc.",
+            "SerialNumber": "INLINE-SN",
+            "Status": {"Health": "OK"},
+        }
+        routes["/redfish/v1/Systems"] = {"Members": [inline_system]}
+        call_log = []
+        self._install_mock(coll, routes, call_log)
+
+        data = coll.collect()
+
+        assert data["system"]["SerialNumber"] == "INLINE-SN"
+        assert "/redfish/v1/Systems/1" not in call_log  # no extra fetch for inline member
+
+    def test_collect_unexpected_root_structure(self):
+        """P1-RF.8: Root without Systems/Chassis/Managers refs → minimal valid result."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        routes = {"/redfish/v1/": {"RedfishVersion": "1.6.0"}}
+        self._install_mock(coll, routes)
+
+        data = coll.collect()
+
+        assert data["redfish_version"] == "1.6.0"
+        assert "system" not in data
+        assert "chassis" not in data
+        assert "manager" not in data
+
+    def test_collect_no_secrets_in_full_flow(self):
+        """P1-RF.8: Credentials never appear in collected data (full flow)."""
+        secret = "SECRET_REDFISH_PW_XYZ_9911"
+        coll = RedfishCollector(host="10.0.0.1", username="admin", password=secret)
+        self._install_mock(coll, self._routes())
+
+        data = coll.collect()
+
+        assert secret not in str(data)
+        assert secret not in repr(data)
+        assert "Authorization" not in str(data)
+        assert "password" not in data.keys()
+
+    def test_collect_malformed_json_no_retry(self, monkeypatch):
+        """P1-RF.8: Malformed JSON (JSONDecodeError, a ValueError) is not retried;
+        collect() surfaces a ConnectionError per the existing contract."""
+        import json as json_mod
+        import urllib.request
+
+        calls = []
+
+        def fake_urlopen(req, timeout=None, context=None):
+            calls.append(req.full_url)
+            return _FakeHTTPResponse(b"not-valid-json{")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        with pytest.raises(ConnectionError):
+            coll.collect()
+
+        # JSONDecodeError subclasses ValueError → no retry (existing policy)
+        assert len(calls) == 1
+
+    def test_collect_transient_connection_error_retried_then_success(self, monkeypatch):
+        """P1-RF.8: ConnectionError on first attempt is retried; collect() succeeds."""
+        import json
+        import urllib.request
+
+        calls = []
+        routes = self._routes()
+
+        def fake_urlopen(req, timeout=None, context=None):
+            calls.append(req.full_url)
+            path = req.full_url.replace("https://10.0.0.1:443", "")
+            if len(calls) == 1:
+                raise ConnectionRefusedError("connection refused")
+            return _FakeHTTPResponse(json.dumps(routes[path]).encode("utf-8"))
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        data = coll.collect()
+
+        assert data["redfish_version"] == "1.14.0"
+        assert data["system"]["SerialNumber"] == "SN12345"
+        # Root endpoint attempted twice (failure then success); total flow continues
+        root_calls = [c for c in calls if c.endswith("/redfish/v1/")]
+        assert len(root_calls) == 2
+
+    def test_collect_401_no_retry(self, monkeypatch):
+        """P1-RF.8: 401 through collect() → single attempt, ConnectionError raised.
+
+        Underlying no-retry policy is covered by TestPhase02_RetryLogic /
+        TestPhase1RF4_1_SecurityRegression at the _get_with_retry level;
+        this verifies the same policy integrates through collect().
+        """
+        import urllib.error
+        import urllib.request
+
+        calls = []
+
+        def fake_urlopen(req, timeout=None, context=None):
+            calls.append(req.full_url)
+            raise urllib.error.HTTPError(
+                url=req.full_url, code=401, msg="Unauthorized", hdrs={}, fp=None
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        with pytest.raises(ConnectionError):
+            coll.collect()
+
+        assert len(calls) == 1
+
+    def test_malformed_json_logged_as_json_parse_error(self, monkeypatch, caplog):
+        """P1-RF.9: Malformed JSON is classified as a JSON parse error,
+        not a CA bundle error, and is never retried."""
+        import json
+        import urllib.request
+
+        def fake_urlopen(req, timeout=None, context=None):
+            return _FakeHTTPResponse(b"not-valid-json{")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        result = coll._get_with_retry("/redfish/v1/")
+
+        assert result is None
+        json_logs = [r for r in caplog.records if "JSON parse error" in r.getMessage()]
+        ca_logs = [r for r in caplog.records if "CA bundle error" in r.getMessage()]
+        assert len(json_logs) == 1
+        assert not ca_logs
+
+    def test_malformed_json_not_retried(self, monkeypatch):
+        """P1-RF.9: JSONDecodeError triggers exactly one attempt (no retry)."""
+        import json
+        call_count = [0]
+
+        def mock_get_once(path):
+            call_count[0] += 1
+            raise json.JSONDecodeError("Expecting value", "doc", 0)
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        monkeypatch.setattr(coll, '_get_once', mock_get_once)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        result = coll._get_with_retry("/test")
+
+        assert result is None
+        assert call_count[0] == 1
+
+    def test_ca_bundle_error_still_logged_as_ca_error(self, monkeypatch, caplog):
+        """P1-RF.9: CA bundle errors keep their dedicated classification."""
+        def mock_get_once(path):
+            raise FileNotFoundError("CA bundle not found: /tmp/x.pem")
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        monkeypatch.setattr(coll, '_get_once', mock_get_once)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        result = coll._get_with_retry("/test")
+
+        assert result is None
+        ca_logs = [r for r in caplog.records if "CA bundle error" in r.getMessage()]
+        json_logs = [r for r in caplog.records if "JSON parse error" in r.getMessage()]
+        assert len(ca_logs) == 1
+        assert not json_logs

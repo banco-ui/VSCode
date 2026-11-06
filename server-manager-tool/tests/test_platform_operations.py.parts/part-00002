@@ -1,0 +1,328 @@
+provider_type=ProviderType.KUBERNETES)
+        result = gate.evaluate(req, target, CapabilityDecision.SUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.AMBIGUOUS_TARGET
+
+    def test_unknown_provider_blocked(self):
+        gate = OperationSafetyGate()
+        req = make_request()
+        target = TargetResolution(resolved=True, canonical_id="canon-x", provider_type=ProviderType.UNKNOWN)
+        result = gate.evaluate(req, target, CapabilityDecision.SUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.UNKNOWN_PROVIDER
+
+    def test_unsupported_capability_blocked(self):
+        gate = OperationSafetyGate()
+        req = make_request()
+        target = make_resolved_target()
+        result = gate.evaluate(req, target, CapabilityDecision.UNSUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.UNSUPPORTED_ACTION
+
+    def test_unknown_capability_blocked(self):
+        """UNKNOWN capability is NOT SUPPORTED."""
+        gate = OperationSafetyGate()
+        req = make_request()
+        target = make_resolved_target()
+        result = gate.evaluate(req, target, CapabilityDecision.UNKNOWN, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.UNSUPPORTED_ACTION
+
+    def test_execution_disabled_blocked(self):
+        gate = OperationSafetyGate()
+        req = make_request(execution_enabled=False)
+        target = make_resolved_target()
+        result = gate.evaluate(req, target, CapabilityDecision.SUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.EXECUTION_NOT_ENABLED
+
+    def test_duplicate_operation_blocked(self):
+        gate = OperationSafetyGate(
+            active_identity_keys={"canon-k8s-node-01:RESTART:ns=|force=False|to=|gp=|rep="}
+        )
+        req = make_request()
+        target = make_resolved_target()
+        result = gate.evaluate(req, target, CapabilityDecision.SUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.DUPLICATE_OPERATION
+
+    def test_missing_evidence_blocked(self):
+        gate = OperationSafetyGate()
+        req = make_request(evidence={})
+        target = make_resolved_target()
+        result = gate.evaluate(req, target, CapabilityDecision.SUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.MISSING_EVIDENCE
+
+    def test_invalid_parameters_blocked(self):
+        gate = OperationSafetyGate()
+        req = make_request(params=OperationParameters(replicas=-1))
+        target = make_resolved_target()
+        result = gate.evaluate(req, target, CapabilityDecision.SUPPORTED, AuthorizationLevel.EXECUTE)
+        assert result.result == SafetyResult.BLOCKED
+        assert result.reason == OperationBlockReason.INVALID_PARAMETERS
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  KUBERNETES OPERATION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestKubernetesOperation:
+    """Kubernetes provider operation contract tests."""
+
+    def test_k8s_restart_supported(self):
+        """Kubernetes provider supports RESTART when registered."""
+        svc, _ = make_service()
+        req = make_request(op_type=OperationType.RESTART)
+        result = svc.execute(req)
+        assert result.status in (OperationStatus.VERIFIED, OperationStatus.EXECUTED)
+
+    def test_k8s_query_status(self):
+        """Kubernetes QUERY_STATUS works at READ_ONLY auth."""
+        svc, _ = make_service()
+        req = make_request(
+            op_type=OperationType.QUERY_STATUS,
+            auth=AuthorizationLevel.READ_ONLY,
+            execution_enabled=False,
+        )
+        result = svc.dry_run(req)
+        assert result.status == OperationStatus.DRY_RUN
+
+    def test_k8s_target_resolution(self):
+        """Kubernetes target resolves via registered canonical_id."""
+        svc, _ = make_service()
+        target = svc._target_resolver.resolve("canon-k8s-node-01")
+        assert target.resolved
+        assert target.provider_type == ProviderType.KUBERNETES
+        assert target.provider_id == "k8s-node-01"
+
+    def test_k8s_capability_resolution(self):
+        """Kubernetes capability resolves for registered operations."""
+        svc, _ = make_service()
+        cap = svc._capability_resolver.resolve(
+            ProviderType.KUBERNETES, OperationType.RESTART,
+        )
+        assert cap == CapabilityDecision.SUPPORTED
+
+    def test_k8s_preview(self):
+        """Kubernetes operation preview is deterministic."""
+        svc, _ = make_service()
+        preview = svc.preview(make_request())
+        assert preview.capability_decision == CapabilityDecision.SUPPORTED
+        assert preview.resolved_target is not None
+
+    def test_k8s_mock_execution(self):
+        """Kubernetes mock execution produces VERIFIED result."""
+        svc, executor = make_service()
+        req = make_request()
+        result = svc.execute(req)
+        assert result.status == OperationStatus.VERIFIED
+        assert executor.mutation_count == 1
+
+    def test_k8s_verification(self):
+        """Kubernetes mock verification checks post-action state."""
+        svc, executor = make_service()
+        result = svc.execute(make_request())
+        assert result.status == OperationStatus.VERIFIED
+        assert result.evidence.get("verified") is True
+
+    def test_k8s_no_live_mutation_without_credentials(self):
+        """No live mutation — mock executor only, no real K8s API calls."""
+        svc, executor = make_service()
+        req = make_request()
+        result = svc.execute(req)
+        # Mock executor was used, not real K8s client
+        assert executor.mutation_count == 1
+        assert result.provider == ProviderType.KUBERNETES
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CROSS-PLATFORM CONTRACT TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCrossPlatform:
+    """Verify the same contract works across different provider types."""
+
+    def test_vmware_operation_contract(self):
+        """VMware can be represented without provider-specific leakage."""
+        resolver = TargetResolver()
+        resolver.register_target(
+            "canon-vmware-vm-01", ProviderType.VMWARE,
+            provider_id="vm-01", entity_type="EXECUTION_ENVIRONMENT",
+        )
+        target = resolver.resolve("canon-vmware-vm-01")
+        assert target.resolved
+        assert target.provider_type == ProviderType.VMWARE
+
+    def test_wrcp_operation_contract(self):
+        """WRCP can be represented through the same contract."""
+        resolver = TargetResolver()
+        resolver.register_target(
+            "canon-wrcp-node-01", ProviderType.WRCP,
+            provider_id="wrcp-node-01", entity_type="NODE",
+        )
+        target = resolver.resolve("canon-wrcp-node-01")
+        assert target.resolved
+        assert target.provider_type == ProviderType.WRCP
+
+    def test_openstack_operation_contract(self):
+        """OpenStack can be represented through the same contract."""
+        resolver = TargetResolver()
+        resolver.register_target(
+            "canon-os-vm-01", ProviderType.OPENSTACK,
+            provider_id="os-vm-01", entity_type="EXECUTION_ENVIRONMENT",
+        )
+        target = resolver.resolve("canon-os-vm-01")
+        assert target.resolved
+        assert target.provider_type == ProviderType.OPENSTACK
+
+    def test_unregistered_provider_capability_unknown(self):
+        """Unregistered providers return UNKNOWN capability (not SUPPORTED)."""
+        resolver = CapabilityResolver()
+        result = resolver.resolve(ProviderType.VMWARE, OperationType.RESTART)
+        assert result == CapabilityDecision.UNKNOWN
+
+    def test_same_request_contract_different_providers(self):
+        """Same OperationRequest model works for different providers."""
+        for provider in [ProviderType.KUBERNETES, ProviderType.VMWARE,
+                         ProviderType.WRCP, ProviderType.OPENSTACK]:
+            req = OperationRequest(
+                operation_id=f"op-{provider.value}",
+                operation_type=OperationType.QUERY_STATUS,
+                target_canonical_id=f"canon-{provider.value}-01",
+                provider_type=provider,
+                authorization=AuthorizationLevel.READ_ONLY,
+            )
+            assert req.provider_type == provider
+            assert req.operation_type == OperationType.QUERY_STATUS
+
+    def test_no_provider_specific_leakage(self):
+        """OperationParameters has no provider-specific fields."""
+        params = OperationParameters()
+        fields = set(type(params).model_fields.keys())
+        # Only common fields, no k8s/vmware/wrcp-specific names
+        assert "kubectl_command" not in fields
+        assert "vim_ref" not in fields
+        assert "wrcp_cli" not in fields
+        assert "openstack_client" not in fields
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MUTATION SAFETY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMutationSafety:
+    """Verify zero mutations in all blocked paths."""
+
+    def test_preview_zero_mutation(self):
+        """Preview never mutates."""
+        svc, executor = make_service()
+        preview = svc.preview(make_request())
+        assert executor.mutation_count == 0
+
+    def test_dry_run_zero_mutation(self):
+        """DRY_RUN never mutates."""
+        svc, executor = make_service()
+        req = make_request(op_type=OperationType.QUERY_STATUS,
+                           auth=AuthorizationLevel.READ_ONLY)
+        result = svc.dry_run(req)
+        assert result.status == OperationStatus.DRY_RUN
+        assert executor.mutation_count == 0
+
+    def test_unsupported_capability_zero_mutation(self):
+        """Unsupported capability performs zero mutations."""
+        svc, executor = make_service()
+        # STOP is not registered for K8s
+        req = make_request(op_type=OperationType.STOP)
+        result = svc.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_unresolved_target_zero_mutation(self):
+        """Unresolved target performs zero mutations."""
+        svc, executor = make_service(register_target=False)
+        req = make_request(target="canon-unknown-99")
+        result = svc.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_insufficient_auth_zero_mutation(self):
+        """Insufficient authorization performs zero mutations."""
+        svc, executor = make_service()
+        req = make_request(auth=AuthorizationLevel.READ_ONLY)
+        result = svc.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_execution_disabled_zero_mutation(self):
+        """Execution disabled performs zero mutations."""
+        svc, executor = make_service()
+        req = make_request(execution_enabled=False)
+        result = svc.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_unknown_provider_zero_mutation(self):
+        """Unknown provider performs zero mutations."""
+        svc, executor = make_service()
+        req = make_request(provider=ProviderType.UNKNOWN)
+        result = svc.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_invalid_params_zero_mutation(self):
+        """Invalid parameters perform zero mutations."""
+        svc, executor = make_service()
+        req = make_request(params=OperationParameters(replicas=-1))
+        result = svc.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_missing_evidence_zero_mutation(self):
+        """Missing evidence performs zero mutations."""
+        svc, executor = make_service()
+        req = make_request(evidence={})
+        result = svc.execute(req)
+        assert result.status == OperationStatus.BLOCKED
+        assert executor.mutation_count == 0
+
+    def test_no_shell_execution(self):
+        """No shell command execution in operations source code."""
+        import server_manager.operations.models as models_mod
+        import server_manager.operations.service as service_mod
+        forbidden = ["subprocess", "os.system", "os.popen", "os.exec",
+                     "shell=True", "eval(", "exec("]
+        for mod in [models_mod, service_mod]:
+            src = inspect.getsource(mod)
+            for pattern in forbidden:
+                assert pattern not in src, f"Forbidden '{pattern}' in {mod.__name__}"
+
+    def test_no_mutation_keywords_in_source(self):
+        """No mutation API patterns in operations source code."""
+        import server_manager.operations.models as models_mod
+        import server_manager.operations.service as service_mod
+        forbidden_k8s = [
+            "delete_namespaced_pod", "create_namespaced_pod",
+            "patch_namespaced_pod", "replace_namespaced_pod",
+            "delete_namespaced_deployment", "create_namespaced_deployment",
+            "patch_namespaced_deployment", "scale_namespaced_deployment",
+            "api_instance.create", "api_instance.delete", "api_instance.patch",
+        ]
+        for mod in [models_mod, service_mod]:
+            src = inspect.getsource(mod)
+            for pattern in forbidden_k8s:
+                assert pattern not in src, f"Forbidden '{pattern}' in {mod.__name__}"
+
+    def test_no_auto_recovery_patterns(self):
+        """No automatic recovery patterns in source."""
+        import server_manager.operations.service as service_mod
+        src = inspect.getsource(service_mod)
+        forbidden = [
+            "auto_restart", "auto_redeploy", "auto_scale",
+            "auto_delete", "auto_recovery", "auto_remediate",
+        ]
+        for pattern in forbidden:
+            assert pattern not in src, f"Forbidden '{pattern}' in service"

@@ -1,0 +1,648 @@
+"""Tests for Collectors (Phase 2)."""
+import logging
+
+import pytest
+from server_manager.collectors.base import BaseCollector, CollectionResult
+from server_manager.collectors.redfish import RedfishCollector
+from server_manager.collectors.ssh import SSHCollector
+from server_manager.collectors.vendor_adapters import (
+    VendorAdapter, DellAdapter, HPEAdapter, get_vendor_adapter,
+)
+
+
+class TestCollectionResult:
+    def test_default(self):
+        result = CollectionResult()
+        assert result.success is False
+        assert result.data == {}
+        assert result.errors == []
+
+    def test_add_error(self):
+        result = CollectionResult()
+        result.add_error("test error")
+        assert result.success is False
+        assert "test error" in result.errors
+
+    def test_add_warning(self):
+        result = CollectionResult()
+        result.add_warning("test warning")
+        assert "test warning" in result.warnings
+
+
+class TestRedfishCollector:
+    def test_source_name(self):
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        assert coll.source_name == "redfish"
+
+    def test_base_url_https(self):
+        coll = RedfishCollector(host="10.0.0.1", port=443)
+        assert coll.base_url == "https://10.0.0.1:443"
+
+    def test_base_url_http(self):
+        coll = RedfishCollector(host="10.0.0.1", port=80, use_ssl=False)
+        assert coll.base_url == "http://10.0.0.1:80"
+
+    def test_collect_failure(self):
+        """Collect should raise on unreachable host."""
+        coll = RedfishCollector(host="192.0.2.1", port=443, timeout=1)
+        with pytest.raises(Exception):
+            coll.collect()
+
+    def test_safe_collect_returns_result(self):
+        coll = RedfishCollector(host="192.0.2.1", port=443, timeout=1)
+        result = coll.safe_collect()
+        assert isinstance(result, CollectionResult)
+        assert result.success is False
+        assert len(result.errors) > 0
+
+    def test_collect_storage_with_mock(self):
+        """Storage collection via mocked Redfish responses.
+
+        Uses monkeypatch to mock _get responses for Storage collection.
+        Verifies that storage data is collected from Redfish Storage resource.
+        """
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+
+        # Mock responses for each Redfish URI
+        mock_responses = {
+            "/redfish/v1/": {
+                "RedfishVersion": "1.14.0",
+                "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                "Managers": {"@odata.id": "/redfish/v1/Managers"},
+            },
+            "/redfish/v1/Systems": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            },
+            "/redfish/v1/Systems/1": {
+                "Manufacturer": "Dell Inc.",
+                "Model": "PowerEdge R750",
+                "SerialNumber": "SN12345",
+                "Status": {"Health": "OK"},
+                "Storage": {"@odata.id": "/redfish/v1/Systems/1/Storage"},
+            },
+            "/redfish/v1/Systems/1/Storage": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1/Storage/RAID"}],
+            },
+            "/redfish/v1/Systems/1/Storage/RAID": {
+                "StorageControllers": [
+                    {
+                        "Name": "PERC H755",
+                        "Model": "PERC H755 Front",
+                        "Status": {"Health": "OK"},
+                        "ControllerCapabilities": {"RAIDSupport": True},
+                    }
+                ],
+                "Drives": [
+                    {"@odata.id": "/redfish/v1/Systems/1/Storage/Drives/0"},
+                    {"@odata.id": "/redfish/v1/Systems/1/Storage/Drives/1"},
+                ],
+                "Volumes": {"@odata.id": "/redfish/v1/Systems/1/Storage/Volumes"},
+            },
+            "/redfish/v1/Systems/1/Storage/Drives/0": {
+                "Name": "Disk 0",
+                "Id": "0",
+                "CapacityBytes": 1000000000000,
+                "MediaType": "SSD",
+                "Protocol": "SAS",
+                "Status": {"Health": "OK"},
+            },
+            "/redfish/v1/Systems/1/Storage/Drives/1": {
+                "Name": "Disk 1",
+                "Id": "1",
+                "CapacityBytes": 2000000000000,
+                "MediaType": "HDD",
+                "Protocol": "SAS",
+                "Status": {"Health": "OK"},
+            },
+            "/redfish/v1/Systems/1/Storage/Volumes": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1/Storage/Volumes/0"}],
+            },
+            "/redfish/v1/Systems/1/Storage/Volumes/0": {
+                "Name": "Virtual Disk 0",
+                "RAIDType": "RAID1",
+                "CapacityBytes": 1000000000000,
+                "Status": {"Health": "OK"},
+            },
+            "/redfish/v1/Chassis": {"Members": []},
+            "/redfish/v1/Managers": {"Members": []},
+        }
+
+        def mock_get(path):
+            return mock_responses.get(path)
+
+        coll._get = mock_get
+
+        data = coll.collect()
+
+        # Storage collected
+        assert "storage" in data
+        assert len(data["storage"]) == 1
+
+        storage = data["storage"][0]
+        assert len(storage["controllers"]) == 1
+        assert storage["controllers"][0]["Name"] == "PERC H755"
+
+        assert len(storage["drives"]) == 2
+        assert storage["drives"][0]["Name"] == "Disk 0"
+        assert storage["drives"][1]["Name"] == "Disk 1"
+
+        assert len(storage["volumes"]) == 1
+        assert storage["volumes"][0]["Name"] == "Virtual Disk 0"
+        assert storage["volumes"][0]["RAIDType"] == "RAID1"
+
+    def test_collect_storage_partial_failure(self):
+        """One drive fetch failure does not prevent other drives from being collected."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+
+        mock_responses = {
+            "/redfish/v1/": {
+                "RedfishVersion": "1.14.0",
+                "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                "Managers": {"@odata.id": "/redfish/v1/Managers"},
+            },
+            "/redfish/v1/Systems": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            },
+            "/redfish/v1/Systems/1": {
+                "Manufacturer": "Dell Inc.",
+                "Storage": {"@odata.id": "/redfish/v1/Systems/1/Storage"},
+            },
+            "/redfish/v1/Systems/1/Storage": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1/Storage/RAID"}],
+            },
+            "/redfish/v1/Systems/1/Storage/RAID": {
+                "StorageControllers": [{"Name": "PERC H755", "Status": {"Health": "OK"}}],
+                "Drives": [
+                    {"@odata.id": "/redfish/v1/Systems/1/Storage/Drives/0"},
+                    {"@odata.id": "/redfish/v1/Systems/1/Storage/Drives/1"},
+                    {"@odata.id": "/redfish/v1/Systems/1/Storage/Drives/2"},
+                ],
+                "Volumes": None,
+            },
+            "/redfish/v1/Systems/1/Storage/Drives/0": {
+                "Name": "Good Disk 0",
+                "MediaType": "SSD",
+                "Status": {"Health": "OK"},
+            },
+            # Drive 1 returns None (simulating fetch failure)
+            # Drive 2 is good
+            "/redfish/v1/Systems/1/Storage/Drives/2": {
+                "Name": "Good Disk 2",
+                "MediaType": "HDD",
+                "Status": {"Health": "OK"},
+            },
+            "/redfish/v1/Chassis": {"Members": []},
+            "/redfish/v1/Managers": {"Members": []},
+        }
+
+        def mock_get(path):
+            return mock_responses.get(path)
+
+        coll._get = mock_get
+
+        data = coll.collect()
+
+        assert "storage" in data
+        storage = data["storage"][0]
+        # 2 out of 3 drives collected (drive 1 failed)
+        assert len(storage["drives"]) == 2
+        assert storage["drives"][0]["Name"] == "Good Disk 0"
+        assert storage["drives"][1]["Name"] == "Good Disk 2"
+
+    def test_collect_no_storage_ref(self):
+        """System without Storage ref — collection succeeds, no storage key."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+
+        mock_responses = {
+            "/redfish/v1/": {
+                "RedfishVersion": "1.14.0",
+                "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                "Managers": {"@odata.id": "/redfish/v1/Managers"},
+            },
+            "/redfish/v1/Systems": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            },
+            "/redfish/v1/Systems/1": {
+                "Manufacturer": "Dell Inc.",
+                "Model": "PowerEdge R750",
+            },
+            "/redfish/v1/Chassis": {"Members": []},
+            "/redfish/v1/Managers": {"Members": []},
+        }
+
+        def mock_get(path):
+            return mock_responses.get(path)
+
+        coll._get = mock_get
+
+        data = coll.collect()
+
+        # No storage key when system has no Storage ref
+        assert "storage" not in data
+
+    def test_collect_storage_credential_safety(self):
+        """P1: Storage collection does not expose credentials in output."""
+        secret = "SUPER_SECRET_STORAGE_PASSWORD_67890"
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            port=443,
+            username="admin",
+            password=secret,
+        )
+
+        mock_responses = {
+            "/redfish/v1/": {
+                "RedfishVersion": "1.14.0",
+                "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                "Chassis": {"@odata.id": "/redfish/v1/Chassis"},
+                "Managers": {"@odata.id": "/redfish/v1/Managers"},
+            },
+            "/redfish/v1/Systems": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+            },
+            "/redfish/v1/Systems/1": {
+                "Manufacturer": "Dell Inc.",
+                "Storage": {"@odata.id": "/redfish/v1/Systems/1/Storage"},
+            },
+            "/redfish/v1/Systems/1/Storage": {
+                "Members": [{"@odata.id": "/redfish/v1/Systems/1/Storage/RAID"}],
+            },
+            "/redfish/v1/Systems/1/Storage/RAID": {
+                "StorageControllers": [{"Name": "PERC H755", "Status": {"Health": "OK"}}],
+                "Drives": [{"@odata.id": "/redfish/v1/Systems/1/Storage/Drives/0"}],
+                "Volumes": None,
+            },
+            "/redfish/v1/Systems/1/Storage/Drives/0": {
+                "Name": "Disk 0",
+                "MediaType": "SSD",
+                "Status": {"Health": "OK"},
+            },
+            "/redfish/v1/Chassis": {"Members": []},
+            "/redfish/v1/Managers": {"Members": []},
+        }
+
+        def mock_get(path):
+            return mock_responses.get(path)
+
+        coll._get = mock_get
+
+        data = coll.collect()
+
+        # Credential must not appear in collected data
+        assert secret not in str(data)
+        assert secret not in repr(data)
+
+
+class TestSSHCollector:
+
+    def test_source_name(self):
+        coll = SSHCollector(host="localhost", username="user")
+        assert coll.source_name == "ssh"
+
+    def test_init_defaults(self):
+        coll = SSHCollector(host="localhost")
+        assert coll.port == 22
+        assert coll.timeout == 30
+
+
+class TestVendorAdapters:
+    def test_dell_adapter(self):
+        raw = {"system": {"SKU": "ABC123", "Manufacturer": "Dell Inc."}}
+        adapter = DellAdapter(raw)
+        assert adapter.get_service_tag() == "ABC123"
+
+    def test_hpe_adapter(self):
+        raw = {"system": {"SerialNumber": "SN456", "Manufacturer": "HPE"}}
+        adapter = HPEAdapter(raw)
+        assert adapter.get_service_tag() == "SN456"
+
+    def test_factory_dell(self):
+        raw = {"system": {"Manufacturer": "Dell Inc."}}
+        adapter = get_vendor_adapter("Dell", raw)
+        assert isinstance(adapter, DellAdapter)
+
+    def test_factory_hpe(self):
+        raw = {"system": {"Manufacturer": "HPE"}}
+        adapter = get_vendor_adapter("HPE", raw)
+        assert isinstance(adapter, HPEAdapter)
+
+    def test_factory_generic(self):
+        raw = {}
+        adapter = get_vendor_adapter("Unknown", raw)
+        assert isinstance(adapter, VendorAdapter)
+
+    def test_dell_management_info(self):
+        raw = {"manager": {"FirmwareVersion": "7.10.30", "Model": "iDRAC9"}}
+        adapter = DellAdapter(raw)
+        info = adapter.get_management_info()
+        assert info["controller"] == "iDRAC"
+        assert info["firmware_version"] == "7.10.30"
+
+    def test_hpe_management_info(self):
+        raw = {"manager": {"FirmwareVersion": "2.78", "Model": "iLO 5"}}
+        adapter = HPEAdapter(raw)
+        info = adapter.get_management_info()
+        assert info["controller"] == "iLO"
+
+    # ── P1 Regression Tests ──────────────────────────────────────────
+
+    def test_credential_not_in_collector_output(self):
+        """P1: Actual password value must not appear in collector output.
+
+        Uses safe_collect() which is the public API for error-safe
+        collection. The password should never be in the result's
+        data, errors, or warnings.
+        """
+        secret = "SUPER_SECRET_TEST_PASSWORD_12345"
+        coll = RedfishCollector(
+            host="192.0.2.1",  # unreachable — will trigger error path
+            port=443,
+            username="admin",
+            password=secret,
+            timeout=1,
+        )
+
+        # safe_collect returns CollectionResult, never raises
+        result = coll.safe_collect()
+
+        # Password must not appear anywhere in the result
+        all_result_strings = (
+            " ".join(result.errors) + " " + " ".join(result.warnings)
+        )
+        assert secret not in all_result_strings
+        assert secret not in str(result.data)
+        assert secret not in repr(result)
+
+    def test_credential_not_in_collector_attributes(self):
+        """P1: Password must be stored as _password, not exposed."""
+        secret = "SUPER_SECRET_TEST_PASSWORD_12345"
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            port=443,
+            username="admin",
+            password=secret,
+        )
+
+        # _password is the private attribute (acceptable)
+        assert hasattr(coll, "_password")
+
+        # But public attributes should not contain the raw password
+        assert coll.username == "admin"
+        # Verify no public attribute holds the raw secret
+        for attr in dir(coll):
+            if attr.startswith("_"):
+                continue
+            val = getattr(coll, attr, None)
+            if isinstance(val, str) and val == secret:
+                raise AssertionError(
+                    f"Raw password found in public attribute: {attr}"
+                )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  Phase 0.2 — Security Hardening Tests
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPhase02_TLSSecurity:
+    """Phase 0.2: TLS verification default and behavior tests."""
+
+    def test_verify_ssl_default_is_true(self):
+        """P0.2: verify_ssl should default to True for security."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        assert coll.verify_ssl is True
+
+    def test_verify_ssl_can_be_disabled_for_self_signed(self):
+        """P0.2: verify_ssl can be set to False for self-signed certs."""
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            username="root",
+            password="pass",
+            verify_ssl=False,
+        )
+        assert coll.verify_ssl is False
+
+    def test_verify_ssl_explicit_true(self):
+        """P0.2: Explicit verify_ssl=True should work."""
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            username="root",
+            password="pass",
+            verify_ssl=True,
+        )
+        assert coll.verify_ssl is True
+
+
+class TestPhase02_RetryLogic:
+    """Phase 0.2: Limited retry on transient errors tests."""
+
+    def test_retry_constants_defined(self):
+        """P0.2: Retry constants should be defined."""
+        from server_manager.collectors.redfish import (
+            MAX_RETRIES,
+            RETRY_BACKOFF_BASE,
+            RETRY_BACKOFF_MAX,
+            RETRYABLE_STATUS_CODES,
+        )
+        assert MAX_RETRIES == 3
+        assert RETRY_BACKOFF_BASE == 1.0
+        assert RETRY_BACKOFF_MAX == 10.0
+        assert 500 in RETRYABLE_STATUS_CODES
+        assert 503 in RETRYABLE_STATUS_CODES
+
+    def test_get_with_retry_method_exists(self):
+        """P0.2: _get_with_retry method should exist."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        assert hasattr(coll, "_get_with_retry")
+        assert callable(getattr(coll, "_get_with_retry"))
+
+    def test_get_once_method_exists(self):
+        """P0.2: _get_once method should exist for single attempt."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        assert hasattr(coll, "_get_once")
+        assert callable(getattr(coll, "_get_once"))
+
+    def test_401_not_retried(self, monkeypatch):
+        """P0.2: 401 authentication errors should not be retried."""
+        import urllib.error
+        call_count = [0]
+
+        def mock_get_once(path):
+            call_count[0] += 1
+            raise urllib.error.HTTPError(
+                url=f"http://test{path}",
+                code=401,
+                msg="Unauthorized",
+                hdrs={},
+                fp=None,
+            )
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        monkeypatch.setattr(coll, "_get_once", mock_get_once)
+        result = coll._get_with_retry("/test")
+
+        # Should only be called once (no retry)
+        assert call_count[0] == 1
+        assert result is None
+
+    def test_503_is_retried(self, monkeypatch):
+        """P0.2: 503 server errors should be retried."""
+        import urllib.error
+        call_count = [0]
+
+        def mock_get_once(path):
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise urllib.error.HTTPError(
+                    url=f"http://test{path}",
+                    code=503,
+                    msg="Service Unavailable",
+                    hdrs={},
+                    fp=None,
+                )
+            return {"success": True}
+
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        monkeypatch.setattr(coll, "_get_once", mock_get_once)
+        result = coll._get_with_retry("/test")
+
+        # Should be called twice (retry once)
+        assert call_count[0] == 2
+        assert result == {"success": True}
+
+
+class TestPhase02_CredentialMasking:
+    """Phase 0.2: Credential masking in errors and logs tests."""
+
+    def test_sanitize_error_message_exists(self):
+        """P0.2: _sanitize_error_message helper should exist."""
+        from server_manager.providers.starlingx import _sanitize_error_message
+        assert callable(_sanitize_error_message)
+
+    def test_mask_secrets_masks_token(self):
+        """P0.2: _mask_secrets should mask tokens."""
+        from server_manager.providers.starlingx import _mask_secrets
+        result = _mask_secrets("token: gAAAAABm1234567890abcdefghij")
+        assert "gAAAAABm1234567890abcdefghij" not in result
+        assert "token: ***" in result or "token***" in result
+
+    def test_mask_secrets_masks_password(self):
+        """P0.2: _mask_secrets should mask passwords."""
+        from server_manager.providers.starlingx import _mask_secrets
+        result = _mask_secrets("password: mysecret123")
+        assert "mysecret123" not in result
+        assert "password: ***" in result or "password***" in result
+
+    def test_mask_secrets_masks_auth_token(self):
+        """P0.2: _mask_secrets should mask X-Auth-Token."""
+        from server_manager.providers.starlingx import _mask_secrets
+        result = _mask_secrets("X-Auth-Token: abcdef1234567890")
+        assert "abcdef1234567890" not in result
+
+    def test_sanitize_applies_masking(self):
+        """P0.2: _sanitize_error_message should apply masking."""
+        from server_manager.providers.starlingx import _sanitize_error_message
+        exc = Exception("token: gAAAAABm1234567890abcdefghij")
+        result = _sanitize_error_message(exc)
+        assert "gAAAAABm1234567890abcdefghij" not in result
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  Phase 1-RF.4.1 — CA Bundle Security Regression Tests
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPhase1RF4_1_SecurityRegression:
+    """Phase 1-RF.4.1: CA bundle security regression tests."""
+
+    def test_ca_bundle_parameter_exists(self):
+        """P1-RF.4.1: ca_bundle parameter should exist."""
+        import inspect
+        sig = inspect.signature(RedfishCollector.__init__)
+        assert "ca_bundle" in sig.parameters
+
+    def test_ca_bundle_default_is_none(self):
+        """P1-RF.4.1: ca_bundle should default to None."""
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        assert coll.ca_bundle is None
+
+    def test_ca_bundle_file_not_found_raises(self, tmp_path):
+        """P1-RF.4.1: Non-existent CA bundle should raise FileNotFoundError."""
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            username="root",
+            password="pass",
+            ca_bundle=str(tmp_path / "nonexistent.pem"),
+        )
+        try:
+            coll._get_once("/test")
+            assert False, "Expected FileNotFoundError"
+        except FileNotFoundError as e:
+            assert "CA bundle not found" in str(e)
+
+    def test_ca_bundle_directory_raises(self, tmp_path):
+        """P1-RF.4.1: Directory path should raise ValueError."""
+        ca_dir = tmp_path / "ca_dir"
+        ca_dir.mkdir()
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            username="root",
+            password="pass",
+            ca_bundle=str(ca_dir),
+        )
+        try:
+            coll._get_once("/test")
+            assert False, "Expected ValueError"
+        except ValueError as e:
+            assert "not a file" in str(e)
+
+    def test_verify_ssl_false_works_without_ca(self):
+        """P1-RF.4.1: verify_ssl=False should work without CA bundle."""
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            username="root",
+            password="pass",
+            verify_ssl=False,
+        )
+        assert coll.verify_ssl is False
+        assert coll.ca_bundle is None
+
+    def test_ca_bundle_error_not_retried(self, tmp_path, monkeypatch):
+        """P1-RF.4.2: CA bundle errors should not trigger retry."""
+        call_count = [0]
+        def mock_get_once(path):
+            call_count[0] += 1
+            raise FileNotFoundError("CA bundle not found")
+        coll = RedfishCollector(
+            host="10.0.0.1",
+            username="root",
+            password="pass",
+            ca_bundle=str(tmp_path / "nonexistent.pem"),
+        )
+        monkeypatch.setattr(coll, '_get_once', mock_get_once)
+        result = coll._get_with_retry("/test")
+        assert call_count[0] == 1
+        assert result is None
+
+    def test_tls_cert_error_not_retried(self, monkeypatch):
+        """P1-RF.4.2: TLS certificate errors should not be retried."""
+        import ssl
+        call_count = [0]
+        def mock_get_once(path):
+            call_count[0] += 1
+            raise ssl.SSLCertVerificationError("certificate verify failed")
+        coll = RedfishCollector(host="10.0.0.1", username="root", password="pass")
+        monkeypatch.setattr(coll, '_get_once', mock_get_once)
+        result = coll._get_with_retry("/test")
+        assert call_count[0] == 1
+        assert result is None
+
+    def test_tls_error_wrapped_in_urlerror_not_retried(self, monkeypatch):
+        """P1-RF.4.2: TLS errors wrapped in URLError should not be retried."""
+        import ssl
+        import urllib.error
+        call_count = [0]
+        def mock_get_on

@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_kubernetes_end_to_end.py",
+  "originalSize": 42794,
+  "sha256": "e9054221b27859f837d9c91b4208b9a3fc9d660df090af62d5d82177715461b2",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_kubernetes_end_to_end.py\""
+}

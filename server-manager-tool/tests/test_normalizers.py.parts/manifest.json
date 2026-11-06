@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_normalizers.py",
+  "originalSize": 37940,
+  "sha256": "ad32327f0a075518290b0b042a2922ebfb83eb065938adb6046dc26cafe3ae1c",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_normalizers.py\""
+}

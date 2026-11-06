@@ -1,0 +1,187 @@
+       assert body["operation_id"] == "op-001"
+        assert body["operation_type"] == "QUERY_STATUS"
+        assert body["resolved"] is True
+        assert body["execution_allowed"] is False
+
+    def test_preview_invalid_operation_type(self, client):
+        c, _ = client
+        r = c.post("/api/v1/operations/preview", json={
+            "operation_id": "op-002",
+            "operation_type": "INVALID_TYPE",
+            "target_canonical_id": "some-id",
+        })
+        assert r.status_code == 400
+        assert r.json()["error"]["code"] == "INVALID_OPERATION_TYPE"
+
+    def test_preview_does_not_execute(self, client):
+        """Verify that preview never calls execute()."""
+        c, ctx = client
+        node_id = ctx.inventory.nodes[0].canonical_id
+        # If execute() were called, the NoOpExecutor raises AssertionError
+        # which would surface as a 500 error.
+        r = c.post("/api/v1/operations/preview", json={
+            "operation_id": "op-003",
+            "operation_type": "RESTART",
+            "target_canonical_id": node_id,
+            "provider_type": "KUBERNETES",
+        })
+        assert r.status_code == 200
+
+
+# ── Recovery Preview ────────────────────────────────────────────────
+
+class TestRecoveryPreview:
+    def test_preview_recovery(self, unhealthy_client):
+        c, ctx = unhealthy_client
+        fault_id = ctx.fault_result.faults[0].fault_id
+        r = c.post("/api/v1/recovery/preview", json={
+            "fault_id": fault_id,
+            "action_type": "RESTART",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["fault_id"] == fault_id
+        assert body["action_type"] == "RESTART"
+        assert "candidate_id" in body
+        assert "safety_result" in body
+
+    def test_preview_recovery_fault_not_found(self, unhealthy_client):
+        c, _ = unhealthy_client
+        r = c.post("/api/v1/recovery/preview", json={
+            "fault_id": "nonexistent-fault",
+            "action_type": "RESTART",
+        })
+        assert r.status_code == 404
+
+    def test_preview_recovery_invalid_action_type(self, unhealthy_client):
+        c, ctx = unhealthy_client
+        fault_id = ctx.fault_result.faults[0].fault_id
+        r = c.post("/api/v1/recovery/preview", json={
+            "fault_id": fault_id,
+            "action_type": "INVALID_ACTION",
+        })
+        assert r.status_code == 400
+        assert r.json()["error"]["code"] == "INVALID_ACTION_TYPE"
+
+    def test_preview_recovery_does_not_execute(self, unhealthy_client):
+        """Verify that recovery preview never calls execute()."""
+        c, ctx = unhealthy_client
+        fault_id = ctx.fault_result.faults[0].fault_id
+        # If execute() were called, the MockRecoveryExecutor raises AssertionError
+        r = c.post("/api/v1/recovery/preview", json={
+            "fault_id": fault_id,
+            "action_type": "RESTART",
+        })
+        assert r.status_code == 200
+
+
+# ── Mutation Safety ──────────────────────────────────────────────────
+
+class TestMutationSafety:
+    def test_no_subprocess_in_management_routes(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert "subprocess" not in source.lower()
+        assert "kubectl" not in source.lower()
+        assert "os.system" not in source
+
+    def test_no_execute_calls_in_management_routes(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert ".execute(" not in source
+        assert "svc.preview(" in source
+
+    def test_no_mutation_in_management_schemas(self):
+        from server_manager.api import management_schemas
+        source = inspect.getsource(management_schemas)
+        assert "subprocess" not in source.lower()
+        assert "kubectl" not in source.lower()
+
+    def test_management_context_no_mutation(self):
+        source = inspect.getsource(ManagementContext)
+        assert "subprocess" not in source.lower()
+        assert "kubectl" not in source.lower()
+        # Check that no actual execution CALLS are made (method calls with .)
+        # but allow method definitions in no-op executors (def execute)
+        assert ".execute(" not in source
+        assert "svc.execute" not in source
+
+    def test_all_endpoints_are_read_only_or_preview(self):
+        from server_manager.api import management_routes
+        source = inspect.getsource(management_routes)
+        assert "@router.put" not in source
+        assert "@router.delete" not in source
+        assert "@router.patch" not in source
+        post_lines = [l for l in source.split('\n') if '@router.post' in l]
+        for line in post_lines:
+            # POST endpoints are either preview-only or discovery run (read-only exploration)
+            assert 'preview' in line.lower() or 'discovery' in line.lower()
+
+
+# ── 503 Error Handling ──────────────────────────────────────────────
+
+class TestServiceUnavailable:
+    def test_inventory_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        assert c.get("/api/v1/inventory").status_code == 503
+
+    def test_health_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        assert c.get("/api/v1/health").status_code == 503
+
+    def test_graph_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        assert c.get("/api/v1/graph/summary").status_code == 503
+
+    def test_faults_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        assert c.get("/api/v1/faults").status_code == 503
+
+    def test_visibility_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        assert c.get("/api/v1/visibility/summary").status_code == 503
+
+    def test_monitoring_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        assert c.get("/api/v1/monitoring/observations").status_code == 503
+
+    def test_operation_preview_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        r = c.post("/api/v1/operations/preview", json={
+            "operation_id": "op-001",
+            "operation_type": "QUERY_STATUS",
+            "target_canonical_id": "some-id",
+        })
+        assert r.status_code == 503
+
+    def test_recovery_preview_returns_503_when_not_configured(self):
+        app = create_app()
+        ctx = ManagementContext()
+        app.dependency_overrides[deps.get_management_context] = lambda: ctx
+        c = TestClient(app)
+        r = c.post("/api/v1/recovery/preview", json={
+            "fault_id": "some-fault",
+            "action_type": "RESTART",
+        })
+        assert r.status_code == 503

@@ -1,0 +1,49 @@
+ report = build_full_graph()
+        for node in report.nodes:
+            assert node.canonical_id
+            # ResourceStatus (Phase 15) uses canonical_id
+            # Graph does NOT store ResourceStatus — lookup via canonical_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  SAFETY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestSafety:
+    """Graph builder safety: no mutation, no provider API calls."""
+
+    def test_graph_builder_has_no_provider_mutation(self):
+        """Graph builder does not create/update/patch/delete entities."""
+        import inspect
+        from server_manager.graph import service as graph_service
+        source = inspect.getsource(graph_service)
+        forbidden = ["create_", "update_", "patch_", "delete_", "scale_", "restart_"]
+        for word in forbidden:
+            assert word not in source, f"Found '{word}' in graph service source"
+
+    def test_graph_builder_does_not_call_provider_api(self):
+        """Graph builder source has no provider API imports or calls."""
+        import inspect
+        from server_manager.graph import service as graph_service
+        source = inspect.getsource(graph_service)
+        # Must NOT import or use provider adapter or collector
+        forbidden_imports = [
+            "from server_manager.providers.kubernetes",
+            "from server_manager.providers.base import ProviderAdapter",
+            "from server_manager.collectors",
+            "import kubernetes",
+            "ProviderAdapter(",
+            "collect(",
+            "list_node", "list_pod", "read_node", "read_pod",
+        ]
+        for pattern in forbidden_imports:
+            assert pattern not in source, (
+                f"Found forbidden provider API pattern '{pattern}' in graph service"
+            )
+        # GraphBuilder.build only accepts DiscoveryResult
+        build_sig = inspect.signature(graph_service.GraphBuilder.build)
+        params = list(build_sig.parameters.keys())
+        assert "discovery_result" in params
+        assert "adapter" not in params
+        assert "provider" not in params

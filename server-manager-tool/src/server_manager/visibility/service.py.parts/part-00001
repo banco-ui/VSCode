@@ -1,0 +1,566 @@
+"""Alert & Operational Visibility Service — Phase 20.
+
+Two services:
+
+1. AlertService — converts Phase 17 Faults to Alerts, manages alert lifecycle,
+   prevents duplicate active alerts, propagates fault resolution.
+
+2. OperationalVisibilityService — read-only aggregation of existing
+   discovery, health, fault, alert, recovery, and operation data into
+   a single operational summary.
+
+    Fault (Phase 17)
+        ↓
+    AlertService.create_alert(fault)
+        ↓
+    Alert (OPEN)
+        ↓
+    acknowledge / resolve / close
+        ↓
+    OperationalVisibilityService.get_summary()
+        ↓
+    OperationalSummary (read-only)
+
+SAFETY PRINCIPLES:
+    - AlertService updates ONLY its own in-memory alert state
+    - OperationalVisibilityService is 100% read-only
+    - No provider API calls
+    - No subprocess / shell / kubectl
+    - No RecoveryExecutor.execute()
+    - No OperationService.execute()
+    - No graph mutation
+    - No health mutation
+    - No fault detection mutation
+    - No inventory mutation
+    - No persistent storage (in-memory only)
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from server_manager.discovery.models import CanonicalInventory
+from server_manager.fault.models import Fault, FaultResult, FaultStatus, Severity
+from server_manager.graph.service import GraphQuery
+from server_manager.health.models import HealthReport, HealthResult, HealthStatus
+from server_manager.models.canonical import ProviderType
+
+from .models import (
+    Alert,
+    AlertCreationResult,
+    AlertNotFoundError,
+    AlertStatus,
+    AlertTransitionError,
+    EntityStatus,
+    HealthSummary,
+    InfrastructureSummary,
+    OperationalSummary,
+    ResourceSummary,
+    _make_alert_id,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  VALID LIFECYCLE TRANSITIONS
+# ════════════════════════════════════════════════════════════════════════
+
+_VALID_TRANSITIONS: dict[AlertStatus, set[AlertStatus]] = {
+    AlertStatus.OPEN: {AlertStatus.ACKNOWLEDGED, AlertStatus.RESOLVED},
+    AlertStatus.ACKNOWLEDGED: {AlertStatus.RESOLVED},
+    AlertStatus.RESOLVED: {AlertStatus.CLOSED},
+    AlertStatus.CLOSED: set(),  # terminal state — no transitions out
+}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  ALERT SERVICE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class AlertService:
+    """Alert service — Fault → Alert conversion and lifecycle management.
+
+    In-memory only. No persistence. No external delivery.
+
+    The service does NOT:
+        ❌ Execute recovery or operations
+        ❌ Call provider APIs
+        ❌ Modify fault detection state
+        ❌ Modify health state
+        ❌ Modify inventory or graph
+        ❌ Infer root cause or recovery actions
+        ❌ Automatically trigger any action
+    """
+
+    def __init__(self) -> None:
+        self._alerts: dict[str, Alert] = {}
+
+    # ── Fault → Alert Conversion ──────────────────────────────────
+
+    def create_alert(self, fault: Fault) -> AlertCreationResult:
+        """Convert a detected Fault to an Alert.
+
+        Rules:
+            - Missing evidence → no alert
+            - Duplicate active alert for same fault → no new alert
+            - Fault severity preserved
+            - Fault evidence preserved
+            - Fault identity traceable via fault_id
+        """
+        # Missing evidence → no alert
+        if not fault.evidence:
+            return AlertCreationResult(
+                alert=None,
+                created=False,
+                reason="Missing evidence — cannot create alert",
+            )
+
+        alert_id = _make_alert_id(fault.fault_id)
+
+        # Duplicate active alert check
+        existing = self._alerts.get(alert_id)
+        if existing is not None and existing.is_active:
+            return AlertCreationResult(
+                alert=None,
+                created=False,
+                reason=(
+                    f"Duplicate active alert for fault {fault.fault_id} "
+                    f"— existing alert {alert_id} is {existing.status.value}"
+                ),
+            )
+
+        # Build the alert from the fault
+        now = datetime.now(timezone.utc).isoformat()
+        provider_type = ProviderType.UNKNOWN
+        if fault.source is not None:
+            provider_type = getattr(
+                fault.source, "provider_type", ProviderType.UNKNOWN
+            )
+
+        alert = Alert(
+            alert_id=alert_id,
+            fault_id=fault.fault_id,
+            entity_id=fault.entity_id,
+            fault_type=fault.fault_type,
+            severity=fault.severity,
+            status=AlertStatus.OPEN,
+            provider_type=provider_type,
+            canonical_entity_type=fault.evidence.get("entity_type", ""),
+            summary=(
+                f"{fault.fault_type.value} on {fault.entity_id} "
+                f"({fault.severity.value})"
+            ),
+            details={
+                "fault_status": fault.status.value,
+                "detected_at": fault.detected_at,
+            },
+            evidence=dict(fault.evidence),
+            source=fault.source,
+            created_at=now,
+            updated_at=now,
+        )
+
+        self._alerts[alert_id] = alert
+
+        return AlertCreationResult(
+            alert=alert,
+            created=True,
+            reason="Alert created from fault",
+        )
+
+    # ── Lifecycle Operations ──────────────────────────────────────
+
+    def acknowledge(
+        self,
+        alert_id: str,
+        acknowledged_by: str = "system",
+        note: Optional[str] = None,
+    ) -> Alert:
+        """Transition an alert from OPEN to ACKNOWLEDGED."""
+        alert = self._get_or_raise(alert_id)
+        self._transition(alert, AlertStatus.ACKNOWLEDGED)
+        now = datetime.now(timezone.utc).isoformat()
+        alert.acknowledged_at = now
+        alert.acknowledged_by = acknowledged_by
+        if note:
+            alert.details["acknowledge_note"] = note
+        alert.updated_at = now
+        return alert
+
+    def resolve(
+        self, alert_id: str, note: Optional[str] = None,
+    ) -> Alert:
+        """Transition an alert from OPEN or ACKNOWLEDGED to RESOLVED."""
+        alert = self._get_or_raise(alert_id)
+        self._transition(alert, AlertStatus.RESOLVED)
+        now = datetime.now(timezone.utc).isoformat()
+        alert.resolved_at = now
+        if note:
+            alert.details["resolution_note"] = note
+        alert.updated_at = now
+        return alert
+
+    def close(self, alert_id: str) -> Alert:
+        """Transition an alert from RESOLVED to CLOSED."""
+        alert = self._get_or_raise(alert_id)
+        self._transition(alert, AlertStatus.CLOSED)
+        now = datetime.now(timezone.utc).isoformat()
+        alert.closed_at = now
+        alert.updated_at = now
+        return alert
+
+    # ── Fault Resolution Propagation ──────────────────────────────
+
+    def on_fault_resolved(self, fault_id: str) -> Optional[Alert]:
+        """Propagate fault resolution to the corresponding alert.
+
+        If an active (OPEN or ACKNOWLEDGED) alert exists for the fault,
+        transition it to RESOLVED. Preserves original alert identity.
+        Returns the resolved alert, or None if no active alert exists.
+        """
+        alert_id = _make_alert_id(fault_id)
+        alert = self._alerts.get(alert_id)
+        if alert is None or not alert.is_active:
+            return None
+        self._transition(alert, AlertStatus.RESOLVED)
+        now = datetime.now(timezone.utc).isoformat()
+        alert.resolved_at = now
+        alert.details["resolved_by_fault"] = True
+        alert.updated_at = now
+        return alert
+
+    # ── Query Operations ──────────────────────────────────────────
+
+    def get_alert(self, alert_id: str) -> Optional[Alert]:
+        """Get a single alert by alert_id. Returns None if not found."""
+        return self._alerts.get(alert_id)
+
+    def get_alerts(
+        self, status_filter: Optional[AlertStatus] = None,
+    ) -> list[Alert]:
+        """Get all alerts, optionally filtered by status."""
+        if status_filter is None:
+            return list(self._alerts.values())
+        return [a for a in self._alerts.values() if a.status == status_filter]
+
+    @property
+    def alert_count(self) -> int:
+        return len(self._alerts)
+
+    @property
+    def active_alert_count(self) -> int:
+        return sum(1 for a in self._alerts.values() if a.is_active)
+
+    # ── Internal Helpers ──────────────────────────────────────────
+
+    def _get_or_raise(self, alert_id: str) -> Alert:
+        alert = self._alerts.get(alert_id)
+        if alert is None:
+            raise AlertNotFoundError(alert_id)
+        return alert
+
+    def _transition(self, alert: Alert, to_status: AlertStatus) -> None:
+        """Validate and perform a lifecycle transition."""
+        allowed = _VALID_TRANSITIONS.get(alert.status, set())
+        if to_status not in allowed:
+            raise AlertTransitionError(
+                alert_id=alert.alert_id,
+                from_status=alert.status,
+                to_status=to_status,
+            )
+        alert.status = to_status
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  OPERATIONAL VISIBILITY SERVICE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class OperationalVisibilityService:
+    """Read-only operational visibility service.
+
+    Aggregates existing discovery, health, fault, alert, recovery, and
+    operation data into a single operational summary.
+
+    This service is 100% READ-ONLY:
+        ❌ No mutation of infrastructure
+        ❌ No execution of kubectl / shell / provider APIs
+        ❌ No RecoveryExecutor.execute()
+        ❌ No OperationService.execute()
+        ❌ No graph mutation
+        ❌ No health mutation
+        ❌ No fault detection mutation
+        ❌ No inventory mutation
+
+    All data comes from existing models/services passed in at construction
+    or via update methods. No new data is inferred or invented.
+    """
+
+    def __init__(
+        self,
+        alert_service: Optional[AlertService] = None,
+    ) -> None:
+        self._alert_service = alert_service or AlertService()
+        self._inventory: Optional[CanonicalInventory] = None
+        self._health_report: Optional[HealthReport] = None
+        self._fault_result: Optional[FaultResult] = None
+        self._graph_query: Optional[GraphQuery] = None
+        self._recovery_candidates: list[Any] = []
+        self._recovery_results: list[Any] = []
+        self._operation_results: list[Any] = []
+
+    # ── Data Sources (read-only setters — no mutation of source) ──
+
+    def set_inventory(self, inventory: Optional[CanonicalInventory]) -> None:
+        """Set the canonical inventory for visibility queries."""
+        self._inventory = inventory
+
+    def set_health_report(
+        self, report: Optional[HealthReport]
+    ) -> None:
+        """Set the health report for visibility queries."""
+        self._health_report = report
+
+    def set_fault_result(
+        self, result: Optional[FaultResult]
+    ) -> None:
+        """Set the fault detection result for visibility queries."""
+        self._fault_result = result
+
+    def set_graph_query(self, query: Optional[GraphQuery]) -> None:
+        """Set the graph query for read-only context lookup."""
+        self._graph_query = query
+
+    def set_recovery_candidates(
+        self, candidates: list[Any]
+    ) -> None:
+        """Set recovery candidates for visibility queries."""
+        self._recovery_candidates = candidates
+
+    def set_recovery_results(
+        self, results: list[Any]
+    ) -> None:
+        """Set recovery execution results for visibility queries."""
+        self._recovery_results = results
+
+    def set_operation_results(
+        self, results: list[Any]
+    ) -> None:
+        """Set operation results for visibility queries."""
+        self._operation_results = results
+
+    @property
+    def alert_service(self) -> AlertService:
+        return self._alert_service
+
+    # ── Read-Only Query Methods ───────────────────────────────────
+
+    def get_summary(self) -> OperationalSummary:
+        """Generate a read-only operational summary.
+
+        All values come from existing models/services. No mutation.
+        """
+        return OperationalSummary(
+            infrastructure=self._summarize_infrastructure(),
+            health=self._summarize_health(),
+            resources=self._summarize_resources(),
+            faults=self._summarize_faults(),
+            alerts=self._summarize_alerts(),
+            operations=self._summarize_operations(),
+        )
+
+    def get_alerts(
+        self, status_filter: Optional[AlertStatus] = None
+    ) -> list[Alert]:
+        """Get alerts (read-only query)."""
+        return self._alert_service.get_alerts(status_filter)
+
+    def get_alert(self, alert_id: str) -> Optional[Alert]:
+        """Get a single alert by ID (read-only query)."""
+        return self._alert_service.get_alert(alert_id)
+
+    def get_faults(self) -> list[Fault]:
+        """Get faults from the fault result (read-only query)."""
+        if self._fault_result is None:
+            return []
+        return list(self._fault_result.faults)
+
+    def get_entity_status(self, entity_id: str) -> EntityStatus:
+        """Get read-only operational status for a single entity."""
+        entity_type = ""
+        health_status = "UNKNOWN"
+        availability_status = "UNKNOWN"
+
+        if self._health_report is not None:
+            for result in self._health_report.results:
+                if result.entity_id == entity_id:
+                    entity_type = result.entity_type
+                    health_status = result.status.value
+                    availability_status = result.availability.value
+                    break
+
+        if self._graph_query is not None:
+            node = self._graph_query.get_node(entity_id)
+            if node is not None and not entity_type:
+                entity_type = node.entity_type.value
+
+        fault_ids: list[str] = []
+        if self._fault_result is not None:
+            for fault in self._fault_result.faults:
+                if fault.entity_id == entity_id:
+                    fault_ids.append(fault.fault_id)
+
+        alert_ids: list[str] = []
+        for alert in self._alert_service.get_alerts():
+            if alert.entity_id == entity_id and alert.is_active:
+                alert_ids.append(alert.alert_id)
+
+        return EntityStatus(
+            entity_id=entity_id,
+            entity_type=entity_type,
+            health_status=health_status,
+            availability_status=availability_status,
+            active_faults=len(fault_ids),
+            active_alerts=len(alert_ids),
+            alert_ids=alert_ids,
+            fault_ids=fault_ids,
+        )
+
+    # ── Internal Summarizers ──────────────────────────────────────
+
+    def _summarize_infrastructure(self) -> InfrastructureSummary:
+        inv = self._inventory
+        if inv is None:
+            return InfrastructureSummary()
+        return InfrastructureSummary(
+            total_entities=inv.entity_count,
+            platforms=len(inv.platforms),
+            clusters=len(inv.clusters),
+            nodes=len(inv.nodes),
+            execution_environments=len(inv.execution_environments),
+            workloads=len(inv.workloads),
+            networks=len(inv.networks),
+            storages=len(inv.storages),
+            accelerators=len(inv.accelerators),
+            physicals=len(inv.physicals),
+            os_entities=len(inv.os_entities),
+        )
+
+    def _summarize_health(self) -> HealthSummary:
+        if self._health_report is None:
+            return HealthSummary()
+        results = self._health_report.results
+        counts = {
+            HealthStatus.HEALTHY: 0,
+            HealthStatus.DEGRADED: 0,
+            HealthStatus.UNHEALTHY: 0,
+            HealthStatus.UNKNOWN: 0,
+        }
+        for r in results:
+            counts[r.status] = counts.get(r.status, 0) + 1
+        return HealthSummary(
+            total_assessed=len(results),
+            healthy=counts[HealthStatus.HEALTHY],
+            degraded=counts[HealthStatus.DEGRADED],
+            unhealthy=counts[HealthStatus.UNHEALTHY],
+            unknown=counts[HealthStatus.UNKNOWN],
+        )
+
+    def _summarize_resources(self) -> ResourceSummary:
+        if self._health_report is None:
+            return ResourceSummary()
+        total_rs = 0
+        total_ci = 0
+        entities_with_res = 0
+        for r in self._health_report.results:
+            if r.resource_statuses or r.capacity_infos:
+                entities_with_res += 1
+            total_rs += len(r.resource_statuses)
+            total_ci += len(r.capacity_infos)
+        return ResourceSummary(
+            entities_with_resources=entities_with_res,
+            total_resource_statuses=total_rs,
+            total_capacity_infos=total_ci,
+        )
+
+    def _summarize_faults(self):
+        from .models import FaultSummary as _FS
+        if self._fault_result is None:
+            return _FS()
+        fr = self._fault_result
+        return _FS(
+            total_faults=len(fr.faults),
+            detected=len(fr.newly_detected),
+            ongoing=len(fr.ongoing),
+            resolved=len(fr.resolved_fault_ids),
+        )
+
+    def _summarize_alerts(self):
+        from .models import AlertSummary as _AS
+        alerts = self._alert_service.get_alerts()
+        counts: dict[str, int] = {}
+        for a in alerts:
+            counts[a.status.value] = counts.get(a.status.value, 0) + 1
+        return _AS(
+            total_alerts=len(alerts),
+            open=counts.get(AlertStatus.OPEN.value, 0),
+            acknowledged=counts.get(AlertStatus.ACKNOWLEDGED.value, 0),
+            resolved=counts.get(AlertStatus.RESOLVED.value, 0),
+            closed=counts.get(AlertStatus.CLOSED.value, 0),
+        )
+
+    def _summarize_operations(self):
+        from .models import OperationSummary as _OS
+        total_candidates = len(self._recovery_candidates)
+        rec_executed = sum(
+            1 for r in self._recovery_results
+            if _safe_status(r, "EXECUTED")
+        )
+        rec_verified = sum(
+            1 for r in self._recovery_results
+            if _safe_status(r, "VERIFIED")
+        )
+        rec_failed = sum(
+            1 for r in self._recovery_results
+            if _safe_status(r, "FAILED")
+        )
+        total_ops = len(self._operation_results)
+        ops_executed = sum(
+            1 for r in self._operation_results
+            if _safe_status(r, "EXECUTED")
+        )
+        ops_verified = sum(
+            1 for r in self._operation_results
+            if _safe_status(r, "VERIFIED")
+        )
+        ops_failed = sum(
+            1 for r in self._operation_results
+            if _safe_status(r, "FAILED")
+        )
+        return _OS(
+            total_recovery_candidates=total_candidates,
+            recovery_executed=rec_executed,
+            recovery_verified=rec_verified,
+            recovery_failed=rec_failed,
+            total_operation_results=total_ops,
+            operations_executed=ops_executed,
+            operations_verified=ops_verified,
+            operations_failed=ops_failed,
+        )
+
+
+def _safe_status(obj: Any, status_value: str) -> bool:
+    """Safely check if an object's status field matches a value."""
+    status = getattr(obj, "status", None)
+    if status is None:
+        return False
+    if hasattr(status, "value"):
+        return status.value == status_value
+    return str(status) == status_value
+
+
+
+

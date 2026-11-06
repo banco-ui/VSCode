@@ -1,0 +1,9 @@
+overy()
+        inv = ctx.inventory
+        if inv and not inv.nodes:
+            node_health = [
+                r for r in ctx.health_report.results
+                if r.entity_type == "Node"
+            ]
+            assert len(node_health) == 0
+

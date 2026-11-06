@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/normalizers/redfish_normalizer.py",
+  "originalSize": 17686,
+  "sha256": "8e0755098c3ef5761c8e460a32a27af37273731bed515518e10e708305761b17",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/normalizers/redfish_normalizer.py\""
+}

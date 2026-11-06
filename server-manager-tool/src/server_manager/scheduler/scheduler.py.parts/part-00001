@@ -1,0 +1,671 @@
+"""Scheduler Core — Phase 11D-2.
+
+Main scheduler loop, bounded worker pool, Orchestrator integration.
+Post-collection alert evaluation integration.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor, Future
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Callable, Any
+
+from ..orchestrator.orchestrator import Orchestrator
+from ..orchestrator.models import OrchestrationResult
+from ..store.store import InventoryStore
+from ..alert import AlertEngine, AlertStore, AlertEvaluationContext
+from .models import ScheduleDefinition, ScheduleExecution
+from .store import SchedulerStore
+
+logger = logging.getLogger(__name__)
+
+# Default configuration
+DEFAULT_POLL_INTERVAL = 60  # seconds
+DEFAULT_WORKER_LIMIT = 2
+DEFAULT_LOCK_RETRY_COUNT = 3
+DEFAULT_LOCK_RETRY_BACKOFF = 0.1
+
+
+class SchedulerConfig:
+    """Scheduler runtime configuration."""
+    
+    def __init__(
+        self,
+        poll_interval: int = DEFAULT_POLL_INTERVAL,
+        worker_limit: int = DEFAULT_WORKER_LIMIT,
+        lock_retry_count: int = DEFAULT_LOCK_RETRY_COUNT,
+        lock_retry_backoff: float = DEFAULT_LOCK_RETRY_BACKOFF,
+        db_path: str = ":memory:",
+        enabled: bool = False,  # Disabled by default for safety
+        stale_timeout_seconds: int = 300,  # Phase 10D: 5 minutes default
+    ) -> None:
+        self.poll_interval = poll_interval
+        self.worker_limit = worker_limit
+        self.lock_retry_count = lock_retry_count
+        self.lock_retry_backoff = lock_retry_backoff
+        self.db_path = db_path
+        self.enabled = enabled
+        self.stale_timeout_seconds = stale_timeout_seconds  # Phase 10D
+
+
+class Scheduler:
+    """Scheduler for automated collection orchestration.
+    
+    Responsibilities:
+    - WHEN to run (schedule timing)
+    - WHO to run (server selection)
+    - Duplicate execution prevention
+    - Bounded concurrency
+    - SQLite lock retry
+    
+    NOT responsibilities:
+    - HOW to collect (Orchestrator)
+    - Credentials management
+    - Direct Collector calls
+    """
+    
+    def __init__(
+        self,
+        config: SchedulerConfig,
+        orchestrator_factory: Optional[Callable[[], Orchestrator]] = None,
+        store_factory: Optional[Callable[[], InventoryStore]] = None,
+        alert_store_factory: Optional[Callable[[], AlertStore]] = None,
+    ) -> None:
+        self.config = config
+        self._store: Optional[SchedulerStore] = None
+        self._orchestrator_factory = orchestrator_factory
+        self._store_factory = store_factory
+        self._alert_store_factory = alert_store_factory
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._stop_event = threading.Event()
+        self._loop_thread: Optional[threading.Thread] = None
+        self._active_futures: list[Future] = []
+        self._running_count = 0
+        self._running_lock = threading.Lock()
+    
+    @property
+    def store(self) -> SchedulerStore:
+        if self._store is None:
+            self._store = SchedulerStore(
+                db_path=self.config.db_path,
+                lock_retry_count=self.config.lock_retry_count,
+                lock_retry_backoff=self.config.lock_retry_backoff,
+            )
+        return self._store
+    
+    def _get_orchestrator(self) -> Orchestrator:
+        """Get Orchestrator instance from factory."""
+        if self._orchestrator_factory is None:
+            raise RuntimeError("Orchestrator factory not configured")
+        return self._orchestrator_factory()
+    
+    def _get_inventory_store(self) -> InventoryStore:
+        """Get InventoryStore instance from factory."""
+        if self._store_factory is None:
+            raise RuntimeError("InventoryStore factory not configured")
+        return self._store_factory()
+    
+    def _get_alert_engine(self) -> AlertEngine:
+        """Get AlertEngine instance from factory."""
+        if self._alert_store_factory is None:
+            raise RuntimeError("AlertStore factory not configured")
+        alert_store = self._alert_store_factory()
+        return AlertEngine(alert_store)
+    
+    def _acquire_worker_slot(self) -> bool:
+        """Try to acquire a worker slot. Returns True if acquired."""
+        with self._running_lock:
+            if self._running_count < self.config.worker_limit:
+                self._running_count += 1
+                return True
+            return False
+    
+    def _release_worker_slot(self) -> None:
+        """Release a worker slot."""
+        with self._running_lock:
+            self._running_count = max(0, self._running_count - 1)
+    
+    def _execute_collection(
+        self,
+        schedule: ScheduleDefinition,
+        server_id: str,
+        execution: ScheduleExecution,
+    ) -> None:
+        """Execute collection for a single server.
+        
+        This is the worker function that runs in a thread pool.
+        """
+        logger.info(
+            "Starting scheduled collection: schedule=%s server=%s execution=%s",
+            schedule.schedule_id,
+            server_id,
+            execution.execution_id,
+        )
+        
+        try:
+            # Get Orchestrator and InventoryStore
+            orchestrator = self._get_orchestrator()
+            inv_store = self._get_inventory_store()
+            
+            # Check server is registered
+            entry = inv_store.get_server(server_id)
+            if entry is None:
+                logger.warning(
+                    "Server %s not found in registry, skipping",
+                    server_id,
+                )
+                self.store.complete_execution(
+                    execution.execution_id,
+                    success=False,
+                    error_message=f"Server {server_id} not found in registry",
+                )
+                return
+            
+            # Mark execution as started
+            run_id = f"run-{uuid.uuid4().hex[:12]}"
+            self.store.start_execution(execution, run_id)
+            
+            # Run orchestration
+            result: OrchestrationResult = orchestrator.run(server_id)
+            
+            # Save result to InventoryStore
+            inv_store.save_orchestration_result(result)
+            
+            # Phase 11D-2: Evaluate alerts after inventory persistence
+            alert_evaluation_success = True
+            alert_error_message = None
+            
+            try:
+                # Get snapshot_id from the saved result
+                snapshot_id = f"snap-{result.run_id}"
+                
+                # Create alert evaluation context
+                alert_context = AlertEvaluationContext(
+                    server_id=result.server_id,
+                    snapshot_id=snapshot_id,
+                    collection_success=result.status.value in ("SUCCESS", "PARTIAL"),
+                    health_status=result.canonical_inventory.health_status if result.canonical_inventory else "UNKNOWN",
+                    verification_discrepancy=result.verification.has_discrepancy if result.verification else False,
+                )
+                
+                # Evaluate alerts
+                alert_engine = self._get_alert_engine()
+                alert_result = alert_engine.evaluate(alert_context)
+                
+                if not alert_result.success:
+                    alert_evaluation_success = False
+                    alert_error_message = alert_result.error_message
+                    logger.warning(
+                        "Alert evaluation failed: server=%s snapshot=%s error=%s",
+                        result.server_id,
+                        snapshot_id,
+                        alert_error_message,
+                    )
+                
+            except Exception as e:
+                alert_evaluation_success = False
+                alert_error_message = str(e)
+                logger.exception(
+                    "Alert evaluation failed: server=%s error=%s",
+                    result.server_id,
+                    e,
+                )
+            
+            # Determine final execution status
+            # Collection success + Alert success = SUCCESS
+            # Collection success + Alert failure = PARTIAL
+            collection_success = result.status.value in ("SUCCESS", "PARTIAL")
+            if collection_success and not alert_evaluation_success:
+                # Alert evaluation failed but collection succeeded → PARTIAL
+                final_status = "PARTIAL"
+                logger.info(
+                    "Collection succeeded but alert evaluation failed: server=%s run_id=%s → PARTIAL",
+                    result.server_id,
+                    result.run_id,
+                )
+            else:
+                final_status = result.status.value
+            
+            # Update schedule
+            next_run = schedule.calculate_next_run()
+            success = final_status in ("SUCCESS", "PARTIAL")
+            
+            self.store.update_schedule_after_execution(
+                schedule.schedule_id,
+                success=success,
+                next_run_at=next_run.isoformat(),
+            )
+            
+            # Mark execution complete
+            self.store.complete_execution(
+                execution.execution_id,
+                success=success,
+                error_message=None if alert_evaluation_success else alert_error_message,
+            )
+            
+            logger.info(
+                "Completed scheduled collection: schedule=%s server=%s run_id=%s status=%s",
+                schedule.schedule_id,
+                server_id,
+                run_id,
+                result.status.value,
+            )
+            
+        except Exception as e:
+            logger.exception(
+                "Scheduled collection failed: schedule=%s server=%s error=%s",
+                schedule.schedule_id,
+                server_id,
+                e,
+            )
+            self.store.complete_execution(
+                execution.execution_id,
+                success=False,
+                error_message=str(e),
+            )
+        finally:
+            self._release_worker_slot()
+    
+    def _process_due_schedules(self) -> None:
+        """Process all due schedules."""
+        try:
+            due_schedules = self.store.get_due_schedules()
+        except Exception as e:
+            logger.error("Failed to get due schedules: %s", e)
+            return
+        
+        for schedule in due_schedules:
+            if self._stop_event.is_set():
+                break
+            
+            for server_id in schedule.server_ids:
+                if self._stop_event.is_set():
+                    break
+                
+                # Try to acquire worker slot
+                if not self._acquire_worker_slot():
+                    logger.debug(
+                        "Worker pool saturated (%d/%d), skipping",
+                        self._running_count,
+                        self.config.worker_limit,
+                    )
+                    continue
+                
+                # Try to claim execution (atomic duplicate prevention)
+                try:
+                    execution = self.store.claim_execution(schedule, server_id)
+                except Exception as e:
+                    logger.error(
+                        "Failed to claim execution: schedule=%s server=%s error=%s",
+                        schedule.schedule_id,
+                        server_id,
+                        e,
+                    )
+                    self._release_worker_slot()
+                    continue
+                
+                if execution is None:
+                    # Duplicate claim prevented
+                    self._release_worker_slot()
+                    continue
+                
+                # Submit to worker pool
+                future = self._executor.submit(
+                    self._execute_collection,
+                    schedule,
+                    server_id,
+                    execution,
+                )
+                self._active_futures.append(future)
+    
+    def _cleanup_completed_futures(self) -> None:
+        """Remove completed futures from tracking list."""
+        self._active_futures = [
+            f for f in self._active_futures if not f.done()
+        ]
+    
+    def _loop(self) -> None:
+        """Main scheduler loop."""
+        logger.info(
+            "Scheduler loop started (poll_interval=%ds, worker_limit=%d)",
+            self.config.poll_interval,
+            self.config.worker_limit,
+        )
+        
+        while not self._stop_event.is_set():
+            # Process due schedules
+            self._process_due_schedules()
+            
+            # Cleanup completed futures
+            self._cleanup_completed_futures()
+            
+            # Wait for next poll
+            self._stop_event.wait(self.config.poll_interval)
+        
+        logger.info("Scheduler loop stopped")
+    
+    def start(self) -> None:
+        """Start the scheduler loop.
+        
+        Phase 10D: Crash Recovery
+        Performs recovery scan before starting normal polling.
+        """
+        if not self.config.enabled:
+            logger.warning("Scheduler is disabled, not starting")
+            return
+        
+        if self._loop_thread is not None:
+            logger.warning("Scheduler already running")
+            return
+        
+        # Initialize executor
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.config.worker_limit,
+            thread_name_prefix="scheduler-worker",
+        )
+        
+        # Phase 10D: Recovery scan BEFORE normal polling
+        self._perform_recovery_scan()
+        
+        # Start loop thread
+        self._stop_event.clear()
+        self._loop_thread = threading.Thread(
+            target=self._loop,
+            name="scheduler-loop",
+            daemon=True,
+        )
+        self._loop_thread.start()
+        
+        logger.info("Scheduler started")
+    
+    def _perform_recovery_scan(self) -> None:
+        """Phase 10D: Scan for and recover stale executions on startup.
+        
+        This method:
+        1. Detects RUNNING executions that are stale (timeout exceeded)
+        2. Marks them as RECOVERED with recovery metadata
+        3. Logs recovery actions for observability
+        
+        Recovery is idempotent - running twice won't cause duplicate recovery.
+        """
+        logger.info("Phase 10D: Starting recovery scan...")
+        
+        try:
+            # Get stale executions (RUNNING for too long)
+            stale_executions = self.store.get_stale_executions(
+                stale_timeout_seconds=self.config.stale_timeout_seconds
+            )
+            
+            if not stale_executions:
+                logger.info("Phase 10D: No stale executions found, recovery complete")
+                return
+            
+            logger.info(
+                "Phase 10D: Found %d stale execution(s) to recover",
+                len(stale_executions),
+            )
+            
+            import uuid
+            recovery_id = f"recovery-{uuid.uuid4().hex[:12]}"
+            recovered_count = 0
+            skipped_count = 0
+            
+            for execution in stale_executions:
+                try:
+                    # Attempt recovery (idempotent operation)
+                    success = self.store.recover_execution(
+                        execution.execution_id,
+                        recovery_id,
+                    )
+                    
+                    if success:
+                        recovered_count += 1
+                        logger.info(
+                            "Phase 10D: Recovered stale execution=%s schedule=%s server=%s started_at=%s",
+                            execution.execution_id,
+                            execution.schedule_id,
+                            execution.server_id,
+                            execution.started_at,
+                        )
+                    else:
+                        skipped_count += 1
+                        logger.debug(
+                            "Phase 10D: Execution already recovered, skipping execution=%s",
+                            execution.execution_id,
+                        )
+                        
+                except Exception as e:
+                    logger.error(
+                        "Phase 10D: Failed to recover execution=%s error=%s",
+                        execution.execution_id,
+                        e,
+                    )
+                    # Continue with other executions - isolation
+            
+            logger.info(
+                "Phase 10D: Recovery complete - recovered=%d skipped=%d",
+                recovered_count,
+                skipped_count,
+            )
+            
+        except Exception as e:
+            logger.error("Phase 10D: Recovery scan failed: %s", e)
+            # Don't prevent scheduler startup - continue with normal polling
+    
+    def stop(self, wait: bool = True, timeout: float = 30.0) -> None:
+        """Stop the scheduler loop.
+        
+        Args:
+            wait: If True, wait for running executions to complete.
+            timeout: Maximum time to wait for shutdown.
+        """
+        if self._loop_thread is None:
+            return
+        
+        logger.info("Stopping scheduler...")
+        
+        # Signal loop to stop
+        self._stop_event.set()
+        
+        # Wait for loop thread
+        self._loop_thread.join(timeout=5.0)
+        self._loop_thread = None
+        
+        # Shutdown executor
+        if self._executor is not None:
+            self._executor.shutdown(wait=wait, cancel_futures=not wait)
+            self._executor = None
+        
+        # Clear active futures
+        self._active_futures.clear()
+        
+        logger.info("Scheduler stopped")
+    
+    def add_schedule(self, schedule: ScheduleDefinition) -> None:
+        """Add or update a schedule definition."""
+        self.store.save_schedule(schedule)
+        logger.info("Schedule added/updated: %s", schedule.schedule_id)
+    
+    def remove_schedule(self, schedule_id: str) -> None:
+        """Remove a schedule definition."""
+        # Note: This would need a delete method in SchedulerStore
+        logger.warning("remove_schedule not implemented: %s", schedule_id)
+    
+    def enable_schedule(self, schedule_id: str) -> None:
+        """Enable a schedule."""
+        schedule = self.store.get_schedule(schedule_id)
+        if schedule is None:
+            logger.warning("Schedule not found: %s", schedule_id)
+            return
+        
+        schedule.enabled = True
+        schedule.updated_at = datetime.now(timezone.utc).isoformat()
+        self.store.save_schedule(schedule)
+        logger.info("Schedule enabled: %s", schedule_id)
+    
+    def disable_schedule(self, schedule_id: str) -> None:
+        """Disable a schedule."""
+        schedule = self.store.get_schedule(schedule_id)
+        if schedule is None:
+            logger.warning("Schedule not found: %s", schedule_id)
+            return
+        
+        schedule.enabled = False
+        schedule.updated_at = datetime.now(timezone.utc).isoformat()
+        self.store.save_schedule(schedule)
+        logger.info("Schedule disabled: %s", schedule_id)
+    
+    def get_schedules(self) -> list[ScheduleDefinition]:
+        """Get all schedule definitions."""
+        return self.store.get_all_schedules()
+    
+    def get_schedule(self, schedule_id: str) -> Optional[ScheduleDefinition]:
+        """Get a schedule definition by ID."""
+        return self.store.get_schedule(schedule_id)
+    
+    def trigger_manual(
+        self,
+        schedule_id: str,
+        server_id: Optional[str] = None,
+    ) -> list[ScheduleExecution]:
+        """Manually trigger a schedule execution.
+        
+        Args:
+            schedule_id: The schedule to trigger.
+            server_id: Optional specific server (defaults to all servers in schedule).
+            
+        Returns:
+            List of claimed executions.
+        """
+        schedule = self.store.get_schedule(schedule_id)
+        if schedule is None:
+            logger.warning("Schedule not found: %s", schedule_id)
+            return []
+        
+        server_ids = [server_id] if server_id else schedule.server_ids
+        executions = []
+        
+        for sid in server_ids:
+            execution = self.store.claim_execution(schedule, sid)
+            if execution is not None:
+                # Submit to executor
+                future = self._executor.submit(
+                    self._execute_collection,
+                    schedule,
+                    sid,
+                    execution,
+                ) if self._executor else None
+                
+                if future:
+                    self._active_futures.append(future)
+                    executions.append(execution)
+        
+        return executions
+
+    def _perform_recovery_scan(self) -> int:
+        """Perform recovery scan for stale executions.
+        
+        Phase 10D: Crash Recovery - Find and recover stale executions on startup.
+        
+        Returns:
+            Number of executions recovered.
+        """
+        logger.info("Recovery scan started")
+        
+        stale_timeout = self.config.stale_timeout_seconds
+        stale_executions = self.store.get_stale_executions(stale_timeout)
+        
+        if not stale_executions:
+            logger.info("Recovery scan completed: no stale executions found")
+            return 0
+        
+        recovered_count = 0
+        for execution in stale_executions:
+            try:
+                recovery_id = str(uuid.uuid4())
+                rowcount = self.store.recover_execution(execution.execution_id, recovery_id)
+                
+                if rowcount == 1:
+                    logger.info(
+                        "Execution recovery succeeded: %s (schedule=%s, server=%s, recovery_id=%s)",
+                        execution.execution_id,
+                        execution.schedule_id,
+                        execution.server_id,
+                        recovery_id,
+                    )
+                    recovered_count += 1
+                else:
+                    logger.debug(
+                        "Execution recovery skipped (already recovered): %s",
+                        execution.execution_id,
+                    )
+            except Exception as e:
+                logger.error(
+                    "Execution recovery failed: %s (schedule=%s, server=%s, error=%s)",
+                    execution.execution_id,
+                    execution.schedule_id,
+                    execution.server_id,
+                    str(e),
+                )
+        
+        logger.info("Recovery scan completed: %d executions recovered", recovered_count)
+        return recovered_count
+
+    def start(self) -> None:
+        """Start the scheduler main loop.
+        
+        Phase 10D: Crash Recovery - Perform recovery scan before normal polling.
+        """
+        if not self.config.enabled:
+            logger.warning("Scheduler is disabled (config.enabled=False)")
+            return
+        
+        if self._loop_thread is not None:
+            logger.warning("Scheduler is already running")
+            return
+        
+        # Initialize executor
+        self._executor = ThreadPoolExecutor(max_workers=self.config.worker_limit)
+        
+        # Phase 10D: Perform recovery scan BEFORE normal polling
+        logger.info("Performing startup recovery scan...")
+        self._perform_recovery_scan()
+        
+        # Start main polling loop
+        self._stop_event.clear()
+        self._loop_thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._loop_thread.start()
+        
+        logger.info("Scheduler started")
+    
+    def _run_loop(self) -> None:
+        """Main scheduler polling loop."""
+        while not self._stop_event.is_set():
+            try:
+                self._poll_and_execute()
+            except Exception as e:
+                logger.error("Scheduler loop error: %s", str(e))
+            
+            self._stop_event.wait(self.config.poll_interval)
+    
+    def _poll_and_execute(self) -> None:
+        """Poll for due schedules and execute them."""
+        current_time = datetime.now(timezone.utc)
+        due_schedules = self.store.get_due_schedules(current_time)
+        
+        for schedule in due_schedules:
+            for server_id in schedule.server_ids:
+                try:
+                    execution = self.store.claim_execution(schedule, server_id)
+                    if execution is not None:
+                        future = self._executor.submit(
+                            self._execute_collection,
+                            schedule,
+                            server_id,
+                            execution,
+                        )
+                        with self._running_lock:
+                            self._active_futures.ap

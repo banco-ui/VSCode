@@ -1,0 +1,37 @@
+n\06a-option-clicked.png
+[2026-08-11T11:55:51.623Z] [LSM-REPROV] [INFO] ✓ 점세개 메뉴 열림
+[2026-08-11T11:55:51.625Z] [LSM-REPROV] [INFO] 드롭다운 메뉴 항목 분석...
+[2026-08-11T11:55:51.635Z] [LSM-REPROV] [INFO] 드롭다운 메뉴 항목 11개 발견:
+[2026-08-11T11:55:51.639Z] [LSM-REPROV] [INFO]   - "장애관리이벤트 이력새 창으로 열기현재 알람새 창으로 열기장애 통계새 창으로 열기알람 설정새 창으로 열기" (LI.)
+[2026-08-11T11:55:51.641Z] [LSM-REPROV] [INFO]   - "일반관리상태 감시새 창으로 열기자원 관리새 창으로 열기자원 통계새 창으로 열기DB 로그 관리새 창으로 열기자가 진단새 창으로 열기로그 뷰어새 창으로 열기" (LI.)
+[2026-08-11T11:55:51.644Z] [LSM-REPROV] [INFO]   - "보안관리사용자 관리새 창으로 열기Role 관리새 창으로 열기IP 관리새 창으로 열기로그인 이력새 창으로 열기세션 관리새 창으로 열기운용 이력새 창으로 열기" (LI.)
+[2026-08-11T11:55:51.647Z] [LSM-REPROV] [INFO]   - "도움말CognitiV 정보새 창으로 열기라이선스새 창으로 열기매뉴얼새 창으로 열기" (LI.)
+[2026-08-11T11:55:51.650Z] [LSM-REPROV] [INFO]   - "STEP1" (LI.current)
+[2026-08-11T11:55:51.653Z] [LSM-REPROV] [INFO]   - "STEP2" (LI.)
+[2026-08-11T11:55:51.656Z] [LSM-REPROV] [INFO]   - "Profile 저장" (DIV.ui-state-disabled ui-grow-context-item ui-menu-item)
+[2026-08-11T11:55:51.658Z] [LSM-REPROV] [INFO]   - "Profile 가져오기" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:55:51.662Z] [LSM-REPROV] [INFO]   - "Profile" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:55:51.665Z] [LSM-REPROV] [INFO]   - "NE image 내보내기" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:55:51.668Z] [LSM-REPROV] [INFO]   - "Frequency Profile" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:55:51.671Z] [LSM-REPROV] [INFO] 2. Profile 가져오기 메뉴 클릭...
+[2026-08-11T11:55:51.719Z] [LSM-REPROV] [INFO] ✓ Profile 가져오기 메뉴: text="Profile 가져오기"
+[2026-08-11T11:55:54.835Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06b-profile-import.png
+[2026-08-11T11:55:54.838Z] [LSM-REPROV] [INFO] ✓ Profile 가져오기 다이얼로그 열림
+[2026-08-11T11:55:54.843Z] [LSM-REPROV] [INFO] 3. 조회 버튼 클릭...
+[2026-08-11T11:55:54.933Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06c-search-result.png
+[2026-08-11T11:55:54.937Z] [LSM-REPROV] [INFO] 4. 파일 선택...
+[2026-08-11T11:55:54.945Z] [LSM-REPROV] [INFO] ✓ 파일 입력 필드: #cm_profile_import_csvfileselector
+[2026-08-11T11:55:56.967Z] [LSM-REPROV] [INFO] ✓ 파일 선택 완료: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv
+[2026-08-11T11:55:56.971Z] [LSM-REPROV] [INFO] 5. 적용 버튼 클릭 (CSV 에러 체크)...
+[2026-08-11T11:55:56.989Z] [LSM-REPROV] [INFO] ✓ 적용 버튼 클릭 완료 (JavaScript)
+[2026-08-11T11:56:02.068Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06d-applied.png
+[2026-08-11T11:56:02.071Z] [LSM-REPROV] [INFO] 6. 가져오기 버튼 클릭...
+[2026-08-11T11:56:07.102Z] [LSM-REPROV] [INFO] ✓ 가져오기 버튼 클릭 완료 (증설 시작)
+[2026-08-11T11:56:07.107Z] [LSM-REPROV] [INFO] 증설 진행바 대기 중... (30초)
+[2026-08-11T11:56:37.181Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06e-imported.png
+[2026-08-11T11:56:37.184Z] [LSM-REPROV] [INFO] ✓ eNB 증설 완료: eNB_150201_26B
+[2026-08-11T11:56:37.188Z] [LSM-REPROV] [INFO] 닫기 버튼 클릭...
+[2026-08-11T11:56:37.195Z] [LSM-REPROV] [INFO] ✓ 닫기 버튼 클릭 완료
+[2026-08-11T11:56:40.280Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06f-closed.png
+[2026-08-11T11:56:40.286Z] [LSM-REPROV] [INFO] 리포트 저장: d:\Data\AI\VSCode\usm-automation\output\reports\lsm-reprovision_eNB_150201_26B_2026-08-11T11-56-40-284Z.json
+[2026-08-11T11:56:40.289Z] [LSM-REPROV] [INFO] 브라우저 종료...

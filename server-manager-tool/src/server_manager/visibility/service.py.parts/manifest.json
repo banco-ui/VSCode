@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/visibility/service.py",
+  "originalSize": 21143,
+  "sha256": "ac4a4324db9f588fb6e0077c8de4f7d51c98644179a12394e9b24dee26bd463c",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/visibility/service.py\""
+}

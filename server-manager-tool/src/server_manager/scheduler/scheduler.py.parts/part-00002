@@ -1,0 +1,12 @@
+pend(future)
+                            self._running_count += 1
+                except Exception as e:
+                    logger.error(
+                        "Failed to claim execution: %s (server=%s, error=%s)",
+                        schedule.schedule_id,
+                        server_id,
+                        str(e),
+                    )
+        
+        # Clean up completed futures
+        self._active_futures[:] = [f for f in self._active_futures if not f.done()]

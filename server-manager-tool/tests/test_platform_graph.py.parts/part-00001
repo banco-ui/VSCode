@@ -1,0 +1,557 @@
+"""Unified Infrastructure Graph Tests — Phase 16.
+
+Tests the graph construction pipeline:
+
+    DiscoveryResult (Phase 14)
+        ↓
+    GraphBuilder.build()
+        ↓
+    GraphReport (nodes + relationships)
+        ↓
+    GraphQuery (read-only traversal)
+
+All fixtures are synthetic/in-memory. No live Kubernetes connection.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.discovery import PlatformDiscovery
+from server_manager.graph import (
+    EntityType,
+    GraphBuilder,
+    GraphNode,
+    GraphQuery,
+    GraphRelationship,
+    GraphReport,
+    RelationshipType,
+)
+from server_manager.models.canonical import (
+    ExecutionEnvironmentType,
+    NetworkType,
+    PlatformType,
+    ProviderType,
+    RelationshipEvidenceType,
+    SourceEvidence,
+    StorageType,
+)
+from server_manager.models.enums import Confidence
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability,
+    KubernetesProviderAdapter,
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE HELPERS (reused from Phase 14/15 pattern)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def make_node(name, uid=None):
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or f"uid-node-{name}",
+                         "labels": {"kubernetes.io/hostname": name}},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}}}
+
+
+def make_container(name, image="nginx:1.21"):
+    return {"name": name, "image": image, "resources": {}}
+
+
+def make_pod(name, uid=None, namespace="default", node_name=None, containers=None):
+    spec: dict[str, Any] = {}
+    if node_name:
+        spec["nodeName"] = node_name
+    spec["containers"] = containers or [make_container("main")]
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or f"uid-pod-{name}",
+                         "namespace": namespace},
+            "spec": spec, "status": {"phase": "Running"}}
+
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or f"uid-svc-{name}",
+                         "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+
+def make_pv(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+            "spec": {"capacity": {"storage": "10Gi"}}}
+
+
+def make_pvc(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}",
+                         "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}}}
+
+
+def make_full_fixture():
+    """Full topology: Cluster → Node → Pod(2 containers) + Service + PV + PVC."""
+    return {
+        "cluster": {"name": "cluster-01", "uid": "uid-cluster-01", "version": "1.28.0"},
+        "nodes": [make_node("node-01")],
+        "namespaces": [],
+        "pods": [make_pod(
+            name="uadpf-dmp-xxxxx", uid="uid-pod-uadpf-dmp", namespace="ran",
+            node_name="node-01",
+            containers=[make_container("dmp", "dmp:1.0"),
+                        make_container("sidecar", "busybox:1.35")])],
+        "deployments": [], "statefulsets": [], "daemonsets": [],
+        "services": [make_service("uadpf-service")],
+        "persistent_volumes": [make_pv("uadpf-pv")],
+        "persistent_volume_claims": [make_pvc("uadpf-pvc")],
+    }
+
+
+def make_empty_fixture():
+    """Cluster only, no resources."""
+    return {"cluster": {"name": "empty-cluster", "uid": "uid-empty", "version": "1.27.0"}}
+
+
+def discover_full():
+    adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+    normalizer = KubernetesProviderNormalizer()
+    return PlatformDiscovery().discover(adapter, normalizer)
+
+
+def discover_empty():
+    adapter = KubernetesProviderAdapter(fixture=make_empty_fixture())
+    normalizer = KubernetesProviderNormalizer()
+    return PlatformDiscovery().discover(adapter, normalizer)
+
+
+def build_full_graph():
+    return GraphBuilder().build(discover_full())
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GRAPH CONSTRUCTION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestGraphConstruction:
+    """Graph building from CanonicalInventory."""
+
+    def test_graph_build_empty(self):
+        """Empty inventory (cluster only) produces nodes + structural edge."""
+        report = GraphBuilder().build(discover_empty())
+        assert report.is_valid
+        # Cluster-only fixture: 1 Platform + 1 Cluster = 2 nodes
+        assert report.node_count == 2
+        # Cluster.platform_ref → MEMBER_OF Platform (1 structural edge)
+        assert report.relationship_count == 1
+
+    def test_graph_build_nodes(self):
+        """Full fixture produces correct node count and types."""
+        report = build_full_graph()
+        assert report.is_valid
+        # 1 Platform + 1 Cluster + 1 Node + 3 EE (1 Pod + 2 Container)
+        # + 1 Network + 2 Storage = 9 nodes
+        assert report.node_count == 9
+        types = {n.entity_type for n in report.nodes}
+        assert EntityType.PLATFORM in types
+        assert EntityType.CLUSTER in types
+        assert EntityType.NODE in types
+        assert EntityType.EXECUTION_ENVIRONMENT in types
+        assert EntityType.NETWORK in types
+        assert EntityType.STORAGE in types
+
+    def test_graph_build_relationships(self):
+        """Full fixture produces edges with valid evidence types."""
+        report = build_full_graph()
+        assert report.is_valid
+        assert report.relationship_count > 0
+        for edge in report.relationships:
+            assert edge.evidence_type in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            )
+
+    def test_graph_build_complete_inventory(self):
+        """Full K8s fixture: Cluster → Node → Pod → Container chain."""
+        report = build_full_graph()
+        assert report.is_valid
+        query = GraphQuery(report)
+
+        platforms = [n for n in report.nodes if n.entity_type == EntityType.PLATFORM]
+        assert len(platforms) == 1
+        platform_id = platforms[0].canonical_id
+
+        clusters = [n for n in report.nodes if n.entity_type == EntityType.CLUSTER]
+        assert len(clusters) == 1
+        cluster_id = clusters[0].canonical_id
+
+        # Cluster → Platform (MEMBER_OF)
+        platform_rels = query.get_related_entities(cluster_id, RelationshipType.MEMBER_OF)
+        assert platform_id in platform_rels
+
+        nodes = [n for n in report.nodes if n.entity_type == EntityType.NODE]
+        assert len(nodes) == 1
+        node_id = nodes[0].canonical_id
+
+        # Node → Cluster (MEMBER_OF)
+        cluster_rels = query.get_related_entities(node_id, RelationshipType.MEMBER_OF)
+        assert cluster_id in cluster_rels
+
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  RELATIONSHIP VALIDATION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestRelationshipValidation:
+    """Edge validation: missing endpoints, dedup, evidence types."""
+
+    def test_missing_source_does_not_create_edge(self):
+        """Edge with missing source node triggers validation error."""
+        report = build_full_graph()
+        bad_edge = GraphRelationship(
+            source_id="nonexistent-source",
+            target_id=report.nodes[0].canonical_id,
+            relationship_type=RelationshipType.RUNS_ON,
+        )
+        report.relationships.append(bad_edge)
+        GraphBuilder._validate(report, report.node_ids)
+        assert any("nonexistent-source" in e for e in report.validation_errors)
+
+    def test_missing_target_does_not_create_edge(self):
+        """Edge with missing target node triggers validation error."""
+        report = build_full_graph()
+        bad_edge = GraphRelationship(
+            source_id=report.nodes[0].canonical_id,
+            target_id="nonexistent-target",
+            relationship_type=RelationshipType.RUNS_ON,
+        )
+        report.relationships.append(bad_edge)
+        GraphBuilder._validate(report, report.node_ids)
+        assert any("nonexistent-target" in e for e in report.validation_errors)
+
+    def test_duplicate_edge_is_deduplicated(self):
+        """Same (source, target, type) appears once; DIRECT preferred."""
+        edge1 = GraphRelationship(
+            source_id="a", target_id="b",
+            relationship_type=RelationshipType.RUNS_ON,
+            evidence_type=RelationshipEvidenceType.DERIVED,
+        )
+        edge2 = GraphRelationship(
+            source_id="a", target_id="b",
+            relationship_type=RelationshipType.RUNS_ON,
+            evidence_type=RelationshipEvidenceType.DIRECT,
+        )
+        result = GraphBuilder._deduplicate_edges([edge1, edge2])
+        assert len(result) == 1
+        assert result[0].evidence_type == RelationshipEvidenceType.DIRECT
+
+    def test_inferred_relationship_rejected(self):
+        """INFERRED evidence type does not exist in enum."""
+        valid_types = {RelationshipEvidenceType.DIRECT, RelationshipEvidenceType.DERIVED}
+        assert not hasattr(RelationshipEvidenceType, "INFERRED")
+        report = build_full_graph()
+        for edge in report.relationships:
+            assert edge.evidence_type in valid_types
+
+    def test_unknown_relationship_rejected(self):
+        """UNKNOWN evidence type does not exist in enum."""
+        assert not hasattr(RelationshipEvidenceType, "UNKNOWN")
+        report = build_full_graph()
+        for edge in report.relationships:
+            assert isinstance(edge.relationship_type, RelationshipType)
+
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVENANCE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProvenance:
+    """Provenance preservation on nodes and edges."""
+
+    def test_graph_node_provenance(self):
+        """Every graph node has source_evidence with provider info."""
+        report = build_full_graph()
+        assert report.node_count > 0
+        for node in report.nodes:
+            assert node.source_evidence is not None
+            assert node.source_evidence.provider_type == ProviderType.KUBERNETES
+
+    def test_graph_relationship_provenance(self):
+        """Graph edges have source_evidence with provider lineage."""
+        report = build_full_graph()
+        assert report.relationship_count > 0
+        for edge in report.relationships:
+            assert edge.source_evidence is not None
+            assert edge.source_evidence.provider_type == ProviderType.KUBERNETES
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  IDENTITY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestIdentity:
+    """Graph node identity = canonical_id."""
+
+    def test_graph_node_uses_canonical_id(self):
+        """GraphNode.canonical_id matches entity canonical_id."""
+        report = build_full_graph()
+        discovery = discover_full()
+        inventory = discovery.inventory
+        entity_ids: set[str] = set()
+        for el in [inventory.physicals, inventory.os_entities,
+                   inventory.platforms, inventory.clusters,
+                   inventory.nodes, inventory.execution_environments,
+                   inventory.workloads, inventory.networks,
+                   inventory.storages, inventory.accelerators]:
+            for entity in el:
+                entity_ids.add(entity.canonical_id)
+        graph_ids = {n.canonical_id for n in report.nodes}
+        assert graph_ids == entity_ids
+
+    def test_graph_identity_stability(self):
+        """Building the graph twice produces identical node and edge sets."""
+        report1 = build_full_graph()
+        report2 = build_full_graph()
+        ids1 = {n.canonical_id for n in report1.nodes}
+        ids2 = {n.canonical_id for n in report2.nodes}
+        assert ids1 == ids2
+        edges1 = {e.edge_key for e in report1.relationships}
+        edges2 = {e.edge_key for e in report2.relationships}
+        assert edges1 == edges2
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  TRAVERSAL TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestTraversal:
+    """Read-only graph traversal/query."""
+
+    def test_get_node(self):
+        """get_node returns the correct GraphNode."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        node = report.nodes[0]
+        result = query.get_node(node.canonical_id)
+        assert result is not None
+        assert result.canonical_id == node.canonical_id
+        assert result.entity_type == node.entity_type
+
+    def test_get_node_not_found(self):
+        """get_node returns None for non-existent ID."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        assert query.get_node("does-not-exist") is None
+
+    def test_get_relationships(self):
+        """get_relationships returns edges in both directions."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        # Node should have MEMBER_OF relationship to Cluster
+        nodes = [n for n in report.nodes if n.entity_type == EntityType.NODE]
+        node_id = nodes[0].canonical_id
+        rels = query.get_relationships(node_id)
+        assert len(rels) > 0
+        # At least one MEMBER_OF edge
+        member_of_rels = [r for r in rels if r.relationship_type == RelationshipType.MEMBER_OF]
+        assert len(member_of_rels) > 0
+
+    def test_get_neighbors(self):
+        """get_neighbors returns connected node IDs."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        nodes = [n for n in report.nodes if n.entity_type == EntityType.NODE]
+        node_id = nodes[0].canonical_id
+        neighbors = query.get_neighbors(node_id)
+        # Node should be connected to Cluster (MEMBER_OF)
+        clusters = [n for n in report.nodes if n.entity_type == EntityType.CLUSTER]
+        assert clusters[0].canonical_id in neighbors
+
+    def test_reverse_neighbor_lookup(self):
+        """Reverse traversal: find Pod from Node (Pod → Node stored edge)."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        # Find the Node
+        nodes = [n for n in report.nodes if n.entity_type == EntityType.NODE]
+        node_id = nodes[0].canonical_id
+        # Find the Pod EE from inventory
+        discovery = discover_full()
+        pod_ees = [
+            ee for ee in discovery.inventory.execution_environments
+            if ee.ee_type.value == "POD"
+        ]
+        assert len(pod_ees) == 1
+        pod_id = pod_ees[0].canonical_id
+        # Node should have Pod as a neighbor (reverse of Pod → Node RUNS_ON)
+        neighbors = query.get_neighbors(node_id)
+        assert pod_id in neighbors
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  KUBERNETES GRAPH TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestKubernetesGraph:
+    """Kubernetes-specific graph validation."""
+
+    def test_kubernetes_cluster_node_graph(self):
+        """Cluster → Node MEMBER_OF edge exists."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        clusters = [n for n in report.nodes if n.entity_type == EntityType.CLUSTER]
+        nodes = [n for n in report.nodes if n.entity_type == EntityType.NODE]
+        assert len(clusters) == 1
+        assert len(nodes) == 1
+        # Node → Cluster (MEMBER_OF)
+        rels = query.get_related_entities(nodes[0].canonical_id, RelationshipType.MEMBER_OF)
+        assert clusters[0].canonical_id in rels
+
+    def test_kubernetes_pod_node_direct_edge(self):
+        """Pod → Node RUNS_ON edge with DIRECT evidence."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        # Get Pod EE (ee_type=POD) from inventory
+        discovery = discover_full()
+        pod_ees = [
+            ee for ee in discovery.inventory.execution_environments
+            if ee.ee_type.value == "POD"
+        ]
+        assert len(pod_ees) == 1
+        pod_id = pod_ees[0].canonical_id
+        nodes = [n for n in report.nodes if n.entity_type == EntityType.NODE]
+        assert len(nodes) == 1
+        # Pod → Node (RUNS_ON)
+        runs_on = query.get_related_entities(pod_id, RelationshipType.RUNS_ON)
+        assert nodes[0].canonical_id in runs_on
+        # Verify DIRECT evidence (from RawRelationshipEvidence)
+        for edge in report.relationships:
+            if (edge.source_id == pod_id
+                    and edge.target_id == nodes[0].canonical_id
+                    and edge.relationship_type == RelationshipType.RUNS_ON):
+                assert edge.evidence_type == RelationshipEvidenceType.DIRECT
+                return
+        pytest.fail("No RUNS_ON DIRECT edge from Pod to Node")
+
+    def test_kubernetes_pod_container_derived_edge(self):
+        """Pod → Container CONTAINS edge with DERIVED evidence."""
+        report = build_full_graph()
+        query = GraphQuery(report)
+        # Get Pod and Container EEs from inventory
+        discovery = discover_full()
+        pod_ees = [
+            ee for ee in discovery.inventory.execution_environments
+            if ee.ee_type.value == "POD"
+        ]
+        container_ees = [
+            ee for ee in discovery.inventory.execution_environments
+            if ee.ee_type.value == "CONTAINER"
+        ]
+        assert len(pod_ees) == 1
+        assert len(container_ees) == 2
+        pod_id = pod_ees[0].canonical_id
+        # Pod → Container (CONTAINS)
+        contains = query.get_related_entities(pod_id, RelationshipType.CONTAINS)
+        for c in container_ees:
+            assert c.canonical_id in contains
+        # Verify DERIVED evidence
+        for edge in report.relationships:
+            if (edge.source_id == pod_id
+                    and edge.relationship_type == RelationshipType.CONTAINS):
+                assert edge.evidence_type == RelationshipEvidenceType.DERIVED
+
+    def test_kubernetes_service_network_edge(self):
+        """Service (Network entity) exists as node; no inferred edges."""
+        report = build_full_graph()
+        networks = [n for n in report.nodes if n.entity_type == EntityType.NETWORK]
+        assert len(networks) == 1
+        # Network should be an orphan node (no relationship evidence)
+        # connecting it to other entities — no inference.
+        query = GraphQuery(report)
+        neighbors = query.get_neighbors(networks[0].canonical_id)
+        # No inferred edges to Network
+        assert len(neighbors) == 0
+
+    def test_kubernetes_storage_edge(self):
+        """PV/PVC (Storage entities) exist as nodes; no inferred edges."""
+        report = build_full_graph()
+        storages = [n for n in report.nodes if n.entity_type == EntityType.STORAGE]
+        assert len(storages) == 2  # 1 PV + 1 PVC
+        # Storage entities should be orphan nodes — no inference.
+        query = GraphQuery(report)
+        for s in storages:
+            neighbors = query.get_neighbors(s.canonical_id)
+            assert len(neighbors) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  POLICY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestPolicy:
+    """No inference policies: no Workload/Physical/OS edges from K8s."""
+
+    def test_no_pod_workload_inference(self):
+        """No Pod → Workload edge is created (Pod != Workload)."""
+        report = build_full_graph()
+        # No Workload entities should exist in K8s fixture
+        workloads = [n for n in report.nodes if n.entity_type == EntityType.WORKLOAD]
+        assert len(workloads) == 0
+        # No edge should target a Workload
+        for edge in report.relationships:
+            assert not edge.target_id.startswith("canon-kubernetes-workload-")
+
+    def test_no_node_physical_inference(self):
+        """No Node → Physical edge is created (K8s has no Physical evidence)."""
+        report = build_full_graph()
+        physicals = [n for n in report.nodes if n.entity_type == EntityType.PHYSICAL]
+        assert len(physicals) == 0
+        # No edge should target or source from a Physical
+        for edge in report.relationships:
+            assert not edge.source_id.startswith("canon-kubernetes-physical-")
+            assert not edge.target_id.startswith("canon-kubernetes-physical-")
+
+    def test_no_node_os_inference(self):
+        """No Node → OS edge is created (K8s has no OS evidence)."""
+        report = build_full_graph()
+        os_entities = [n for n in report.nodes if n.entity_type == EntityType.OS]
+        assert len(os_entities) == 0
+        for edge in report.relationships:
+            assert not edge.source_id.startswith("canon-kubernetes-os-")
+            assert not edge.target_id.startswith("canon-kubernetes-os-")
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  HEALTH/RESOURCE INTEGRATION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestHealthResourceIntegration:
+    """Graph uses canonical_id for health/resource lookup — no duplication."""
+
+    def test_graph_uses_canonical_id_for_health_lookup(self):
+        """Graph node canonical_id can be used for HealthResult lookup."""
+        report = build_full_graph()
+        # HealthResult (Phase 15) uses entity_id = canonical_id
+        # Verify graph node canonical_ids are compatible
+        for node in report.nodes:
+            assert node.canonical_id  # non-empty
+            # In Phase 15, HealthResult.entity_id = canonical_id
+            # Graph does NOT duplicate HealthResult — lookup via canonical_id
+
+    def test_graph_uses_canonical_id_for_resource_lookup(self):
+        """Graph node canonical_id can be used for ResourceStatus lookup."""
+       

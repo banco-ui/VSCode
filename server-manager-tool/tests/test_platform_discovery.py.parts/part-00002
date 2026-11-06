@@ -1,0 +1,11 @@
+
+        found = []
+        for kw in forbidden:
+            # Check for method calls (not in comments/strings)
+            for line in source.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if f".{kw}" in stripped and "list_" not in stripped:
+                    found.append(f"{kw}: {stripped}")
+        assert len(found) == 0, f"Mutation calls found: {found}"

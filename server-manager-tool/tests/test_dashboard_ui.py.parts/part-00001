@@ -1,0 +1,575 @@
+"""Phase 23 — Management Dashboard / UI Tests.
+
+Tests for the Phase 23 Dashboard UI served as static files via FastAPI
+StaticFiles, consuming the Phase 22 Management API.
+
+SAFETY: READ_ONLY, no live mutation, no credential exposure.
+"""
+from __future__ import annotations
+
+import inspect
+import os
+
+import pytest
+from fastapi.testclient import TestClient
+
+from server_manager.api.app import create_app
+from server_manager.api import dependencies as deps
+from server_manager.api.dependencies import ManagementContext
+from server_manager.discovery.service import PlatformDiscovery
+from server_manager.fault.service import FaultDetectionService
+from server_manager.graph.service import GraphBuilder, GraphQuery
+from server_manager.health.service import HealthService
+from server_manager.models.canonical import ProviderType
+from server_manager.monitoring.service import MonitoringService
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.operations.models import OperationType
+from server_manager.operations.service import (
+    CapabilityResolver, OperationExecutor, OperationGraphContext,
+    OperationService, TargetResolver,
+)
+from server_manager.providers import KubernetesProviderAdapter
+from server_manager.recovery.models import AuthorizationLevel, SafetyResult
+from server_manager.recovery.service import RecoveryExecutor, RecoveryService
+from server_manager.visibility.service import AlertService, OperationalVisibilityService
+
+
+# ── Mock K8s Topology (reused from Phase 22) ──────────────────────
+
+class MockK8sObject:
+    def __init__(self, data): self._data = data
+    def to_dict(self): return self._data
+
+class MockK8sListResponse:
+    def __init__(self, items): self.items = items
+    def to_dict(self):
+        return {"items": [i.to_dict() if hasattr(i, "to_dict") else i for i in self.items]}
+
+class MockCoreV1Api:
+    def __init__(self, topology): self._topology = topology
+    def get_api_version(self): return {"major": "1", "minor": "28"}
+    def list_namespace(self):
+        return MockK8sListResponse([MockK8sObject(ns) for ns in self._topology.get("namespaces", [])])
+    def list_node(self):
+        return MockK8sListResponse([MockK8sObject(n) for n in self._topology.get("nodes", [])])
+    def list_pod_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(p) for p in self._topology.get("pods", [])])
+    def list_service_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(s) for s in self._topology.get("services", [])])
+    def list_persistent_volume(self):
+        return MockK8sListResponse([MockK8sObject(pv) for pv in self._topology.get("persistent_volumes", [])])
+    def list_persistent_volume_claim_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(pvc) for pvc in self._topology.get("persistent_volume_claims", [])])
+
+
+def make_node(name, uid=None, ready=True, memory_pressure=False,
+              cpu_capacity="8", cpu_allocatable="7500m",
+              memory_capacity="16256396Ki", memory_allocatable="15256396Ki", pod_capacity="110"):
+    conditions = [
+        {"type": "Ready", "status": "True" if ready else "False"},
+        {"type": "MemoryPressure", "status": "True" if memory_pressure else "False"},
+        {"type": "DiskPressure", "status": "False"},
+        {"type": "PIDPressure", "status": "False"},
+    ]
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or "uid-node-" + name}, "spec": {},
+            "status": {"capacity": {"cpu": cpu_capacity, "memory": memory_capacity, "pods": pod_capacity},
+                       "allocatable": {"cpu": cpu_allocatable, "memory": memory_allocatable, "pods": pod_capacity},
+                       "conditions": conditions}}
+
+
+def make_pod(name, uid=None, namespace="default", node_name="node-01", phase="Running", ready=True):
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or "uid-pod-" + name, "namespace": namespace},
+            "spec": {"nodeName": node_name, "containers": [{"name": "main", "image": "nginx:1.25", "resources": {}}]},
+            "status": {"phase": phase, "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]}}
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or "uid-svc-" + name, "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+def make_pv(name, uid=None, phase="Bound"):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or "uid-pv-" + name},
+            "spec": {"capacity": {"storage": "10Gi"}}, "status": {"phase": phase}}
+
+def make_pvc(name, uid=None, phase="Bound"):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or "uid-pvc-" + name, "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}}, "status": {"phase": phase}}
+
+def make_namespace(name):
+    return {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "uid": "uid-ns-" + name}}
+
+
+def make_healthy_cluster_topology():
+    return {
+        "cluster": {"name": "test-cluster-01", "version": "v1.28.0"},
+        "namespaces": [make_namespace("default"), make_namespace("ran")],
+        "nodes": [make_node("node-01", uid="uid-node-01"), make_node("node-02", uid="uid-node-02")],
+        "pods": [
+            make_pod("app-pod-01", uid="uid-pod-app-01", namespace="default", node_name="node-01"),
+            make_pod("app-pod-02", uid="uid-pod-app-02", namespace="ran", node_name="node-02"),
+            make_pod("app-pod-03", uid="uid-pod-app-03", namespace="default", node_name="node-01"),
+        ],
+        "services": [make_service("app-svc", uid="uid-svc-app")],
+        "persistent_volumes": [make_pv("pv-01", uid="uid-pv-01")],
+        "persistent_volume_claims": [make_pvc("pvc-01", uid="uid-pvc-01")],
+    }
+
+def make_unhealthy_cluster_topology():
+    return {
+        "cluster": {"name": "unhealthy-cluster", "version": "v1.28.0"},
+        "namespaces": [make_namespace("default")],
+        "nodes": [
+            make_node("bad-node-01", uid="uid-bad-node-01", ready=False),
+            make_node("degraded-node-02", uid="uid-degraded-node-02", ready=True, memory_pressure=True),
+        ],
+        "pods": [
+            make_pod("failed-pod-01", uid="uid-failed-pod-01", node_name="bad-node-01", phase="Failed", ready=False),
+            make_pod("pending-pod-02", uid="uid-pending-pod-02", node_name="degraded-node-02", phase="Pending", ready=False),
+        ],
+        "services": [], "persistent_volumes": [], "persistent_volume_claims": [],
+    }
+
+
+class _NoOpOperationExecutor(OperationExecutor):
+    def preview(self, request, target, capability):
+        from server_manager.operations.models import OperationPreview
+        return OperationPreview(request=request, resolved_target=target,
+            capability_decision=capability, expected_effect="Query status preview",
+            safety_result=SafetyResult.BLOCKED, execution_allowed=False)
+    def execute(self, request, target): raise AssertionError("execute() should not be called")
+    def verify(self, request, target, execution_result): raise AssertionError("verify() should not be called")
+
+class _MockRecoveryExecutor(RecoveryExecutor):
+    def preview(self, action):
+        from server_manager.recovery.models import RecoveryPreview
+        return RecoveryPreview(action=action, expected_effect="Restart preview")
+    def execute(self, action): raise AssertionError("execute() should not be called")
+    def verify(self, action, post_health=None): raise AssertionError("verify() should not be called")
+
+
+def build_management_context(topology, provider_id="test-cluster"):
+    normalizer = KubernetesProviderNormalizer()
+    discovery = PlatformDiscovery()
+    adapter = KubernetesProviderAdapter(provider_id=provider_id, client=MockCoreV1Api(topology))
+    discovery_result = discovery.discover(adapter, normalizer)
+    health_report = HealthService().assess(discovery_result)
+    graph_query = GraphQuery(GraphBuilder().build(discovery_result))
+    monitoring_report = MonitoringService().monitor(health_report)
+    fault_result = FaultDetectionService().detect(
+        monitoring_report.observations, monitoring_report.state_changes)
+    alert_service = AlertService()
+    for fault in fault_result.faults: alert_service.create_alert(fault)
+    visibility = OperationalVisibilityService(alert_service=alert_service)
+    visibility.set_inventory(discovery_result.inventory)
+    visibility.set_health_report(health_report)
+    visibility.set_fault_result(fault_result)
+    visibility.set_graph_query(graph_query)
+    target_resolver = TargetResolver()
+    for node in discovery_result.inventory.nodes:
+        target_resolver.register_target(canonical_id=node.canonical_id,
+            provider_type=ProviderType.KUBERNETES, provider_id=provider_id, entity_type="Node")
+    cap_resolver = CapabilityResolver()
+    cap_resolver.register(ProviderType.KUBERNETES, {OperationType.RESTART, OperationType.QUERY_STATUS})
+    operation_service = OperationService(target_resolver=target_resolver, capability_resolver=cap_resolver,
+        executor=_NoOpOperationExecutor(), graph_context=OperationGraphContext(graph_query))
+    recovery_service = RecoveryService(executor=_MockRecoveryExecutor(), execution_enabled=False,
+        authorization=AuthorizationLevel.READ_ONLY)
+    ctx = ManagementContext()
+    ctx.discovery_result = discovery_result
+    ctx.health_report = health_report
+    ctx.graph_query = graph_query
+    ctx.monitoring_service = MonitoringService()
+    ctx.monitoring_report = monitoring_report
+    ctx.fault_result = fault_result
+    ctx.alert_service = alert_service
+    ctx.visibility = visibility
+    ctx.operation_service = operation_service
+    ctx.recovery_service = recovery_service
+    return ctx
+
+
+# ── Fixtures ──────────────────────────────────────────────────────
+
+@pytest.fixture
+def client():
+    topology = make_healthy_cluster_topology()
+    ctx = build_management_context(topology)
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+@pytest.fixture
+def unhealthy_client():
+    topology = make_unhealthy_cluster_topology()
+    ctx = build_management_context(topology)
+    app = create_app()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+@pytest.fixture
+def unconfigured_client():
+    app = create_app()
+    ctx = ManagementContext()
+    app.dependency_overrides[deps.get_management_context] = lambda: ctx
+    return TestClient(app), ctx
+
+_UI_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "src", "server_manager", "dashboard", "ui",
+)
+
+
+# ── 1. Static File Serving ─────────────────────────────────────────
+
+class TestStaticFileServing:
+    def test_index_html_served(self, client):
+        c, _ = client
+        r = c.get("/dashboard/")
+        assert r.status_code == 200
+        assert "text/html" in r.headers.get("content-type", "")
+        assert "Server Manager" in r.text
+
+    def test_css_file_served(self, client):
+        c, _ = client
+        r = c.get("/dashboard/css/styles.css")
+        assert r.status_code == 200
+        assert "text/css" in r.headers.get("content-type", "")
+
+    def test_api_client_js_served(self, client):
+        c, _ = client
+        r = c.get("/dashboard/js/api-client.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers.get("content-type", "").lower()
+
+    def test_app_js_served(self, client):
+        c, _ = client
+        r = c.get("/dashboard/js/app.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers.get("content-type", "").lower()
+
+    def test_root_redirects_to_dashboard(self, client):
+        c, _ = client
+        r = c.get("/", follow_redirects=False)
+        assert r.status_code in (301, 302, 307)
+        assert "/dashboard" in r.headers.get("location", "")
+
+
+# ── 2. Navigation Structure ────────────────────────────────────────
+
+class TestNavigation:
+    def test_all_menu_items_present(self, client):
+        c, _ = client
+        r = c.get("/dashboard/")
+        html = r.text
+        for nav_item in ["overview", "inventory", "topology", "health", "faults", "operations"]:
+            assert 'data-route="' + nav_item + '"' in html, f"Missing nav item: {nav_item}"
+
+    def test_api_status_indicator_present(self, client):
+        c, _ = client
+        assert "api-status" in c.get("/dashboard/").text
+
+    def test_refresh_button_present(self, client):
+        c, _ = client
+        assert 'id="btn-refresh"' in c.get("/dashboard/").text
+
+    def test_auto_refresh_toggle_present(self, client):
+        c, _ = client
+        assert 'id="auto-refresh"' in c.get("/dashboard/").text
+
+    def test_error_banner_present(self, client):
+        c, _ = client
+        assert 'id="error-banner"' in c.get("/dashboard/").text
+
+    def test_scripts_loaded(self, client):
+        c, _ = client
+        html = c.get("/dashboard/").text
+        assert "js/api-client.js" in html
+        assert "js/app.js" in html
+
+    def test_css_loaded(self, client):
+        c, _ = client
+        assert "css/styles.css" in c.get("/dashboard/").text
+
+
+# ── 3. Overview API Integration ───────────────────────────────────
+
+class TestOverviewIntegration:
+    def test_visibility_summary_accessible(self, client):
+        c, _ = client
+        r = c.get("/api/v1/visibility/summary")
+        assert r.status_code == 200
+        body = r.json()
+        for key in ["infrastructure", "health", "faults", "alerts", "operations", "generated_at"]:
+            assert key in body
+
+    def test_inventory_summary_accessible(self, client):
+        c, _ = client
+        r = c.get("/api/v1/inventory")
+        assert r.status_code == 200
+        assert r.json()["total_entities"] > 0
+
+    def test_health_report_accessible(self, client):
+        c, _ = client
+        r = c.get("/api/v1/health")
+        assert r.status_code == 200
+        assert "results" in r.json()
+
+    def test_faults_accessible(self, client):
+        c, _ = client
+        r = c.get("/api/v1/faults")
+        assert r.status_code == 200
+        assert "faults" in r.json()
+
+    def test_alerts_accessible(self, client):
+        c, _ = client
+        r = c.get("/api/v1/visibility/alerts")
+        assert r.status_code == 200
+        assert "alerts" in r.json()
+
+
+# ── 4. Inventory API Integration ──────────────────────────────────
+
+class TestInventoryIntegration:
+    def test_list_all_entities(self, client):
+        c, _ = client
+        r = c.get("/api/v1/inventory/entities")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] > 0
+        assert "_entity_type" in body["items"][0]
+
+    def test_list_entities_filtered_by_type(self, client):
+        c, _ = client
+        r = c.get("/api/v1/inventory/entities?entity_type=NODE")
+        assert r.status_code == 200
+        for item in r.json()["items"]:
+            assert item["_entity_type"] == "NODE"
+
+    def test_entity_detail_found(self, client):
+        c, ctx = client
+        cid = ctx.inventory.nodes[0].canonical_id
+        r = c.get(f"/api/v1/inventory/entities/{cid}")
+        assert r.status_code == 200
+        assert r.json()["canonical_id"] == cid
+
+    def test_entity_detail_404(self, client):
+        c, _ = client
+        assert c.get("/api/v1/inventory/entities/nonexistent-id").status_code == 404
+
+    def test_provenance_in_entity(self, client):
+        c, ctx = client
+        cid = ctx.inventory.nodes[0].canonical_id
+        r = c.get(f"/api/v1/inventory/entities/{cid}")
+        assert "canonical_id" in r.json()
+
+
+# ── 5. Topology API Integration ──────────────────────────────────
+
+class TestTopologyIntegration:
+    def test_graph_summary_accessible(self, client):
+        c, _ = client
+        r = c.get("/api/v1/graph/summary")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["node_count"] > 0
+        assert "node_ids" in body
+
+    def test_graph_node_accessible(self, client):
+        c, ctx = client
+        nid = ctx.inventory.nodes[0].canonical_id
+        assert c.get(f"/api/v1/graph/nodes/{nid}").status_code == 200
+
+    def test_node_relationships_accessible(self, client):
+        c, ctx = client
+        nid = ctx.inventory.nodes[0].canonical_id
+        r = c.get(f"/api/v1/graph/nodes/{nid}/relationships")
+        assert r.status_code == 200
+        assert "relationships" in r.json()
+
+    def test_node_neighbors_accessible(self, client):
+        c, ctx = client
+        nid = ctx.inventory.nodes[0].canonical_id
+        r = c.get(f"/api/v1/graph/nodes/{nid}/neighbors")
+        assert r.status_code == 200
+        assert "neighbors" in r.json()
+
+    def test_graph_node_404(self, client):
+        c, _ = client
+        assert c.get("/api/v1/graph/nodes/nonexistent-node").status_code == 404
+
+
+# ── 6. Health API Integration ──────────────────────────────────────
+
+class TestHealthIntegration:
+    def test_health_report_with_results(self, client):
+        c, _ = client
+        assert len(c.get("/api/v1/health").json()["results"]) > 0
+
+    def test_entity_health_accessible(self, client):
+        c, ctx = client
+        if ctx.health_report and ctx.health_report.results:
+            eid = ctx.health_report.results[0].entity_id
+            assert c.get(f"/api/v1/health/entities/{eid}").status_code == 200
+
+    def test_entity_health_404(self, client):
+        c, _ = client
+        assert c.get("/api/v1/health/entities/nonexistent").status_code == 404
+
+    def test_monitoring_observations_accessible(self, client):
+        c, _ = client
+        assert c.get("/api/v1/monitoring/observations").status_code == 200
+
+    def test_entity_status_accessible(self, client):
+        c, ctx = client
+        cid = ctx.inventory.nodes[0].canonical_id
+        assert c.get(f"/api/v1/visibility/entities/{cid}").status_code == 200
+
+
+# ── 7. Faults & Alerts API Integration ────────────────────────────
+
+class TestFaultsAlertsIntegration:
+    def test_unhealthy_cluster_has_faults(self, unhealthy_client):
+        c, _ = unhealthy_client
+        assert c.get("/api/v1/faults").json()["total"] > 0
+
+    def test_fault_detail_accessible(self, unhealthy_client):
+        c, ctx = unhealthy_client
+        if ctx.fault_result and ctx.fault_result.faults:
+            fid = ctx.fault_result.faults[0].fault_id
+            r = c.get(f"/api/v1/faults/{fid}")
+            assert r.status_code == 200
+            assert r.json()["fault_id"] == fid
+
+    def test_fault_detail_404(self, client):
+        c, _ = client
+        assert c.get("/api/v1/faults/nonexistent-fault").status_code == 404
+
+    def test_alerts_list_accessible(self, unhealthy_client):
+        c, _ = unhealthy_client
+        assert c.get("/api/v1/visibility/alerts").status_code == 200
+
+    def test_alert_detail_accessible(self, unhealthy_client):
+        c, ctx = unhealthy_client
+        if ctx.alert_service:
+            alerts = ctx.alert_service.get_alerts()
+            if alerts:
+                aid = alerts[0].alert_id
+                assert c.get(f"/api/v1/visibility/alerts/{aid}").status_code == 200
+
+    def test_faults_filtered_by_status(self, unhealthy_client):
+        c, _ = unhealthy_client
+        assert c.get("/api/v1/faults?status=ONGOING").status_code == 200
+
+
+# ── 8. Operations Preview API Integration ─────────────────────────
+
+class TestOperationsPreviewIntegration:
+    def test_operation_preview_success(self, client):
+        c, ctx = client
+        cid = ctx.inventory.nodes[0].canonical_id
+        r = c.post("/api/v1/operations/preview", json={
+            "operation_id": "op-test-001", "operation_type": "QUERY_STATUS",
+            "target_canonical_id": cid, "provider_type": "KUBERNETES", "reason": "test"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["operation_id"] == "op-test-001"
+        assert body["execution_allowed"] is False
+
+    def test_operation_preview_invalid_type(self, client):
+        c, _ = client
+        r = c.post("/api/v1/operations/preview", json={
+            "operation_id": "op-bad", "operation_type": "INVALID_TYPE",
+            "target_canonical_id": "some-id"})
+        assert r.status_code == 400
+
+    def test_recovery_preview_fault_not_found(self, client):
+        c, _ = client
+        r = c.post("/api/v1/recovery/preview", json={
+            "fault_id": "nonexistent-fault", "action_type": "RESTART"})
+        assert r.status_code == 404
+
+    def test_recovery_preview_success_or_not_actionable(self, unhealthy_client):
+        c, ctx = unhealthy_client
+        if ctx.fault_result and ctx.fault_result.faults:
+            fid = ctx.fault_result.faults[0].fault_id
+            r = c.post("/api/v1/recovery/preview", json={
+                "fault_id": fid, "action_type": "RESTART"})
+            assert r.status_code in (200, 422)
+
+
+# ── 9. Loading / Empty / Error States ─────────────────────────────
+
+class TestLoadingEmptyErrorStates:
+    def test_503_when_not_configured(self, unconfigured_client):
+        c, _ = unconfigured_client
+        assert c.get("/api/v1/inventory").status_code == 503
+
+    def test_health_503_when_not_configured(self, unconfigured_client):
+        c, _ = unconfigured_client
+        assert c.get("/api/v1/health").status_code == 503
+
+    def test_graph_503_when_not_configured(self, unconfigured_client):
+        c, _ = unconfigured_client
+        assert c.get("/api/v1/graph/summary").status_code == 503
+
+    def test_faults_503_when_not_configured(self, unconfigured_client):
+        c, _ = unconfigured_client
+        assert c.get("/api/v1/faults").status_code == 503
+
+    def test_visibility_503_when_not_configured(self, unconfigured_client):
+        c, _ = unconfigured_client
+        assert c.get("/api/v1/visibility/summary").status_code == 503
+
+    def test_system_health_always_ok(self, unconfigured_client):
+        c, _ = unconfigured_client
+        r = c.get("/api/v1/system/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+    def test_readiness_false_when_not_configured(self, unconfigured_client):
+        c, _ = unconfigured_client
+        assert c.get("/api/v1/system/readiness").json()["ready"] is False
+
+    def test_readiness_true_when_configured(self, client):
+        c, _ = client
+        assert c.get("/api/v1/system/readiness").json()["ready"] is True
+
+
+# ── 10. Unknown State Policy ──────────────────────────────────────
+
+class TestUnknownPolicy:
+    def test_health_status_valid(self, client):
+        c, _ = client
+        status = c.get("/api/v1/health").json()["health_status"]
+        assert status in ("SUCCESS", "PARTIAL", "FAILED", "SKIPPED")
+
+    def test_entity_health_status_values(self, client):
+        c, ctx = client
+        if ctx.health_report:
+            for result in ctx.health_report.results:
+                assert result.status.value in ("HEALTHY", "DEGRADED", "UNHEALTHY", "UNKNOWN")
+
+    def test_unhealthy_not_reported_healthy(self, unhealthy_client):
+        c, _ = unhealthy_client
+        assert c.get("/api/v1/health").json()["health_status"] != "HEALTHY"
+
+
+# ── 11. Provenance Display ────────────────────────────────────────
+
+class TestProvenanceDisplay:
+    def test_entity_has_provenance(self, client):
+        c, ctx = client
+        cid = ctx.inventory.nodes[0].canonical_id
+        body = c.get(f"/api/v1/inventory/entities/{cid}").json()
+        assert "canonical_id" in body
+        if "provenance" in body: assert body["provenance"] is not None
+
+    def test_all_entities_have_canonical_id(self, client):
+        c, _ = client
+        for item in c.get("/api/v1/inventory/entities").json()["items"]:
+            assert "canonical_id" in item
+            ass

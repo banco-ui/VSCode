@@ -1,0 +1,116 @@
+t len(all_execs) >= 2
+        
+        recovered_exec = store.get_execution(execution1.execution_id)
+        assert recovered_exec.status == "RECOVERED"
+    
+    def test_recovery_metadata_persistence(self, store):
+        """Additional test: Recovery metadata persistence."""
+        from datetime import datetime, timezone, timedelta
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        execution = store.claim_execution(schedule, "server-001")
+        
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.conn.execute(
+            "UPDATE schedule_executions SET status = 'RUNNING', started_at = ? WHERE execution_id = ?",
+            (old_time, execution.execution_id),
+        )
+        store.conn.commit()
+        
+        recovery_id = "recovery-test123"
+        success = store.recover_execution(execution.execution_id, recovery_id)
+        assert success == 1
+        
+        recovered = store.get_execution(execution.execution_id)
+        assert recovered.recovery_id == recovery_id
+        assert recovered.recovery_count == 1
+        assert recovered.status == "RECOVERED"
+        assert recovered.completed_at is not None
+    
+    def test_recovery_get_all_executions(self, store):
+        """Additional test: get_all_executions for observability."""
+        from datetime import datetime, timezone, timedelta
+        
+        past_time = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+        )
+        store.save_schedule(schedule)
+        
+        exec1 = store.claim_execution(schedule, "server-001")
+        exec2 = store.claim_execution(schedule, "server-001")
+        
+        all_execs = store.get_all_executions()
+        assert len(all_execs) >= 2
+        
+        claimed = store.get_all_executions(status_filter="CLAIMED")
+        assert len(claimed) >= 2
+
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+            enabled=True,
+            next_run_at=past_time,
+        )
+        store.save_schedule(schedule)
+        
+        due = store.get_due_schedules(missed_policy="skip")
+        assert len(due) == 0
+        assert schedule.is_due(missed_policy="skip") is False
+    
+    def test_recovery_missed_schedule_policy_latest(self, store):
+        """Test 4b: Missed schedule policy - latest."""
+        from datetime import datetime, timezone, timedelta
+        
+        past_time = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        
+        schedule = ScheduleDefinition(
+            schedule_id="test-schedule",
+            name="Test Schedule",
+            server_ids=["server-001"],
+            enabled=True,
+            next_run_at=past_time,
+        )
+        store.save_schedule(schedule)
+        
+        due = store.get_due_schedules(missed_policy="latest")
+        assert len(due) == 1
+        assert schedule.is_due(missed_policy="latest") is True
+
+# ── Regression Tests ────────────────────────────────────────────────
+
+class TestRegression:
+    """Ensure existing functionality is not broken."""
+    
+    def test_orchestrator_standalone(self):
+        """Verify Orchestrator still works independently."""
+        orchestrator = Orchestrator()
+        # Should not raise
+        assert orchestrator is not None
+    
+    def test_inventory_store_standalone(self):
+        """Verify InventoryStore still works independently."""
+        store = InventoryStore(":memory:")
+        
+        entry = ServerRegistryEntry(
+            server_id="test",
+            display_name="Test",
+            vendor=Vendor.Unknown,
+            model="",
+        )
+        store.register_server(entry)
+        
+        retrieved = store.get_server("test")
+        assert retrieved is not None
+        
+        store.close()

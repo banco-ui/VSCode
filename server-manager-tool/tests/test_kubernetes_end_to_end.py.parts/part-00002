@@ -1,0 +1,311 @@
+  assert len(r1.nodes) == len(r2.nodes)
+        assert len(r1.execution_environments) == len(r2.execution_environments)
+        assert len(r1.networks) == len(r2.networks)
+        assert len(r1.storages) == len(r2.storages)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-09 PARTIAL COLLECTION PROPAGATION
+# ════════════════════════════════════════════════════════════════════════
+
+class TestPartialCollection:
+    """G5-09: Partial collection is propagated through the pipeline."""
+
+    def test_partial_snapshot_status(self):
+        snap = KubernetesProviderAdapter(fixture=make_partial_fixture()).collect()
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+
+    def test_partial_snapshot_processes_available_data(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_partial_fixture()).collect())
+        assert len(r.nodes) == 1
+        assert len(r.execution_environments) == 3
+        assert len(r.storages) == 2
+        assert len(r.networks) == 0  # Service failed
+
+    def test_partial_snapshot_preserves_failed_capability(self):
+        snap = KubernetesProviderAdapter(fixture=make_partial_fixture()).collect()
+        assert AdapterCapability.NETWORK in snap.failed_capabilities
+
+    def test_partial_error_category_is_authentication(self):
+        snap = KubernetesProviderAdapter(fixture=make_partial_fixture()).collect()
+        for cr in snap.capability_results:
+            if cr.capability == AdapterCapability.NETWORK:
+                assert cr.status == OrchestrationStatus.FAILED
+                assert cr.error_category == ErrorCategory.AUTHENTICATION_ERROR
+                assert cr.errors and "403" in cr.errors[0]
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-10 ERROR PROPAGATION
+# ════════════════════════════════════════════════════════════════════════
+
+class TestErrorPropagation:
+    """G5-10: Errors are propagated, not swallowed."""
+
+    def test_snapshot_errors_preserved(self):
+        snap = KubernetesProviderAdapter(fixture=make_partial_fixture()).collect()
+        assert len(snap.errors) > 0
+        assert any("services" in e.lower() or "NETWORK" in e for e in snap.errors)
+
+    def test_empty_list_vs_permission_denied_distinct(self):
+        # Empty list (success)
+        f_empty = make_full_topology_fixture()
+        f_empty["pods"] = []
+        snap_empty = KubernetesProviderAdapter(fixture=f_empty).collect()
+        ee_cap = next(cr for cr in snap_empty.capability_results
+                      if cr.capability == AdapterCapability.EXECUTION_ENVIRONMENT)
+        assert ee_cap.status == OrchestrationStatus.SUCCESS
+        assert ee_cap.item_count == 0
+
+        # Permission denied
+        f_denied = make_full_topology_fixture()
+        f_denied["errors"] = {"pods": "403 Forbidden"}
+        snap_denied = KubernetesProviderAdapter(fixture=f_denied).collect()
+        ee_cap_d = next(cr for cr in snap_denied.capability_results
+                        if cr.capability == AdapterCapability.EXECUTION_ENVIRONMENT)
+        assert ee_cap_d.status == OrchestrationStatus.FAILED
+        assert ee_cap_d.error_category == ErrorCategory.AUTHENTICATION_ERROR
+
+    def test_api_failure_vs_permission_denied_distinct(self):
+        f = make_full_topology_fixture()
+        f["errors"] = {"pods": "connection refused: API server unreachable"}
+        snap = KubernetesProviderAdapter(fixture=f).collect()
+        ee_cap = next(cr for cr in snap.capability_results
+                      if cr.capability == AdapterCapability.EXECUTION_ENVIRONMENT)
+        assert ee_cap.status == OrchestrationStatus.FAILED
+        assert ee_cap.error_category == ErrorCategory.UNKNOWN_ERROR
+        assert ee_cap.error_category != ErrorCategory.AUTHENTICATION_ERROR
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-11 UNKNOWN ENUM POLICY
+# ════════════════════════════════════════════════════════════════════════
+
+class TestUnknownEnumPolicy:
+    """G5-11: Unknown enum → None + WARNING (no semantic guess).
+
+    Tests use GenericProviderNormalizer directly because the K8s normalizer
+    transforms the K8s payload to generic format, hard-coding enum values
+    (POD, CONTAINER, KUBERNETES). Unknown enum handling is a property of
+    the generic normalizer's _map_enum method, inherited by K8s normalizer.
+    """
+
+    def test_unknown_ee_type_produces_warning_and_default(self):
+        from server_manager.normalizers.provider_normalizer import GenericProviderNormalizer
+        snap = RawProviderSnapshot(
+            snapshot_id="snap-enum-test", provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.SUCCESS,
+            payload={"execution_environments": [
+                {"provider_id": "ee-unknown-1", "ee_type": "FOO_PLATFORM", "name": "test-ee"}]})
+        r = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(snap)
+        assert len(r.warnings) > 0
+        assert any("FOO_PLATFORM" in w or "ee_type" in w for w in r.warnings)
+        assert len(r.execution_environments) == 1
+        assert r.execution_environments[0].ee_type == ExecutionEnvironmentType.UNKNOWN
+
+    def test_no_semantic_fallback_to_kubernetes(self):
+        from server_manager.normalizers.provider_normalizer import GenericProviderNormalizer
+        snap = RawProviderSnapshot(
+            snapshot_id="snap-no-fallback", provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.SUCCESS,
+            payload={"platforms": [{"provider_id": "p-unknown", "platform_type": "foo-platform"}]})
+        r = GenericProviderNormalizer(ProviderType.KUBERNETES).normalize(snap)
+        assert r.platforms[0].platform_type != PlatformType.KUBERNETES
+        assert r.platforms[0].platform_type == PlatformType.UNKNOWN
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-12 NO WORKLOAD INFERENCE
+# ════════════════════════════════════════════════════════════════════════
+
+class TestNoWorkloadInference:
+    """G5-12: No Workload entities are inferred from Kubernetes objects."""
+
+    def test_deployment_does_not_become_workload(self):
+        f = make_full_topology_fixture()
+        assert len(f.get("deployments", [])) > 0
+        r = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=f).collect())
+        assert len(r.workloads) == 0
+
+    def test_pod_does_not_become_workload(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        assert len(r.workloads) == 0
+        assert len(r.execution_environments) > 0
+
+    def test_no_workload_from_deployment_name(self):
+        f = make_full_topology_fixture()
+        f["deployments"] = [make_deployment("uadpf-deploy"), make_deployment("another-deploy")]
+        r = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=f).collect())
+        assert len(r.workloads) == 0
+
+    def test_no_workload_from_container_image(self):
+        f = make_full_topology_fixture()
+        f["pods"] = [make_pod(name="pod-nf", uid="uid-pod-nf", node_name="node-01",
+                              containers=[make_container("nf-c", "my-cnf:latest")])]
+        r = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=f).collect())
+        assert len(r.workloads) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-13 REPEATABILITY
+# ════════════════════════════════════════════════════════════════════════
+
+class TestRepeatability:
+    """G5-13: Same fixture → same results across multiple runs."""
+
+    def test_repeatability_canonical_ids(self):
+        fixture = make_full_topology_fixture()
+        r1 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        r2 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        ids1 = sorted(e.canonical_id for e in (r1.nodes + r1.execution_environments + r1.networks + r1.storages))
+        ids2 = sorted(e.canonical_id for e in (r2.nodes + r2.execution_environments + r2.networks + r2.storages))
+        assert ids1 == ids2
+
+    def test_repeatability_entity_counts(self):
+        fixture = make_full_topology_fixture()
+        r1 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        r2 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        assert r1.entity_count == r2.entity_count
+
+    def test_repeatability_enum_mapping(self):
+        fixture = make_full_topology_fixture()
+        r1 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        r2 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        assert sorted(ee.ee_type for ee in r1.execution_environments) == sorted(ee.ee_type for ee in r2.execution_environments)
+
+    def test_repeatability_relationship_evidence(self):
+        fixture = make_full_topology_fixture()
+        r1 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        r2 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        ev1 = sorted((e.source_entity_ref, e.target_entity_ref, e.evidence_type.value) for e in r1.relationship_evidence)
+        ev2 = sorted((e.source_entity_ref, e.target_entity_ref, e.evidence_type.value) for e in r2.relationship_evidence)
+        assert ev1 == ev2
+
+    def test_repeatability_warnings(self):
+        fixture = make_full_topology_fixture()
+        r1 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        r2 = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        assert r1.warnings == r2.warnings
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-14 NO LIVE KUBERNETES CONNECTION
+# ════════════════════════════════════════════════════════════════════════
+
+class TestNoLiveConnection:
+    """G5-14: No live Kubernetes connection occurs during tests."""
+
+    def test_adapter_uses_fixture_not_network(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_topology_fixture())
+        snap = adapter.collect()
+        assert snap.payload["cluster"]["name"] == "cluster-01"
+        assert snap.payload["nodes"][0]["metadata"]["name"] == "node-01"
+
+    def test_no_kubernetes_library_import(self):
+        import inspect
+        from server_manager.providers.kubernetes import KubernetesProviderAdapter as KPA
+        source = inspect.getsource(KPA)
+        assert "import kubernetes" not in source
+        assert "from kubernetes" not in source
+
+    def test_no_kubectl_or_api_endpoint_in_source(self):
+        import inspect
+        from server_manager.providers.kubernetes import KubernetesProviderAdapter as KPA
+        source = inspect.getsource(KPA)
+        assert "kubectl" not in source.lower()
+        assert "kubeconfig" not in source.lower()
+        assert "https://" not in source
+        assert "http://" not in source
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-15 / G5-16 MODEL ISOLATION
+# ════════════════════════════════════════════════════════════════════════
+
+class TestModelIsolation:
+    """G5-15/G5-16: Canonical and inventory models are separate."""
+
+    def test_canonical_workload_is_not_inventory_workload(self):
+        from server_manager.models.canonical import Workload as CanonicalWorkload
+        from server_manager.models.inventory import Workload as InventoryWorkload
+        assert CanonicalWorkload is not InventoryWorkload
+
+    def test_canonical_entity_has_source_evidence(self):
+        from server_manager.models.canonical import CanonicalEntity
+        from server_manager.models.inventory import ServerInventory
+        assert "source_evidence" in CanonicalEntity.model_fields
+        assert "source_evidence" not in ServerInventory.model_fields
+
+    def test_no_provider_specific_fields_on_canonical(self):
+        from server_manager.models.canonical import Node, ExecutionEnvironment
+        for field in ["pod_name", "deployment_name", "namespace_name", "kubectl_command"]:
+            assert field not in Node.model_fields
+            assert field not in ExecutionEnvironment.model_fields
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-17 PROVIDER NEUTRALITY
+# ════════════════════════════════════════════════════════════════════════
+
+class TestProviderNeutrality:
+    """G5-17: Kubernetes-specific info stays in metadata, not top-level fields."""
+
+    def test_k8s_data_in_metadata_not_top_level(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        node = r.nodes[0]
+        assert "kubernetes" in node.metadata
+        assert "uid" in node.metadata["kubernetes"]
+        assert "raw" in node.metadata["kubernetes"]
+
+    def test_pod_ee_has_kubernetes_metadata(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        pod_ee = next(ee for ee in r.execution_environments if ee.ee_type == ExecutionEnvironmentType.POD)
+        assert "kubernetes" in pod_ee.metadata
+        assert "raw" in pod_ee.metadata["kubernetes"]
+        assert pod_ee.metadata["kubernetes"]["namespace"] == "ran"
+
+    def test_service_network_has_kubernetes_metadata(self):
+        r = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(fixture=make_full_topology_fixture()).collect())
+        net = r.networks[0]
+        assert "kubernetes" in net.metadata
+        assert "raw" in net.metadata["kubernetes"]
+        assert net.metadata["kubernetes"]["service_type"] == "ClusterIP"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  G5-18 REGRESSION SMOKE
+# ════════════════════════════════════════════════════════════════════════
+
+class TestRegressionSmoke:
+    """G5-18: Smoke tests that don't conflict with existing test suite."""
+
+    def test_existing_k8s_provider_tests_importable(self):
+        import tests.test_kubernetes_provider  # noqa: F401
+
+    def test_existing_k8s_normalizer_tests_importable(self):
+        import tests.test_kubernetes_normalizer  # noqa: F401
+
+    def test_e2e_with_minimal_fixture(self):
+        fixture = {"cluster": {"name": "min-cluster", "version": "1.27.0"}}
+        r = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture=fixture).collect())
+        assert len(r.platforms) == 1 and len(r.clusters) == 1
+        assert len(r.nodes) == 0 and r.status == OrchestrationStatus.SUCCESS
+
+    def test_e2e_empty_fixture(self):
+        r = KubernetesProviderNormalizer().normalize(KubernetesProviderAdapter(fixture={}).collect())
+        assert len(r.platforms) == 1 and len(r.clusters) == 1
+
+
+
+
+
+
+
+
+
+

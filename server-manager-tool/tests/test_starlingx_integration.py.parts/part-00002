@@ -1,0 +1,107 @@
+     assert summary.health.unhealthy >= 1
+        assert summary.faults.total_faults >= 1
+        assert summary.alerts.open >= 1
+
+    def test_starlingx_does_not_break_kubernetes(self):
+        """StarlingX registration does not interfere with K8s extractor."""
+        from server_manager.health.service import HealthService
+        extractors = HealthService._EXTRACTORS
+        assert ProviderType.WRCP in extractors
+        assert ProviderType.KUBERNETES in extractors
+
+    def test_node_cluster_ref_resolved(self):
+        """Node.cluster_ref resolves to Cluster.canonical_id."""
+        fixture = _make_base_fixture()
+        dr, _, _ = _run_pipeline(fixture)
+        node = dr.inventory.nodes[0]
+        cluster = dr.inventory.clusters[0]
+        assert node.cluster_ref == cluster.canonical_id
+
+    def test_graph_has_starlingx_nodes(self):
+        from server_manager.graph.service import GraphBuilder, GraphQuery
+        fixture = _make_base_fixture()
+        dr, _, _ = _run_pipeline(fixture)
+        graph = GraphBuilder().build(dr)
+
+# ════════════════════════════════════════════════════════════════════════
+#  7. GRAPH_RELATIONSHIP_RULES
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestGraphRelationshipRules:
+    """Graph relationship creation follows existing rules.
+    No name/IP-based inference."""
+
+    def test_direct_evidence_only(self):
+        fixture = _make_base_fixture()
+        snapshot = StarlingXProviderAdapter(fixture=fixture).collect()
+        for ev in snapshot.relationship_evidence:
+            assert ev.evidence_type.value == "DIRECT"
+
+    def test_no_name_based_inference(self):
+        """No relationship inferred from hostname/name matching."""
+        fixture = _make_base_fixture()
+        snapshot = StarlingXProviderAdapter(fixture=fixture).collect()
+        for ev in snapshot.relationship_evidence:
+            assert ev.relationship_type == "has_memory"
+
+    def test_no_ip_based_inference(self):
+        fixture = _make_base_fixture()
+        snapshot = StarlingXProviderAdapter(fixture=fixture).collect()
+        for ev in snapshot.relationship_evidence:
+            raw = ev.raw_data or {}
+            assert "ip" not in str(raw).lower()
+            assert "address" not in str(raw).lower()
+
+    def test_imemorys_evidence_links_host(self):
+        fixture = _make_base_fixture()
+        snapshot = StarlingXProviderAdapter(fixture=fixture).collect()
+        assert len(snapshot.relationship_evidence) >= 1
+        ev = snapshot.relationship_evidence[0]
+        assert ev.source_entity_ref == HOST_UUID
+        assert "imemorys" in ev.target_entity_ref
+
+    def test_no_physical_entity_created(self):
+        """bm_type=none -> no Physical entity from StarlingX."""
+        fixture = _make_base_fixture()
+        dr, _, _ = _run_pipeline(fixture)
+        assert len(dr.inventory.physicals) == 0
+
+    def test_graph_edges_from_ref_fields(self):
+        """Graph edges from ref fields: platform->cluster->node."""
+        from server_manager.graph.service import GraphBuilder
+        fixture = _make_base_fixture()
+        dr, _, _ = _run_pipeline(fixture)
+        graph = GraphBuilder().build(dr)
+        assert graph.relationship_count >= 2
+
+    def test_no_inferred_relationships(self):
+        """No INFERRED or UNKNOWN relationship types in graph.
+
+        RelationshipType enum only has allowed values (RUNS_ON, CONTAINS,
+        MEMBER_OF, HOSTS, USES, ATTACHED_TO). INFERRED is prohibited.
+        """
+        from server_manager.graph.service import GraphBuilder
+        fixture = _make_base_fixture()
+        dr, _, _ = _run_pipeline(fixture)
+        graph = GraphBuilder().build(dr)
+        # All relationship types must be among the allowed set
+        allowed = {"RUNS_ON", "CONTAINS", "MEMBER_OF",
+                   "HOSTS", "USES", "ATTACHED_TO"}
+        for rel in graph.relationships:
+            assert rel.relationship_type.value in allowed
+
+    def test_source_evidence_wrcp(self):
+        """Snapshot SourceEvidence has WRCP provider_type."""
+        adapter = StarlingXProviderAdapter(fixture=_make_base_fixture())
+        snapshot = adapter.collect()
+        assert snapshot.source_evidence is not None
+        assert snapshot.source_evidence.provider_type == ProviderType.WRCP
+
+    def test_empty_alarms_no_warnings(self):
+        fixture = _make_base_fixture(
+            fm_alarms=[], platform_memory_used=50.0)
+        _, hp, _ = _run_pipeline(fixture)
+        node = [r for r in hp.results if r.entity_type == "Node"]
+        assert not any("FM alarm" in w for w in node[0].warnings)
+

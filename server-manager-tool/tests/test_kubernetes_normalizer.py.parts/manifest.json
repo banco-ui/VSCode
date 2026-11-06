@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_kubernetes_normalizer.py",
+  "originalSize": 33487,
+  "sha256": "c69b9826bde9e84627b4f74fe648e1ac2533e6ad4d7a1606a62e8f75671f1d5c",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_kubernetes_normalizer.py\""
+}

@@ -1,0 +1,28 @@
+{
+  "originalPath": "usm-automation/Verizon USM-OSS Interface Specification_25A_v1.0.txt",
+  "originalSize": 447620,
+  "sha256": "0f9b4a00fca10530a52d06d78356c24d370aa3bcbdeebbcd09631a94a10e9f05",
+  "partSize": 25000,
+  "partCount": 18,
+  "parts": [
+    "part-00001",
+    "part-00002",
+    "part-00003",
+    "part-00004",
+    "part-00005",
+    "part-00006",
+    "part-00007",
+    "part-00008",
+    "part-00009",
+    "part-00010",
+    "part-00011",
+    "part-00012",
+    "part-00013",
+    "part-00014",
+    "part-00015",
+    "part-00016",
+    "part-00017",
+    "part-00018"
+  ],
+  "restore": "node scripts/restore-split.js \"usm-automation/Verizon USM-OSS Interface Specification_25A_v1.0.txt\""
+}

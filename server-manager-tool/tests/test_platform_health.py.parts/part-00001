@@ -1,0 +1,502 @@
+"""Platform Health & Resource Management Tests — Phase 15.
+
+Tests the health assessment pipeline:
+
+    DiscoveryResult (Phase 14)
+        ↓
+    HealthService.assess()
+        ↓
+    HealthExtractor (provider-specific)
+        ↓
+    HealthReport (list[HealthResult])
+
+All fixtures are synthetic/in-memory. No live Kubernetes connection.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.discovery import PlatformDiscovery
+from server_manager.health import (
+    AvailabilityStatus, CapacityInfo, HealthExtractor, HealthReport,
+    HealthResult, HealthService, HealthStatus, KubernetesHealthExtractor,
+    ResourceType, ResourceStatus,
+)
+from server_manager.models.canonical import ProviderType
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import KubernetesProviderAdapter, RawProviderSnapshot
+
+
+# ── Fixture helpers (extended from Phase 14 with health evidence) ───────
+
+def make_node(name, uid=None, ready="True", mem_pressure="False",
+              disk_pressure="False", pid_pressure="False",
+              net_unavailable="False", cpu_capacity="4",
+              cpu_allocatable="3500m", mem_capacity="16777216Ki",
+              mem_allocatable="15700000Ki"):
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or f"uid-node-{name}",
+                         "labels": {"kubernetes.io/hostname": name}},
+            "spec": {},
+            "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"},
+                "conditions": [
+                    {"type": "Ready", "status": ready},
+                    {"type": "MemoryPressure", "status": mem_pressure},
+                    {"type": "DiskPressure", "status": disk_pressure},
+                    {"type": "PIDPressure", "status": pid_pressure},
+                    {"type": "NetworkUnavailable", "status": net_unavailable}],
+                "capacity": {"cpu": cpu_capacity, "memory": mem_capacity,
+                             "pods": "110"},
+                "allocatable": {"cpu": cpu_allocatable,
+                                "memory": mem_allocatable, "pods": "110"}}}
+
+def make_pod(name, uid=None, namespace="default", node_name=None,
+             phase="Running", ready="True", containers=None):
+    spec = {}
+    if node_name: spec["nodeName"] = node_name
+    spec["containers"] = containers or [{"name": "main", "image": "nginx:1.21",
+                                          "resources": {}}]
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or f"uid-pod-{name}",
+                         "namespace": namespace},
+            "spec": spec,
+            "status": {"phase": phase,
+                "conditions": [{"type": "Ready", "status": ready},
+                    {"type": "Initialized", "status": "True"},
+                    {"type": "PodScheduled", "status": "True"}]}}
+
+def make_pv(name, uid=None, phase="Bound", capacity="10Gi"):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+            "spec": {"capacity": {"storage": capacity}},
+            "status": {"phase": phase}}
+
+def make_pvc(name, uid=None, phase="Bound"):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}",
+                         "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}},
+            "status": {"phase": phase}}
+
+def make_service(name, uid=None):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or f"uid-svc-{name}",
+                         "namespace": "default"},
+            "spec": {"type": "ClusterIP", "clusterIP": "10.96.0.1"}}
+
+def make_full_fixture():
+    return {"cluster": {"name": "cluster-01", "uid": "uid-cluster-01",
+                        "version": "1.28.0"},
+            "nodes": [make_node("node-01")],
+            "namespaces": [],
+            "pods": [make_pod(name="uadpf-dmp-xxxxx", uid="uid-pod-uadpf-dmp",
+                             namespace="ran", node_name="node-01",
+                             containers=[{"name": "dmp", "image": "dmp:1.0",
+                                          "resources": {}},
+                                         {"name": "sidecar", "image": "busybox:1.35",
+                                          "resources": {}}])],
+            "deployments": [], "statefulsets": [], "daemonsets": [],
+            "services": [make_service("uadpf-service")],
+            "persistent_volumes": [make_pv("uadpf-pv")],
+            "persistent_volume_claims": [make_pvc("uadpf-pvc")]}
+
+def discover_full():
+    adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+    normalizer = KubernetesProviderNormalizer()
+    return PlatformDiscovery().discover(adapter, normalizer)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  HEALTH STATUS TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestHealthStatus:
+    """Health status derivation from K8s evidence."""
+
+    def test_healthy_status(self):
+        """Node with Ready=True, no pressures -> HEALTHY."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert len(node_results) == 1
+        assert node_results[0].status == HealthStatus.HEALTHY
+
+    def test_degraded_status(self):
+        """Node with Ready=True but MemoryPressure=True -> DEGRADED."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [make_node("node-01", mem_pressure="True")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].status == HealthStatus.DEGRADED
+
+    def test_unhealthy_status(self):
+        """Node with Ready=False -> UNHEALTHY."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [make_node("node-01", ready="False")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].status == HealthStatus.UNHEALTHY
+
+    def test_unknown_status(self):
+        """Node with no conditions -> UNKNOWN."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [{"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": "node-01", "uid": "uid-node-01"},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}}}]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].status == HealthStatus.UNKNOWN
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  AVAILABILITY STATUS TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestAvailabilityStatus:
+    """Availability status derivation from K8s evidence."""
+
+    def test_available_status(self):
+        """Node Ready=True -> AVAILABLE."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].availability == AvailabilityStatus.AVAILABLE
+
+    def test_unavailable_status(self):
+        """Node Ready=False -> UNAVAILABLE."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [make_node("node-01", ready="False")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].availability == AvailabilityStatus.UNAVAILABLE
+
+    def test_unknown_availability(self):
+        """Node with no conditions -> UNKNOWN availability."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [{"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": "node-01", "uid": "uid-node-01"},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}}}]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].availability == AvailabilityStatus.UNKNOWN
+
+    def test_health_degraded_availability_available(self):
+        """Health=DEGRADED + Availability=AVAILABLE is valid combination."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [make_node("node-01", mem_pressure="True")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].status == HealthStatus.DEGRADED
+        assert node_results[0].availability == AvailabilityStatus.AVAILABLE
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  RESOURCE STATUS TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestResourceStatus:
+    """Resource status extraction from K8s evidence."""
+
+    def test_cpu_resource_status(self):
+        """Node CPU capacity and allocatable are extracted."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        cpu_status = [r for r in node_results[0].resource_statuses
+                       if r.resource_type == ResourceType.CPU]
+        assert len(cpu_status) == 1
+        assert cpu_status[0].total == "4"
+        assert cpu_status[0].available == "3500m"
+        assert cpu_status[0].used is None
+        assert cpu_status[0].utilization is None
+
+    def test_memory_resource_status(self):
+        """Node Memory capacity and allocatable are extracted."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        mem_status = [r for r in node_results[0].resource_statuses
+                       if r.resource_type == ResourceType.MEMORY]
+        assert len(mem_status) == 1
+        assert mem_status[0].total == "16777216Ki"
+        assert mem_status[0].available == "15700000Ki"
+        assert mem_status[0].used is None
+        assert mem_status[0].utilization is None
+
+    def test_storage_resource_status(self):
+        """PV storage capacity is extracted."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        storage_results = report.results_for_type("STORAGE")
+        pv_result = [r for r in storage_results if "pv" in r.entity_id.lower()]
+        assert len(pv_result) >= 1
+        storage_status = [r for r in pv_result[0].resource_statuses
+                          if r.resource_type == ResourceType.STORAGE]
+        assert len(storage_status) == 1
+        assert storage_status[0].total == "10Gi"
+        assert storage_status[0].used is None
+
+    def test_network_resource_status(self):
+        """Network (K8s Service) has no explicit resource evidence -> empty."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        net_results = report.results_for_type("NETWORK")
+        assert len(net_results) == 1
+        assert len(net_results[0].resource_statuses) == 0
+
+    def test_accelerator_resource_status(self):
+        """No accelerator entities in K8s -> no accelerator resource status."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        acc_results = report.results_for_type("ACCELERATOR")
+        assert len(acc_results) == 0
+
+    def test_missing_resource_evidence_is_unknown(self):
+        """Node with no capacity/allocatable -> no resource status."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [{"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": "node-01", "uid": "uid-node-01"},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"},
+                "conditions": [{"type": "Ready", "status": "True"}]}}]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert len(node_results[0].resource_statuses) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CAPACITY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCapacity:
+    """Capacity extraction and preservation."""
+
+    def test_capacity_preserved(self):
+        """Capacity values preserve source units (no conversion)."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        cpu_caps = [c for c in node_results[0].capacity_infos
+                    if c.resource_type == ResourceType.CPU]
+        assert len(cpu_caps) == 1
+        assert cpu_caps[0].capacity == "4"
+        assert cpu_caps[0].allocatable == "3500m"
+        assert cpu_caps[0].unit == "cores"
+
+    def test_missing_capacity_is_unknown(self):
+        """Node with no capacity -> no capacity info."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [{"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": "node-01", "uid": "uid-node-01"},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"},
+                "conditions": [{"type": "Ready", "status": "True"}]}}]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert len(node_results[0].capacity_infos) == 0
+
+    def test_no_fake_capacity(self):
+        """No derived capacity (CPU threads != capacity, GPU != 100%)."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        for result in report.results:
+            for cap in result.capacity_infos:
+                # Capacity must come from source evidence, not inference
+                assert cap.source_evidence is not None
+                # Capacity values are strings from source, not computed
+                assert isinstance(cap.capacity, (str, type(None)))
+                assert isinstance(cap.allocatable, (str, type(None)))
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  KUBERNETES HEALTH TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestKubernetesHealth:
+    """Kubernetes-specific health assessment."""
+
+    def test_kubernetes_node_health(self):
+        """K8s Node health from conditions."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert len(node_results) == 1
+        assert node_results[0].status == HealthStatus.HEALTHY
+        assert node_results[0].entity_type == "NODE"
+
+    def test_kubernetes_pod_health(self):
+        """K8s Pod health from status.phase."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        ee_results = report.results_for_type("EXECUTION_ENVIRONMENT")
+        # At least one Pod (POD type)
+        assert len(ee_results) >= 1
+        # The pod with phase=Running and Ready=True -> HEALTHY
+        healthy_ees = [r for r in ee_results if r.status == HealthStatus.HEALTHY]
+        assert len(healthy_ees) >= 1
+
+    def test_kubernetes_storage_health(self):
+        """K8s PV/PVC health from status.phase."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        storage_results = report.results_for_type("STORAGE")
+        assert len(storage_results) == 2  # PV + PVC
+        # PV with phase=Bound -> HEALTHY
+        healthy_storage = [r for r in storage_results
+                           if r.status == HealthStatus.HEALTHY]
+        assert len(healthy_storage) == 2
+
+    def test_kubernetes_resource_mapping(self):
+        """K8s resources are mapped to canonical entity health results."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        # Check all entity types are present
+        entity_types = {r.entity_type for r in report.results}
+        assert "NODE" in entity_types
+        assert "EXECUTION_ENVIRONMENT" in entity_types
+        assert "STORAGE" in entity_types
+        assert "NETWORK" in entity_types
+        assert "PLATFORM" in entity_types
+        assert "CLUSTER" in entity_types
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVENANCE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProvenance:
+    """Provenance preservation in health results."""
+
+    def test_health_provenance(self):
+        """HealthResult preserves source evidence from canonical entity."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].source_evidence is not None
+        assert node_results[0].source_evidence.provider_type == ProviderType.KUBERNETES
+
+    def test_resource_provenance(self):
+        """ResourceStatus preserves source evidence."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        for rs in node_results[0].resource_statuses:
+            assert rs.source_evidence is not None
+            assert rs.source_evidence.provider_type == ProviderType.KUBERNETES
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  IDENTITY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestIdentity:
+    """Health results use canonical identity, not provider ID."""
+
+    def test_health_uses_canonical_identity(self):
+        """HealthResult.entity_id is the canonical_id, not provider_id."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        canonical_ids = {n.canonical_id for n in discovery.inventory.nodes}
+        health_ids = {r.entity_id for r in node_results}
+        assert health_ids == canonical_ids
+        for eid in health_ids:
+            assert eid.startswith("canon-")
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  UNKNOWN POLICY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestUnknownPolicy:
+    """UNKNOWN is used actively — no evidence != healthy/zero."""
+
+    def test_no_conditions_is_unknown_not_healthy(self):
+        """Node without conditions is UNKNOWN, not HEALTHY."""
+        fixture = make_full_fixture()
+        fixture["nodes"] = [{"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": "node-01", "uid": "uid-node-01"},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}}}]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].status == HealthStatus.UNKNOWN
+        assert node_results[0].status != HealthStatus.HEALTHY
+
+    def test_no_metric_is_none_not_zero(self):
+        """Missing used/utilization is None, not zero."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        node_results = report.results_for_type("NODE")
+        for rs in node_results[0].resource_statuses:
+            assert rs.used is None
+            assert rs.utilization is None
+
+    def test_network_no_evidence_is_unknown(self):
+        """K8s Service with no health evidence -> UNKNOWN, not HEALTHY."""
+        discovery = discover_full()
+        report = HealthService().assess(discovery)
+        net_results = report.results_for_type("NETWORK")
+        assert net_results[0].status == HealthStatus.UNKNOWN
+        assert net_results[0].availability == AvailabilityStatus.UNKNOWN
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  READ-ONLY SAFETY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMutationSafety:
+    """No mutation operations in health pipeline."""
+
+    @staticmethod
+    def _source_lines():
+        import inspect
+        from server_manager.health import service as health_mod
+        return inspect.getsource(health_mod).split("\n")
+
+    def test_no_create(self):
+        for line in self._source_lines():
+            s = line.strip()
+            if s.startswith("#"): continue
+            assert ".create_" not in s, f"create_ found: {s}"
+
+    def test_no_update(self):
+        for line in self._source_lines():
+            s = line.strip()
+            

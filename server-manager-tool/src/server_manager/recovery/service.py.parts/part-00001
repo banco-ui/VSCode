@@ -1,0 +1,586 @@
+"""Recovery / Remediation Service — Phase 18.
+
+Provider-neutral recovery service for safely defining, evaluating,
+and executing remediation actions on canonical entities with detected faults.
+
+Pipeline:
+    Fault (Phase 17)
+        ↓
+    RecoveryCandidate (proposed)
+        ↓
+    Safety Gate (PASS / BLOCKED)
+        ↓
+    Authorization (EXECUTE required for mutation)
+        ↓
+    Preview (dry-run, no mutation)
+        ↓
+    Execution (if execution_enabled=True)
+        ↓
+    Post-Action Verification
+        ↓
+    RecoveryExecutionResult
+
+SAFETY PRINCIPLES:
+    - AUTOMATIC_RECOVERY = DISABLED by default
+    - No provider API calls unless execution_enabled=True AND safety PASS
+    - No inference: fault evidence required
+    - Pod != Workload (Phase 13E policy preserved)
+    - No escalation on failure
+    - Idempotency: same (fault_id, action_type, target_entity_id) → no duplicate
+"""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from server_manager.fault.models import Fault, FaultType
+from server_manager.graph.service import GraphQuery
+from server_manager.models.canonical import ProviderType
+
+from .models import (
+    AuthorizationLevel,
+    RecoveryAction,
+    RecoveryActionParameters,
+    RecoveryActionType,
+    RecoveryCandidate,
+    RecoveryCandidateStatus,
+    RecoveryExecutionResult,
+    RecoveryExecutionStatus,
+    RecoveryPreview,
+    SafetyBlockReason,
+    SafetyGateResult,
+    SafetyResult,
+)
+
+# Fault types that may produce a recovery candidate.
+_ACTIONABLE_FAULT_TYPES: set[FaultType] = {
+    FaultType.HEALTH_FAILURE,
+    FaultType.HEALTH_DEGRADED,
+    FaultType.AVAILABILITY_FAILURE,
+}
+
+_DEFAULT_ACTION_TYPE: dict[FaultType, RecoveryActionType] = {
+    FaultType.HEALTH_FAILURE: RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT,
+    FaultType.HEALTH_DEGRADED: RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT,
+    FaultType.AVAILABILITY_FAILURE: RecoveryActionType.RESTART_EXECUTION_ENVIRONMENT,
+}
+
+
+
+class RecoverySafetyGate:
+    """Safety gate for recovery actions.
+
+    Evaluates whether a recovery action may proceed to execution.
+    Returns PASS only if ALL checks pass.
+
+    Default: execution_enabled=False — everything is BLOCKED.
+
+    Checks:
+        1. Target exists (non-empty)
+        2. Fault evidence exists (non-empty)
+        3. Fault is actionable (not UNKNOWN, not ambiguous)
+        4. Provider known (not UNKNOWN)
+        5. Action supported by provider
+        6. No duplicate recovery already active
+        7. Execution explicitly enabled
+        8. Authorization sufficient (EXECUTE for actual mutation)
+    """
+
+    def __init__(
+        self,
+        execution_enabled: bool = False,
+        active_identity_keys: Optional[set[str]] = None,
+    ) -> None:
+        self._execution_enabled = execution_enabled
+        self._active_identity_keys = active_identity_keys or set()
+
+    def evaluate(
+        self,
+        action: RecoveryAction,
+        fault: Fault,
+        supported_actions: set[RecoveryActionType],
+        authorization: AuthorizationLevel = AuthorizationLevel.READ_ONLY,
+    ) -> SafetyGateResult:
+        """Evaluate all safety checks. Returns PASS only if all pass."""
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+
+        # 1. Target exists
+        if not action.target_entity_id or not action.target_entity_id.strip():
+            checks_failed.append("target_exists")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.INVALID_TARGET,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("target_exists")
+
+        # 2. Fault evidence exists
+        if not fault.evidence:
+            checks_failed.append("fault_evidence")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.MISSING_FAULT_EVIDENCE,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("fault_evidence")
+
+        # 3. Fault is actionable
+        if fault.fault_type not in _ACTIONABLE_FAULT_TYPES:
+            checks_failed.append("fault_actionable")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.FAULT_NOT_ACTIONABLE,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("fault_actionable")
+
+        # 4. Provider known
+        if action.provider_type == ProviderType.UNKNOWN:
+            checks_failed.append("provider_known")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.UNKNOWN_PROVIDER,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("provider_known")
+
+        # 5. Action supported
+        if action.action_type not in supported_actions:
+            checks_failed.append("action_supported")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.UNSUPPORTED_ACTION,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("action_supported")
+
+        # 6. No duplicate recovery
+        if action.identity_key in self._active_identity_keys:
+            checks_failed.append("no_duplicate")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.DUPLICATE_RECOVERY,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("no_duplicate")
+
+        # 7. Execution explicitly enabled
+        if not self._execution_enabled:
+            checks_failed.append("execution_enabled")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.EXECUTION_NOT_ENABLED,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("execution_enabled")
+
+        # 8. Authorization sufficient
+        if authorization < AuthorizationLevel.EXECUTE:
+            checks_failed.append("authorization")
+            return SafetyGateResult(
+                result=SafetyResult.BLOCKED,
+                reason=SafetyBlockReason.INSUFFICIENT_AUTHORIZATION,
+                checks_passed=checks_passed,
+                checks_failed=checks_failed,
+            )
+        checks_passed.append("authorization")
+
+        return SafetyGateResult(
+            result=SafetyResult.PASS,
+            checks_passed=checks_passed,
+            checks_failed=checks_failed,
+        )
+
+# ════════════════════════════════════════════════════════════════════════
+#  RECOVERY EXECUTOR (abstract)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class RecoveryExecutor(ABC):
+    """Provider-neutral recovery executor interface.
+
+    The executor receives an already-validated RecoveryAction.
+    It does NOT perform discovery, safety checks, or authorization —
+    those are done by the safety gate and service before calling execute().
+
+    Execution != Verification:
+        execute()  → EXECUTED (action ran, not yet verified)
+        verify()   → VERIFIED or VERIFICATION_FAILED
+    """
+
+    @abstractmethod
+    def preview(self, action: RecoveryAction) -> RecoveryPreview:
+        """Generate a dry-run preview without mutation."""
+        ...
+
+    @abstractmethod
+    def execute(self, action: RecoveryAction) -> RecoveryExecutionResult:
+        """Execute the recovery action.
+
+        Returns EXECUTED (not VERIFIED) if the action ran.
+        Verification is a separate step.
+        """
+        ...
+
+    @abstractmethod
+    def verify(
+        self, action: RecoveryAction,
+        post_health: Optional[Any] = None,
+    ) -> RecoveryExecutionResult:
+        """Verify post-action state.
+
+        Verification requires evidence — a successful API call alone
+        does NOT qualify as VERIFIED.
+        """
+        ...
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MOCK RECOVERY EXECUTOR
+# ════════════════════════════════════════════════════════════════════════
+
+
+class MockRecoveryExecutor(RecoveryExecutor):
+    """Mock recovery executor for testing.
+
+    Simulates execution without any real provider mutation.
+    Supports configurable success/failure/timeout behavior.
+
+    This is the ONLY executor that can be used in tests.
+    No real provider mutation is performed.
+    """
+
+    def __init__(
+        self,
+        simulate_failure: bool = False,
+        simulate_timeout: bool = False,
+    ) -> None:
+        self._simulate_failure = simulate_failure
+        self._simulate_timeout = simulate_timeout
+        self._executed_actions: dict[str, RecoveryExecutionResult] = {}
+
+    def preview(self, action: RecoveryAction) -> RecoveryPreview:
+        """Generate a deterministic dry-run preview."""
+        return RecoveryPreview(
+            action=action,
+            expected_effect=f"Mock preview: {action.action_type.value} on {action.target_entity_id}",
+            safety_result=SafetyResult.PASS,
+            supported=True,
+        )
+
+    def execute(self, action: RecoveryAction) -> RecoveryExecutionResult:
+        """Simulate execution without real mutation."""
+        now = datetime.now(timezone.utc).isoformat()
+
+        if self._simulate_failure:
+            result = RecoveryExecutionResult(
+                action_id=action.action_id,
+                status=RecoveryExecutionStatus.FAILED,
+                started_at=now,
+                completed_at=now,
+                provider=action.provider_type,
+                target=action.target_entity_id,
+                error="Simulated execution failure",
+            )
+            self._executed_actions[action.action_id] = result
+            return result
+
+        if self._simulate_timeout:
+            result = RecoveryExecutionResult(
+                action_id=action.action_id,
+                status=RecoveryExecutionStatus.FAILED,
+                started_at=now,
+                completed_at=now,
+                provider=action.provider_type,
+                target=action.target_entity_id,
+                error="Simulated execution timeout",
+            )
+            self._executed_actions[action.action_id] = result
+            return result
+
+        result = RecoveryExecutionResult(
+            action_id=action.action_id,
+            status=RecoveryExecutionStatus.EXECUTED,
+            started_at=now,
+            completed_at=now,
+            provider=action.provider_type,
+            target=action.target_entity_id,
+            evidence={"mock": True, "action_type": action.action_type.value},
+        )
+        self._executed_actions[action.action_id] = result
+        return result
+
+    def verify(
+        self, action: RecoveryAction,
+        post_health: Optional[Any] = None,
+    ) -> RecoveryExecutionResult:
+        """Verify post-action state using provided HealthResult.
+
+        No post_health → VERIFICATION_FAILED.
+        post_health with HEALTHY status → VERIFIED.
+        post_health with non-HEALTHY status → VERIFICATION_FAILED.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        if post_health is None:
+            return RecoveryExecutionResult(
+                action_id=action.action_id,
+                status=RecoveryExecutionStatus.VERIFICATION_FAILED,
+                completed_at=now,
+                provider=action.provider_type,
+                target=action.target_entity_id,
+                error="No post-action health evidence provided",
+            )
+
+        health_status = getattr(post_health, "status", None)
+
+        if health_status is not None and health_status.value == "HEALTHY":
+            return RecoveryExecutionResult(
+                action_id=action.action_id,
+                status=RecoveryExecutionStatus.VERIFIED,
+                completed_at=now,
+                provider=action.provider_type,
+                target=action.target_entity_id,
+                evidence={
+                    "verification_source": "post_action_health",
+                    "health_status": "HEALTHY",
+                },
+            )
+
+        return RecoveryExecutionResult(
+            action_id=action.action_id,
+            status=RecoveryExecutionStatus.VERIFICATION_FAILED,
+            completed_at=now,
+            provider=action.provider_type,
+            target=action.target_entity_id,
+            error=f"Post-action health status: {health_status}",
+        )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  RECOVERY GRAPH CONTEXT (read-only)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class RecoveryGraphContext:
+    """Read-only graph context lookup for recovery.
+
+    Uses Phase 16 GraphQuery to look up related entities for a fault target.
+    Graph is used for CONTEXT ONLY — not for inferring causality or
+    expanding recovery targets.
+
+    Graph relationship != Recovery causality.
+    """
+
+    def __init__(self, graph_query: GraphQuery) -> None:
+        self._query = graph_query
+
+    def get_target_node(self, canonical_id: str) -> Optional[Any]:
+        """Get the graph node for the recovery target."""
+        return self._query.get_node(canonical_id)
+
+    def get_related_entities(self, canonical_id: str) -> list[str]:
+        """Get neighbor canonical_ids for context only.
+
+        This does NOT infer causality or expand recovery targets.
+        """
+        return self._query.get_neighbors(canonical_id)
+
+    def get_relationships(self, canonical_id: str) -> list[Any]:
+        """Get relationships for context lookup."""
+        return self._query.get_relationships(canonical_id)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  RECOVERY SERVICE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class RecoveryService:
+    """Provider-neutral recovery orchestration service.
+
+    Coordinates the recovery pipeline:
+        Fault → Candidate → Safety Gate → Preview → Execute → Verify
+
+    SAFETY: execution_enabled defaults to False.
+    No recovery is executed unless explicitly enabled.
+
+    Idempotency: same (fault_id, action_type, target) → returns existing candidate.
+    No escalation: failure does not auto-trigger other actions.
+    """
+
+    def __init__(
+        self,
+        executor: RecoveryExecutor,
+        safety_gate: Optional[RecoverySafetyGate] = None,
+        supported_actions: Optional[set[RecoveryActionType]] = None,
+        execution_enabled: bool = False,
+        authorization: AuthorizationLevel = AuthorizationLevel.READ_ONLY,
+    ) -> None:
+        self._executor = executor
+        self._safety_gate = safety_gate or RecoverySafetyGate(
+            execution_enabled=execution_enabled,
+        )
+        self._supported_actions = supported_actions or set()
+        self._execution_enabled = execution_enabled
+        self._authorization = authorization
+        self._active_candidates: dict[str, RecoveryCandidate] = {}
+        self._execution_results: dict[str, RecoveryExecutionResult] = {}
+
+    @property
+    def execution_enabled(self) -> bool:
+        return self._execution_enabled
+
+    def set_execution_enabled(self, enabled: bool) -> None:
+        """Explicitly enable or disable execution."""
+        self._execution_enabled = enabled
+        self._safety_gate = RecoverySafetyGate(
+            execution_enabled=enabled,
+            active_identity_keys=set(self._active_candidates.keys()),
+        )
+
+    def set_authorization(self, auth: AuthorizationLevel) -> None:
+        """Set the authorization level."""
+        self._authorization = auth
+
+    def propose_candidate(
+        self,
+        fault: Fault,
+        action_type: Optional[RecoveryActionType] = None,
+        target_entity_id: Optional[str] = None,
+    ) -> Optional[RecoveryCandidate]:
+        """Propose a recovery candidate from a fault.
+
+        Returns None if fault type is not actionable.
+        Does NOT execute anything — candidate is just a proposal.
+
+        UNKNOWN faults, missing evidence, and non-actionable fault types
+        produce no candidate.
+        """
+        if fault.fault_type not in _ACTIONABLE_FAULT_TYPES:
+            return None
+
+        if not fault.evidence:
+            return None
+
+        at = action_type or _DEFAULT_ACTION_TYPE.get(
+            fault.fault_type, RecoveryActionType.RESTART,
+        )
+        target = target_entity_id or fault.entity_id
+
+        action = RecoveryAction(
+            action_id=f"ra-{fault.fault_id}-{at.value}",
+            action_type=at,
+            target_entity_id=target,
+            provider_type=(
+                fault.source.provider_type if fault.source
+                else ProviderType.UNKNOWN
+            ),
+            fault_id=fault.fault_id,
+            reason=f"Recovery candidate for {fault.fault_type.value}",
+        )
+
+        if action.identity_key in self._active_candidates:
+            return self._active_candidates[action.identity_key]
+
+        candidate = RecoveryCandidate(
+            candidate_id=f"cand-{fault.fault_id}-{at.value}",
+            fault=fault,
+            action=action,
+            evidence=dict(fault.evidence),
+        )
+        self._active_candidates[action.identity_key] = candidate
+        return candidate
+
+
+    def preview(self, candidate: RecoveryCandidate) -> RecoveryPreview:
+        """Generate a dry-run preview without mutation."""
+        safety = self._safety_gate.evaluate(
+            action=candidate.action,
+            fault=candidate.fault,
+            supported_actions=self._supported_actions,
+            authorization=self._authorization,
+        )
+        preview = self._executor.preview(candidate.action)
+        preview.safety_result = safety.result
+        preview.safety_reason = safety.reason
+        return preview
+
+    def execute(
+        self, candidate: RecoveryCandidate,
+    ) -> RecoveryExecutionResult:
+        """Execute the recovery action if safety gate passes.
+
+        Returns BLOCKED if safety gate blocks.
+        Returns execution result otherwise.
+        """
+        safety = self._safety_gate.evaluate(
+            action=candidate.action,
+            fault=candidate.fault,
+            supported_actions=self._supported_actions,
+            authorization=self._authorization,
+        )
+
+        if safety.result == SafetyResult.BLOCKED:
+            candidate.status = RecoveryCandidateStatus.BLOCKED
+            candidate.block_reason = safety.reason
+            reason_str = safety.reason.value if safety.reason else "unknown"
+            result = RecoveryExecutionResult(
+                action_id=candidate.action.action_id,
+                status=RecoveryExecutionStatus.BLOCKED,
+                provider=candidate.action.provider_type,
+                target=candidate.action.target_entity_id,
+                error=f"Blocked: {reason_str}",
+            )
+            self._execution_results[candidate.action.action_id] = result
+            return result
+
+        exec_result = self._executor.execute(candidate.action)
+        self._execution_results[candidate.action.action_id] = exec_result
+
+        if exec_result.status == RecoveryExecutionStatus.EXECUTED:
+            candidate.status = RecoveryCandidateStatus.EXECUTED
+        elif exec_result.status == RecoveryExecutionStatus.FAILED:
+            candidate.status = RecoveryCandidateStatus.FAILED
+
+        return exec_result
+
+    def verify(
+        self,
+        candidate: RecoveryCandidate,
+        post_health: Optional[Any] = None,
+    ) -> RecoveryExecutionResult:
+        """Verify post-action state.
+
+        Requires explicit post-action HealthResult as evidence.
+        No evidence → VERIFICATION_FAILED.
+        """
+        result = self._executor.verify(candidate.action, post_health)
+        self._execution_results[candidate.action.action_id] = result
+
+        if result.status == RecoveryExecutionStatus.VERIFIED:
+            candidate.status = RecoveryCandidateStatus.VERIFIED
+        elif result.status == RecoveryExecutionStatus.VERIFICATION_FAILED:
+            candidate.status = RecoveryCandidateStatus.FAILED
+
+        return result
+
+    def get_execution_result(
+        self, action_id: str,
+    ) -> Optional[RecoveryExecutionResult]:
+        """Get the execution result for an action (in-memory)."""
+        return self._execution_results.get(action_id)
+
+    def get_candidate(self, identity_key: str) -> Optional[RecoveryCandidate]:
+        """Get an active candidate by identity key."""
+        return self._active_candidates.get(identity_key)
+

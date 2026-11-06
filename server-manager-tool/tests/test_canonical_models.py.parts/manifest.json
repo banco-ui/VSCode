@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/tests/test_canonical_models.py",
+  "originalSize": 22223,
+  "sha256": "d6b4c7ed59da578cd09ec1e6419069c65cef94f1897f5b9da859808c68eff874",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_canonical_models.py\""
+}

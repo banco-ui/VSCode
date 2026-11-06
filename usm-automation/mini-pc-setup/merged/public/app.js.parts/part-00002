@@ -1,0 +1,291 @@
+�)
+async function loadGtcFiles(path = '') {
+  const fileList = document.getElementById('gtcFileList');
+  const diskUsage = document.getElementById('gtcDiskUsage');
+  
+  fileList.innerHTML = '<div class="loading">파일 목록을 불러오는 중...</div>';
+  gtcCurrentPath = path;
+  
+  try {
+    // 파일 목록
+    const fileResult = await api(`/api/gtc/files?path=${encodeURIComponent(path)}`);
+    if (fileResult.ok && fileResult.files.length > 0) {
+      let html = `
+        <div class="gtc-nav">
+          ${path ? `<button onclick="loadGtcFiles('${encodeURIComponent(path.substring(0, path.lastIndexOf('/')) || '')}')" class="btn btn-sm">⬆️ 상위 디렉토리</button>` : ''}
+          <span class="gtc-current-path">${path || '루트'}</span>
+        </div>
+        <table class="gtc-table">
+          <thead>
+            <tr>
+              <th>파일명</th>
+              <th>크기</th>
+              <th>수정일</th>
+              <th>작업</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      
+      // 디렉토리가 먼저 오도록 정렬
+      const sorted = fileResult.files.sort((a, b) => {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.localeCompare(b.name, 'ko');
+      });
+      
+      sorted.forEach(f => {
+        html += `
+          <tr>
+            <td>
+              ${f.isDirectory 
+                ? `<a href="#" onclick="loadGtcFiles('${f.path}'); return false;">📁 ${escapeHtml(f.name)}</a>`
+                : `📄 ${escapeHtml(f.name)}`
+              }
+            </td>
+            <td>${f.isDirectory ? '-' : (f.sizeMB + ' MB')}</td>
+            <td>${new Date(f.mtime).toLocaleString('ko-KR')}</td>
+            <td>
+              ${f.isDirectory 
+                ? `<button onclick="downloadDir('${f.path}')" class="btn btn-sm">⬇️ 다운로드</button>
+                   <button onclick="deleteDir('${f.path}')" class="btn btn-sm btn-danger">삭제</button>`
+                : `<a href="/api/gtc/download?filename=${encodeURIComponent(f.path)}" class="btn btn-sm">⬇️ 다운로드</a>
+                   <button onclick="deleteGtcFile('${escapeHtml(f.path)}')" class="btn btn-sm btn-danger">삭제</button>`
+              }
+            </td>
+          </tr>
+        `;
+      });
+      
+      html += '</tbody></table>';
+      fileList.innerHTML = html;
+    } else {
+      fileList.innerHTML = '<div class="loading">파일이 없습니다.</div>';
+    }
+    
+    // 디스크 사용량
+    const diskResult = await api('/api/disk-usage');
+    if (diskResult.ok) {
+      const u = diskResult.usage;
+      diskUsage.innerHTML = `
+        <div class="disk-info">
+          <span>💾 저장장치: ${u.Filesystem || 'N/A'}</span>
+          <span>전체: ${u.Size || 'N/A'}</span>
+          <span>사용: ${u.Used || 'N/A'}</span>
+          <span>사용 가능: ${u.Avail || 'N/A'}</span>
+          <span>사용률: ${u.Use || 'N/A'}</span>
+        </div>
+      `;
+    }
+  } catch (err) {
+    fileList.innerHTML = `<div class="error">오류: ${err.message}</div>`;
+  }
+}
+
+// 디렉토리 다운로드
+function downloadDir(path) {
+  window.open(`/api/gtc/download-dir?path=${encodeURIComponent(path)}`, '_blank');
+}
+
+// 디렉토리 삭제
+async function deleteDir(path) {
+  if (!confirm(`"${path}" 디렉토리를 삭제하시겠습니까?\n하위 파일들도 모두 삭제됩니다.`)) return;
+  
+  try {
+    const res = await fetch(`/api/gtc/delete-dir?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+    const result = await res.json();
+    
+    if (result.ok) {
+      alert('삭제 완료!');
+      loadGtcFiles(gtcCurrentPath);
+    } else {
+      alert('삭제 실패: ' + (result.error || ''));
+    }
+  } catch (err) {
+    alert('삭제 오류: ' + err.message);
+  }
+}
+
+
+// GTC 파일 업로드 (디렉토리 + 진행상황 바 + 청크 업로드 지원)
+const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB per chunk
+
+async function uploadGtcFile(input) {
+  const files = input.files;
+  if (!files || files.length === 0) return;
+  
+  // 디렉토리 업로드인 경우 모든 파일 처리
+  const uploadPromises = [];
+  for (let i = 0; i < files.length; i++) {
+    uploadPromises.push(uploadFileWithProgress(files[i], i, files.length));
+  }
+  
+  try {
+    await Promise.all(uploadPromises);
+    alert(`총 ${files.length}개 파일 업로드 완료!`);
+    loadGtcFiles();
+  } catch (err) {
+    alert('업로드 중 오류 발생: ' + err.message);
+  }
+  
+  input.value = '';
+}
+
+async function uploadFileWithProgress(file, fileIndex, totalFiles) {
+  return new Promise((resolve, reject) => {
+    // 진행상황 UI 생성
+    const progressContainer = document.createElement('div');
+    progressContainer.className = 'upload-progress-container';
+    progressContainer.innerHTML = `
+      <div class="upload-progress-info">
+        <span>${fileIndex + 1}/${totalFiles}: ${escapeHtml(file.name)} (${formatFileSize(file.size)})</span>
+        <span class="upload-progress-percent">0%</span>
+      </div>
+      <div class="upload-progress-bar">
+        <div class="upload-progress-fill" style="width: 0%"></div>
+      </div>
+    `;
+    document.getElementById('gtcFileList').appendChild(progressContainer);
+    
+    const fillEl = progressContainer.querySelector('.upload-progress-fill');
+    const percentEl = progressContainer.querySelector('.upload-progress-percent');
+    
+    // 대용량 파일은 청크 업로드
+    if (file.size > CHUNK_SIZE) {
+      uploadFileInChunks(file, fillEl, percentEl)
+        .then(() => {
+          progressContainer.remove();
+          resolve();
+        })
+        .catch(reject);
+    } else {
+      // 소용량 파일은 일반 업로드
+      uploadFileSimple(file, fillEl, percentEl)
+        .then(() => {
+          setTimeout(() => progressContainer.remove(), 1000);
+          resolve();
+        })
+        .catch(reject);
+    }
+  });
+}
+
+function formatFileSize(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+async function uploadFileSimple(file, fillEl, percentEl) {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('filename', file.name);
+    formData.append('filepath', file.webkitRelativePath || file.name);
+    
+    const xhr = new XMLHttpRequest();
+    
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) {
+        const percent = Math.round((e.loaded / e.total) * 100);
+        fillEl.style.width = percent + '%';
+        percentEl.textContent = percent + '%';
+      }
+    });
+    
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 200) {
+        const result = JSON.parse(xhr.responseText);
+        if (result.ok) {
+          fillEl.style.width = '100%';
+          fillEl.classList.add('upload-complete');
+          percentEl.textContent = '완료!';
+          resolve();
+        } else {
+          reject(new Error(result.error || '업로드 실패'));
+        }
+      } else {
+        reject(new Error('HTTP ' + xhr.status));
+      }
+    });
+    
+    xhr.addEventListener('error', () => reject(new Error('네트워크 오류')));
+    
+    xhr.open('POST', '/api/gtc/upload');
+    xhr.send(formData);
+  });
+}
+
+async function uploadFileInChunks(file, fillEl, percentEl) {
+  const uploadId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(file.size, start + CHUNK_SIZE);
+    const chunk = file.slice(start, end);
+    
+    await new Promise((resolve, reject) => {
+      const formData = new FormData();
+      formData.append('chunk', chunk);
+      
+      const xhr = new XMLHttpRequest();
+      
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const chunkPercent = (e.loaded / e.total) * 100;
+          const totalPercent = Math.round(((i * 100) + chunkPercent) / totalChunks);
+          fillEl.style.width = totalPercent + '%';
+          percentEl.textContent = totalPercent + '%';
+        }
+      });
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+          resolve();
+        } else {
+          reject(new Error('Chunk upload failed'));
+        }
+      });
+      
+      xhr.addEventListener('error', () => reject(new Error('네트워크 오류')));
+      
+      xhr.open('POST', '/api/gtc/upload-chunk');
+      xhr.setRequestHeader('X-Upload-Id', uploadId);
+      xhr.setRequestHeader('X-Chunk-Index', i.toString());
+      xhr.setRequestHeader('X-Total-Chunks', totalChunks.toString());
+      xhr.setRequestHeader('X-Filename', file.webkitRelativePath || file.name);
+      xhr.send(formData);
+    });
+  }
+  
+  fillEl.style.width = '100%';
+  fillEl.classList.add('upload-complete');
+  percentEl.textContent = '완료!';
+}
+
+
+// GTC 파일 삭제
+async function deleteGtcFile(filename) {
+  if (!confirm(`"${filename}" 파일을 삭제하시겠습니까?`)) return;
+  
+  try {
+    const res = await fetch(`/api/gtc/delete?filename=${encodeURIComponent(filename)}`, {
+      method: 'DELETE'
+    });
+    const result = await res.json();
+    
+    if (result.ok) {
+      alert('삭제 완료!');
+      loadGtcFiles();
+    } else {
+      alert('삭제 실패: ' + result.error);
+    }
+  } catch (err) {
+    alert('삭제 오류: ' + err.message);
+  }
+}
+
+

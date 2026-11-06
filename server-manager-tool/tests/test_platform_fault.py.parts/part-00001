@@ -1,0 +1,497 @@
+"""Fault Detection Tests — Phase 17.
+
+Tests the fault detection pipeline:
+
+    Monitoring Observations + State Changes
+        -> FaultDetectionService.detect()
+        -> FaultResult (Faults with lifecycle)
+
+    Graph Context:
+        Fault + GraphQuery
+        -> FaultGraphContext (read-only lookup)
+
+All fixtures are synthetic/in-memory. No live Kubernetes connection.
+"""
+from __future__ import annotations
+
+import pytest
+
+from server_manager.discovery import PlatformDiscovery
+from server_manager.fault import (
+    Fault, FaultDetectionService, FaultGraphContext, FaultStatus,
+    FaultType, Severity, ThresholdPolicy,
+)
+from server_manager.graph import GraphBuilder, GraphQuery
+from server_manager.health import (
+    AvailabilityStatus, HealthReport, HealthResult, HealthService,
+    HealthStatus, ResourceType, ResourceStatus,
+)
+from server_manager.models.canonical import ProviderType, SourceEvidence
+from server_manager.models.enums import Confidence
+from server_manager.monitoring import MonitoringService, Observation, StateChange
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import KubernetesProviderAdapter, RawProviderSnapshot
+
+
+def make_source(provider=ProviderType.KUBERNETES):
+    return SourceEvidence(provider_type=provider, confidence=Confidence.HIGH)
+
+
+def make_obs(
+    entity_id="canon-node-01",
+    entity_type="NODE",
+    health=HealthStatus.HEALTHY,
+    availability=AvailabilityStatus.AVAILABLE,
+    resource_statuses=None,
+):
+    return Observation(
+        observation_id=f"obs-{entity_id}",
+        entity_id=entity_id,
+        entity_type=entity_type,
+        source=make_source(),
+        health_status=health,
+        availability_status=availability,
+        resource_statuses=resource_statuses or [],
+    )
+
+
+def make_change(
+    entity_id="canon-node-01",
+    prev_health=HealthStatus.HEALTHY,
+    curr_health=HealthStatus.UNHEALTHY,
+    prev_avail=AvailabilityStatus.AVAILABLE,
+    curr_avail=AvailabilityStatus.AVAILABLE,
+):
+    return StateChange(
+        entity_id=entity_id,
+        previous_health=prev_health,
+        current_health=curr_health,
+        previous_availability=prev_avail,
+        current_availability=curr_avail,
+    )
+
+
+
+class TestFaultDetection:
+    """Fault detection from observations."""
+
+    def test_unhealthy_detection(self):
+        obs = make_obs(health=HealthStatus.UNHEALTHY)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        assert result.has_faults
+        faults = [f for f in result.faults if f.fault_type == FaultType.HEALTH_FAILURE]
+        assert len(faults) == 1
+        assert faults[0].severity == Severity.CRITICAL
+
+    def test_degraded_detection(self):
+        obs = make_obs(health=HealthStatus.DEGRADED)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        faults = [f for f in result.faults if f.fault_type == FaultType.HEALTH_DEGRADED]
+        assert len(faults) == 1
+        assert faults[0].severity == Severity.WARNING
+
+    def test_unavailable_detection(self):
+        obs = make_obs(availability=AvailabilityStatus.UNAVAILABLE)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        faults = [f for f in result.faults if f.fault_type == FaultType.AVAILABILITY_FAILURE]
+        assert len(faults) == 1
+        assert faults[0].severity == Severity.CRITICAL
+
+    def test_resource_threshold_detection(self):
+        rs = ResourceStatus(
+            resource_type=ResourceType.CPU, utilization="85",
+            unit="%", source_evidence=make_source(),
+        )
+        obs = make_obs(resource_statuses=[rs])
+        policy = ThresholdPolicy(cpu_warning=80.0, cpu_critical=90.0)
+        service = FaultDetectionService(threshold_policy=policy)
+        result = service.detect([obs])
+        faults = [f for f in result.faults if f.fault_type == FaultType.RESOURCE_THRESHOLD]
+        assert len(faults) == 1
+        assert faults[0].severity == Severity.WARNING
+
+    def test_resource_threshold_critical(self):
+        rs = ResourceStatus(
+            resource_type=ResourceType.MEMORY, utilization="95",
+            unit="%", source_evidence=make_source(),
+        )
+        obs = make_obs(resource_statuses=[rs])
+        policy = ThresholdPolicy(memory_warning=80.0, memory_critical=90.0)
+        service = FaultDetectionService(threshold_policy=policy)
+        result = service.detect([obs])
+        faults = [f for f in result.faults if f.fault_type == FaultType.RESOURCE_THRESHOLD]
+        assert len(faults) == 1
+        assert faults[0].severity == Severity.CRITICAL
+
+    def test_resource_threshold_no_policy_no_fault(self):
+        rs = ResourceStatus(
+            resource_type=ResourceType.CPU, utilization="99",
+            unit="%", source_evidence=make_source(),
+        )
+        obs = make_obs(resource_statuses=[rs])
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        threshold_faults = [f for f in result.faults if f.fault_type == FaultType.RESOURCE_THRESHOLD]
+        assert len(threshold_faults) == 0
+
+    def test_state_change_detection(self):
+        change = make_change(curr_health=HealthStatus.UNHEALTHY)
+        service = FaultDetectionService()
+        result = service.detect([], [change])
+
+
+class TestFaultLifecycle:
+    """Fault lifecycle: DETECTED -> ONGOING -> RESOLVED."""
+
+    def test_fault_detected_on_first_occurrence(self):
+        obs = make_obs(health=HealthStatus.UNHEALTHY)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        assert len(result.newly_detected) == 1
+        assert result.newly_detected[0].status == FaultStatus.DETECTED
+
+    def test_fault_ongoing_on_second_occurrence(self):
+        obs = make_obs(health=HealthStatus.UNHEALTHY)
+        service = FaultDetectionService()
+        service.detect([obs])
+        result = service.detect([obs])
+        assert len(result.newly_detected) == 0
+        assert len(result.ongoing) >= 1
+        ongoing_faults = [f for f in result.ongoing if f.fault_type == FaultType.HEALTH_FAILURE]
+        assert len(ongoing_faults) == 1
+        assert ongoing_faults[0].status == FaultStatus.ONGOING
+
+    def test_fault_resolved_when_state_recovers(self):
+        service = FaultDetectionService()
+        # First: unhealthy
+        service.detect([make_obs(health=HealthStatus.UNHEALTHY)])
+        # Second: still unhealthy (ongoing)
+        service.detect([make_obs(health=HealthStatus.UNHEALTHY)])
+        # Third: healthy (resolved)
+        result = service.detect([make_obs(health=HealthStatus.HEALTHY)])
+        assert len(result.resolved_fault_ids) >= 1
+        assert any("HEALTH_FAILURE" in fid for fid in result.resolved_fault_ids)
+
+    def test_fault_not_recreated_after_resolution(self):
+        """Resolved fault should not be recreated if issue returns in a new cycle."""
+        service = FaultDetectionService()
+        # Unhealthy -> detected
+        service.detect([make_obs(health=HealthStatus.UNHEALTHY)])
+        # Healthy -> resolved
+        service.detect([make_obs(health=HealthStatus.HEALTHY)])
+        # Unhealthy again -> newly detected (new cycle)
+        result = service.detect([make_obs(health=HealthStatus.UNHEALTHY)])
+        assert len(result.newly_detected) >= 1
+
+
+class TestFaultDeduplication:
+    """Deterministic fault deduplication."""
+
+    def test_repeated_observation_no_duplicate(self):
+        """Same observation processed multiple times -> no duplicate faults."""
+        obs = make_obs(health=HealthStatus.UNHEALTHY)
+        service = FaultDetectionService()
+        r1 = service.detect([obs])
+        r2 = service.detect([obs])
+        r3 = service.detect([obs])
+        # First call: newly detected
+        assert len(r1.newly_detected) >= 1
+        # Second and third calls: no new faults, only ongoing
+        assert len(r2.newly_detected) == 0
+        assert len(r3.newly_detected) == 0
+        # Total active faults stay at 1
+        assert service.active_fault_count == 1
+
+    def test_deterministic_fault_id(self):
+        """Same entity + fault_type always produces same fault_id."""
+        obs = make_obs(entity_id="canon-node-01", health=HealthStatus.UNHEALTHY)
+        service1 = FaultDetectionService()
+
+
+class TestNegativeTests:
+    """No-fault conditions: UNKNOWN, missing metrics, no inference."""
+
+    def test_unknown_health_no_fault(self):
+        obs = make_obs(health=HealthStatus.UNKNOWN)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        assert not result.has_faults
+
+    def test_unknown_availability_no_fault(self):
+        obs = make_obs(availability=AvailabilityStatus.UNKNOWN)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        avail_faults = [f for f in result.faults if f.fault_type == FaultType.AVAILABILITY_FAILURE]
+        assert len(avail_faults) == 0
+
+    def test_missing_metric_no_fault(self):
+        rs = ResourceStatus(
+            resource_type=ResourceType.CPU, utilization=None,
+            source_evidence=make_source(),
+        )
+        obs = make_obs(resource_statuses=[rs])
+        policy = ThresholdPolicy(cpu_warning=80.0)
+        service = FaultDetectionService(threshold_policy=policy)
+        result = service.detect([obs])
+        threshold_faults = [f for f in result.faults if f.fault_type == FaultType.RESOURCE_THRESHOLD]
+        assert len(threshold_faults) == 0
+
+    def test_missing_capacity_no_fault(self):
+        obs = make_obs()
+        policy = ThresholdPolicy(cpu_warning=80.0)
+        service = FaultDetectionService(threshold_policy=policy)
+        result = service.detect([obs])
+        threshold_faults = [f for f in result.faults if f.fault_type == FaultType.RESOURCE_THRESHOLD]
+        assert len(threshold_faults) == 0
+
+    def test_healthy_no_fault(self):
+        obs = make_obs(health=HealthStatus.HEALTHY, availability=AvailabilityStatus.AVAILABLE)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        assert not result.has_faults
+
+    def test_state_change_to_unknown_no_fault(self):
+        change = make_change(
+            prev_health=HealthStatus.HEALTHY,
+            curr_health=HealthStatus.UNKNOWN,
+        )
+        service = FaultDetectionService()
+        result = service.detect([], [change])
+        sc_faults = [f for f in result.faults if f.fault_type == FaultType.STATE_CHANGE]
+        assert len(sc_faults) == 0
+
+    def test_state_change_from_unknown_no_fault(self):
+        change = make_change(
+            prev_health=HealthStatus.UNKNOWN,
+            curr_health=HealthStatus.UNHEALTHY,
+        )
+        service = FaultDetectionService()
+        result = service.detect([], [change])
+        sc_faults = [f for f in result.faults if f.fault_type == FaultType.STATE_CHANGE]
+        assert len(sc_faults) == 0
+
+    def test_no_workload_inference(self):
+        obs = make_obs(entity_type="WORKLOAD", health=HealthStatus.UNKNOWN)
+        service = FaultDetectionService()
+        result = service.detect([obs])
+        assert not result.has_faults
+
+
+class TestKubernetesMonitoring:
+    """K8s fixture-based monitoring and fault detection integration."""
+
+    def _make_k8s_fixture(self, node_ready="True", pod_phase="Running",
+                          pod_ready="True", pv_phase="Bound"):
+        return {
+            "cluster": {"name": "c1", "uid": "uid-c1", "version": "1.28.0"},
+            "nodes": [
+                {"apiVersion": "v1", "kind": "Node",
+                 "metadata": {"name": "n1", "uid": "uid-n1",
+                              "labels": {"kubernetes.io/hostname": "n1"}},
+                 "spec": {},
+                 "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"},
+                    "conditions": [
+                        {"type": "Ready", "status": node_ready},
+                        {"type": "MemoryPressure", "status": "False"},
+                        {"type": "DiskPressure", "status": "False"},
+                        {"type": "PIDPressure", "status": "False"},
+                        {"type": "NetworkUnavailable", "status": "False"}],
+                    "capacity": {"cpu": "4", "memory": "16Gi", "pods": "110"},
+                    "allocatable": {"cpu": "3500m", "memory": "15Gi", "pods": "110"}}},
+            ],
+            "pods": [
+                {"apiVersion": "v1", "kind": "Pod",
+                 "metadata": {"name": "p1", "uid": "uid-p1", "namespace": "default"},
+                 "spec": {"nodeName": "n1",
+                          "containers": [{"name": "c", "image": "nginx:1.21", "resources": {}}]},
+                 "status": {"phase": pod_phase,
+                    "conditions": [{"type": "Ready", "status": pod_ready},
+                                   {"type": "Initialized", "status": "True"},
+                                   {"type": "PodScheduled", "status": "True"}]}},
+            ],
+            "namespaces": [], "deployments": [],
+            "statefulsets": [], "daemonsets": [],
+            "services": [],
+            "persistent_volumes": [
+                {"apiVersion": "v1", "kind": "PersistentVolume",
+                 "metadata": {"name": "pv1", "uid": "uid-pv1"},
+                 "spec": {"capacity": {"storage": "10Gi"}},
+                 "status": {"phase": pv_phase}},
+            ],
+            "persistent_volume_claims": [],
+        }
+
+    def _full_pipeline(self, fixture):
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        health_report = HealthService().assess(discovery)
+        mon_service = MonitoringService()
+        mon_report = mon_service.monitor(health_report)
+        fault_service = FaultDetectionService()
+        fault_result = fault_service.detect(
+            mon_report.observations, mon_report.state_changes
+        )
+        graph_report = GraphBuilder().build(discovery)
+        graph_query = GraphQuery(graph_report)
+        return discovery, health_report, mon_report, fault_result, graph_query
+
+    def test_k8s_node_health_monitoring(self):
+        fixture = self._make_k8s_fixture(node_ready="True")
+        _, _, mon_report, fault_result, _ = self._full_pipeline(fixture)
+        node_obs = [o for o in mon_report.observations if o.entity_type == "NODE"]
+        assert len(node_obs) == 1
+        assert node_obs[0].health_status == HealthStatus.HEALTHY
+        assert not fault_result.has_faults
+
+    def test_k8s_node_not_ready_fault_detection(self):
+        fixture = self._make_k8s_fixture(node_ready="False")
+        _, _, mon_report, fault_result, _ = self._full_pipeline(fixture)
+        node_obs = [o for o in mon_report.observations if o.entity_type == "NODE"]
+        assert node_obs[0].health_status == HealthStatus.UNHEALTHY
+        health_faults = [f for f in fault_result.faults if f.fault_type == FaultType.HEALTH_FAILURE]
+        assert len(health_faults) >= 1
+        assert health_faults[0].severity == Severity.CRITICAL
+
+    def test_k8s_pod_failed_fault_detection(self):
+        fixture = self._make_k8s_fixture(pod_phase="Failed", pod_ready="False")
+        _, _, mon_report, fault_result, _ = self._full_pipeline(fixture)
+        ee_obs = [o for o in mon_report.observations if o.entity_type == "EXECUTION_ENVIRONMENT"]
+        unhealthy_ees = [o for o in ee_obs if o.health_status == HealthStatus.UNHEALTHY]
+        assert len(unhealthy_ees) >= 1
+        assert fault_result.has_faults
+
+    def test_k8s_pv_failed_fault_detection(self):
+        fixture = self._make_k8s_fixture(pv_phase="Failed")
+        _, _, mon_report, fault_result, _ = self._full_pipeline(fixture)
+        storage_obs = [o for o in mon_report.observations if o.entity_type == "STORAGE"]
+        unhealthy_storage = [o for o in storage_obs if o.health_status == HealthStatus.UNHEALTHY]
+        assert len(unhealthy_storage) >= 1
+        assert fault_result.has_faults
+
+    def test_k8s_resource_observation(self):
+        fixture = self._make_k8s_fixture()
+        _, _, mon_report, _, _ = self._full_pipeline(fixture)
+        node_obs = [o for o in mon_report.observations if o.entity_type == "NODE"]
+        assert len(node_obs) == 1
+        assert len(node_obs[0].capacity_infos) > 0
+
+    def test_k8s_graph_context_lookup(self):
+        fixture = self._make_k8s_fixture(node_ready="False")
+        _, _, mon_report, fault_result, graph_query = self._full_pipeline(fixture)
+        node_ids = set(graph_query.node_ids)
+        node_fault = None
+        for f in fault_result.faults:
+            if f.entity_id in node_ids:
+                node_fault = f
+                break
+        assert node_fault is not None
+        ctx = FaultGraphContext(graph_query)
+        assert ctx.has_graph_context(node_fault)
+        node = ctx.get_entity_node(node_fault)
+        assert node is not None
+        related = ctx.get_related_entities(node_fault)
+        assert len(related) >= 1
+
+    def test_k8s_pod_unavailable_no_node_inference(self):
+        fixture = self._make_k8s_fixture(
+            pod_phase="Failed", pod_ready="False", node_ready="True"
+        )
+        _, _, mon_report, fault_result, _ = self._full_pipeline(fixture)
+        node_obs = [o for o in mon_report.observations if o.entity_type == "NODE"]
+        assert node_obs[0].health_status == HealthStatus.HEALTHY
+        node_entity_ids = {o.entity_id for o in node_obs}
+        node_faults = [
+            f for f in fault_result.faults
+            if f.fault_type == FaultType.HEALTH_FAILURE
+            and f.entity_id in node_entity_ids
+        ]
+        assert len(node_faults) == 0
+
+
+class TestMutationSafety:
+    """Verify no mutation operations in monitoring/fault source code."""
+
+    MUTATION_PATTERNS = [
+        "create", "update", "patch", "delete", "scale", "restart",
+        "rollout", "exec", "apply", "replace",
+    ]
+
+    def _read_source(self, path):
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_monitoring_models_no_mutation(self):
+        import os
+        base = "src/server_manager/monitoring"
+        for fname in os.listdir(base):
+            if not fname.endswith(".py"):
+                continue
+            content = self._read_source(os.path.join(base, fname))
+            for pattern in self.MUTATION_PATTERNS:
+                # Check for mutation method calls (not in comments/docstrings)
+                lines = content.split("\n")
+                for i, line in enumerate(lines):
+                    stripped = line.strip()
+                    if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'"):
+                        continue
+                    if f".{pattern}(" in stripped.lower():
+                        # Check it's not a comment
+                        if not stripped.startswith("#"):
+                            pytest.fail(
+                                f"Mutation pattern '{pattern}' found in "
+                                f"{fname}:{i+1}: {stripped}"
+                            )
+
+    def test_fault_models_no_mutation(self):
+        import os
+        base = "src/server_manager/fault"
+        for fname in os.listdir(base):
+            if not fname.endswith(".py"):
+                continue
+            content = self._read_source(os.path.join(base, fname))
+            for pattern in self.MUTATION_PATTERNS:
+                lines = content.split("\n")
+                for i, line in enumerate(lines):
+                    stripped = line.strip()
+                    if stripped.startswith("#") or stripped.startswith('"""'):
+                        continue
+                    if f".{pattern}(" in stripped.lower():
+                        pytest.fail(
+                            f"Mutation pattern '{pattern}' found in "
+                            f"{fname}:{i+1}: {stripped}"
+                        )
+
+    def test_no_provider_api_imports(self):
+        """No direct provider API imports in monitoring/fault."""
+        import os
+        for pkg in ["monitoring", "fault"]:
+            base = f"src/server_manager/{pkg}"
+            for fname in os.listdir(base):
+                if not fname.endswith(".py"):
+                    continue
+                content = self._read_source(os.path.join(base, fname))
+                # Should NOT import from providers directly (except through graph/health)
+                if "from server_manager.providers" in content:
+                    # Check if it's a type import only
+                    if "KubernetesProviderAdapter" in content or "RawProviderSnapshot" in content:
+                        pytest.fail(
+                            f"Direct provider import in {pkg}/{fname}"
+                        )
+
+    def test_fault_detection_read_only(self):
+        """FaultDetectionService has no write/mutation methods."""
+        service = FaultDetectionService()
+        # Ensure no methods that could mutate infrastructure
+        mutation_methods = [m for m in dir(service) if m in self.MUTATION_PATTERNS]
+        assert len(mutation_methods) == 0
+
+    def test_monitoring_service_read_only(self):
+        """MonitoringService has no write/mutation methods."""
+        service = MonitoringService()
+        mutation_methods = [m for m in dir(service) if m in self.MUTATION_PATTERNS]
+        assert len(mutation_methods) == 0

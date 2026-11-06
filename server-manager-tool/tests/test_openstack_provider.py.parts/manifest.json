@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/tests/test_openstack_provider.py",
+  "originalSize": 18781,
+  "sha256": "07a8b053ccaf12b2aad4d727727561ea4058dd144e9411d8507f005585ce7a76",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_openstack_provider.py\""
+}

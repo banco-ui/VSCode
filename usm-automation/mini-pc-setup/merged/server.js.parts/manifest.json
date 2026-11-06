@@ -1,0 +1,12 @@
+{
+  "originalPath": "usm-automation/mini-pc-setup/merged/server.js",
+  "originalSize": 31068,
+  "sha256": "32b4187b4fead893b9922ad2e91d4259bd882a0274d75c88c996437ab2313b1a",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"usm-automation/mini-pc-setup/merged/server.js\""
+}

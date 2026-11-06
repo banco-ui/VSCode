@@ -1,0 +1,437 @@
+"""Redfish Normalizer (Phase 3).
+
+Transforms raw Redfish API data into ServerInventory.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+from ..models.enums import (
+    ControllerType,
+    HealthStatus,
+    MediaType,
+    NetworkSpeed,
+    Protocol,
+    Vendor,
+)
+from ..models.inventory import (
+    CPU,
+    CPUProcessor,
+    GPU,
+    GPUDevice,
+    Hardware,
+    Identity,
+    Management,
+    Memory,
+    MemoryModule,
+    Network,
+    NetworkAdapter,
+    PhysicalDisk,
+    PowerInfo,
+    PowerThermal,
+    PSU,
+    Storage,
+    StorageController,
+    ServerInventory,
+    TemperatureReading,
+    FanReading,
+    ThermalInfo,
+    Topology,
+    RedfishInfo,
+    IPMIInfo,
+    SSHInfo,
+    VirtualDisk,
+)
+from .base import BaseNormalizer
+from ..collectors.vendor_adapters import get_vendor_adapter
+
+logger = logging.getLogger(__name__)
+
+
+# Health priority for correct max() comparison (higher = worse)
+_HEALTH_PRIORITY = {
+    HealthStatus.UNKNOWN: 0,
+    HealthStatus.OK: 1,
+    HealthStatus.WARNING: 2,
+    HealthStatus.CRITICAL: 3,
+}
+
+
+def _health_from_str(status: Optional[str]) -> HealthStatus:
+    """Map Redfish HealthStatus string to enum."""
+    if not status:
+        return HealthStatus.UNKNOWN
+    status_lower = status.lower()
+    if status_lower == "ok":
+        return HealthStatus.OK
+    elif status_lower == "warning":
+        return HealthStatus.WARNING
+    elif status_lower in ("critical", "error"):
+        return HealthStatus.CRITICAL
+    return HealthStatus.UNKNOWN
+
+
+def _max_health(*healths: HealthStatus) -> HealthStatus:
+    """Return the worst (highest priority) HealthStatus from the given values."""
+    return max(healths, key=lambda h: _HEALTH_PRIORITY.get(h, 0))
+
+
+
+def _media_type_from_str(media_type: Optional[str]) -> MediaType:
+    """Map Redfish MediaType string to enum."""
+    if not media_type:
+        return MediaType.Unknown
+    mt_lower = media_type.lower()
+    if "ssd" in mt_lower:
+        return MediaType.SSD
+    elif "hdd" in mt_lower:
+        return MediaType.HDD
+    elif "nvme" in mt_lower:
+        return MediaType.NVMe
+    return MediaType.Unknown
+
+
+def _controller_supports_raid(ctrl: dict[str, Any]) -> bool:
+    """Check if a storage controller supports RAID."""
+    # Redfish StorageController may have "ControllerCapabilities" with "RAIDType"
+    caps = ctrl.get("ControllerCapabilities")
+    if isinstance(caps, dict):
+        raid_support = caps.get("RAIDSupport")
+        if isinstance(raid_support, bool):
+            return raid_support
+        if isinstance(raid_support, str) and raid_support.lower() == "true":
+            return True
+    # Fallback: if controller name contains "RAID" or "PERC"
+    name = (ctrl.get("Name") or "").lower()
+    model = (ctrl.get("Model") or "").lower()
+    return "raid" in name or "raid" in model or "perc" in name or "perc" in model
+
+
+class RedfishNormalizer(BaseNormalizer):
+
+    """Normalize Redfish raw data into ServerInventory."""
+
+    @property
+    def source_name(self) -> str:
+        return "redfish"
+
+    def normalize(self, raw_data: dict[str, Any]) -> ServerInventory:
+        """Transform Redfish data into ServerInventory."""
+        system = raw_data.get("system", {})
+        chassis = raw_data.get("chassis", {})
+        manager = raw_data.get("manager", {})
+
+        # Determine vendor
+        manufacturer = self.safe_str(system.get("Manufacturer"))
+        vendor = Vendor.Unknown
+        if "dell" in manufacturer.lower():
+            vendor = Vendor.Dell
+        elif "hpe" in manufacturer.lower() or "hp " in manufacturer.lower():
+            vendor = Vendor.HPE
+
+        # Vendor adapter
+        vendor_adapter = get_vendor_adapter(manufacturer, raw_data)
+
+        # Identity
+        identity = Identity(
+            server_id=self.safe_str(system.get("SerialNumber") or system.get("Id", "unknown")),
+            vendor=vendor,
+            model=self.safe_str(system.get("Model")),
+            hostname=self.safe_str(system.get("HostName")),
+            serial_number=system.get("SerialNumber"),
+            service_tag=vendor_adapter.get_service_tag(),
+            bios_version=self.safe_str(system.get("BiosVersion")),
+            uuid_present=bool(system.get("UUID")),
+            asset_tag=system.get("AssetTag"),
+        )
+
+        # Topology
+        topology = Topology(
+            physical_servers=1,
+            computer_systems=1,
+            chassis=1,
+            multi_node=False,
+        )
+
+        # CPU
+        processors: list[CPUProcessor] = []
+        for proc in raw_data.get("processors", []):
+            cpu_proc = CPUProcessor(
+                model=self.safe_str(proc.get("Model")),
+                cores=self.safe_int(proc.get("TotalCores")),
+                threads=self.safe_int(proc.get("TotalThreads")),
+                health=_health_from_str(proc.get("Status", {}).get("Health") if isinstance(proc.get("Status"), dict) else None),
+            )
+            processors.append(cpu_proc)
+
+        cpu = CPU(
+            count=len(processors),
+            total_cores=sum(p.cores for p in processors),
+            total_threads=sum(p.threads for p in processors),
+            processors=processors,
+        )
+
+        # Memory
+        modules: list[MemoryModule] = []
+        for mem in raw_data.get("memory", []):
+            capacity_mib = self.safe_float(mem.get("CapacityMiB"), default=None)
+            modules.append(MemoryModule(
+                slot=self.safe_str(mem.get("SocketLocator") or mem.get("DeviceLocator")),
+                # P1-RF.18: real 0 → 0.0; missing/null/unparseable → None
+                capacity_gb=round(capacity_mib / 1024, 2) if capacity_mib is not None else None,
+                type=self.safe_str(mem.get("MemoryDeviceType") or mem.get("MemoryType")),
+                speed_mhz=self.safe_int(mem.get("OperatingSpeedMhz")),
+                manufacturer=self.safe_str(mem.get("Manufacturer")),
+                health=_health_from_str(mem.get("Status", {}).get("Health") if isinstance(mem.get("Status"), dict) else None),
+            ))
+
+        memory = Memory(
+            # P1-RF.18: aggregate valid capacities only — all-None modules → 0.0
+            # (Memory.total_gb field and its 0.0 default remain unchanged)
+            total_gb=round(sum(m.capacity_gb for m in modules if m.capacity_gb is not None), 2),
+            dimm_count=len(modules),
+            populated_slots=len(modules),
+            empty_slots=0,
+            modules=modules,
+        )
+
+        # GPU (from PCIe devices)
+        gpu_devices: list[GPUDevice] = []
+        for pcie_dev in raw_data.get("pcie_devices", []):
+            dev_class = self.safe_str(pcie_dev.get("Class")).lower()
+            dev_name = self.safe_str(pcie_dev.get("Name")).lower()
+            if "gpu" in dev_class or "gpu" in dev_name or "nvidia" in dev_name or "display" in dev_class:
+                gpu_devices.append(GPUDevice(
+                    vendor=self.safe_str(pcie_dev.get("Manufacturer")),
+                    model=self.safe_str(pcie_dev.get("Name")),
+                    health=_health_from_str(pcie_dev.get("Status", {}).get("Health") if isinstance(pcie_dev.get("Status"), dict) else None),
+                ))
+
+        gpu = GPU(
+            dedicated_compute_gpu=len(gpu_devices) > 0,
+            count=len(gpu_devices),
+            devices=gpu_devices,
+        )
+
+        # Storage — parse collected storage resources
+        controllers: list[StorageController] = []
+        physical_disks: list[PhysicalDisk] = []
+        virtual_disks: list[VirtualDisk] = []
+
+        for storage_subsystem in raw_data.get("storage", []):
+            # Parse storage controllers
+            for ctrl in storage_subsystem.get("controllers", []):
+                try:
+                    controllers.append(StorageController(
+                        name=self.safe_str(ctrl.get("Name")),
+                        model=self.safe_str(ctrl.get("Model") or ctrl.get("Manufacturer")),
+                        health=_health_from_str(ctrl.get("Status", {}).get("Health") if isinstance(ctrl.get("Status"), dict) else None),
+                        raid_support=_controller_supports_raid(ctrl),
+                    ))
+                except Exception as e:
+                    logger.warning("Failed to parse storage controller: %s", e)
+
+            # Parse physical disks (drives)
+            for drive in storage_subsystem.get("drives", []):
+                try:
+                    capacity_bytes = self.safe_float(drive.get("CapacityBytes"), default=None)
+                    # P1-RF.18: real 0 → 0.0; missing/null/unparseable → None
+                    capacity_gb = round(capacity_bytes / (1024**3), 2) if capacity_bytes is not None else None
+
+                    physical_disks.append(PhysicalDisk(
+                        name=self.safe_str(drive.get("Name") or drive.get("Id")),
+                        model=self.safe_str(drive.get("Model")),
+                        capacity_gb=capacity_gb,
+                        media_type=_media_type_from_str(drive.get("MediaType")),
+                        protocol=self.safe_str(drive.get("Protocol")) or None,
+                        health=_health_from_str(drive.get("Status", {}).get("Health") if isinstance(drive.get("Status"), dict) else None),
+                    ))
+                except Exception as e:
+                    logger.warning("Failed to parse drive: %s", e)
+
+            # Parse virtual disks (volumes)
+            for volume in storage_subsystem.get("volumes", []):
+                try:
+                    cap_bytes = self.safe_float(volume.get("CapacityBytes") or volume.get("Capacity"), default=None)
+                    # P1-RF.18: real 0 → 0.0; missing/null/unparseable → None
+                    cap_gb = round(cap_bytes / (1024**3), 2) if cap_bytes is not None else None
+
+                    raid_type = volume.get("RAIDType")
+                    virtual_disks.append(VirtualDisk(
+                        name=self.safe_str(volume.get("Name") or volume.get("Id")),
+                        raid_type=self.safe_str(raid_type) if raid_type else None,
+                        capacity_gb=cap_gb,
+                        health=_health_from_str(volume.get("Status", {}).get("Health") if isinstance(volume.get("Status"), dict) else None),
+                    ))
+                except Exception as e:
+                    logger.warning("Failed to parse volume: %s", e)
+
+        no_hw_raid = len(controllers) == 0 and len(physical_disks) > 0
+
+        storage = Storage(
+            controllers=controllers,
+            physical_disks=physical_disks,
+            virtual_disks=virtual_disks,
+            no_hardware_raid=no_hw_raid,
+        )
+
+
+        # Network
+        adapters: list[NetworkAdapter] = []
+        for net_iface in raw_data.get("network_interfaces", []):
+            speed_str = self.safe_str(net_iface.get("SpeedMbps"))
+            speed = NetworkSpeed.Unknown
+            if speed_str:
+                speed_mbps = self.safe_int(speed_str)
+                if speed_mbps >= 100000:
+                    speed = NetworkSpeed.GbE_100
+                elif speed_mbps >= 40000:
+                    speed = NetworkSpeed.GbE_40
+                elif speed_mbps >= 25000:
+                    speed = NetworkSpeed.GbE_25
+                elif speed_mbps >= 10000:
+                    speed = NetworkSpeed.GbE_10
+                elif speed_mbps >= 1000:
+                    speed = NetworkSpeed.GbE_1
+
+            adapters.append(NetworkAdapter(
+                vendor=self.safe_str(net_iface.get("Manufacturer")),
+                model=self.safe_str(net_iface.get("Name")),
+                speed=speed,
+                ports=self.safe_int(net_iface.get("PortCount", 1)),
+                health=_health_from_str(net_iface.get("Status", {}).get("Health") if isinstance(net_iface.get("Status"), dict) else None),
+            ))
+
+        network = Network(
+            adapter_count=len(adapters),
+            adapters=adapters,
+            highest_link_speed=max((a.speed for a in adapters), default=NetworkSpeed.Unknown),
+        )
+
+        # Hardware
+        hardware = Hardware(cpu=cpu, memory=memory, gpu=gpu, storage=storage, network=network)
+
+        # Management
+        mgmt_info = vendor_adapter.get_management_info()
+        controller_type = ControllerType.Unknown
+        if "idrac" in (mgmt_info.get("controller") or "").lower():
+            controller_type = ControllerType.iDRAC
+        elif "ilo" in (mgmt_info.get("controller") or "").lower():
+            controller_type = ControllerType.iLO
+
+        management = Management(
+            vendor=vendor,
+            controller=controller_type,
+            controller_model=mgmt_info.get("model"),
+            firmware_version=mgmt_info.get("firmware_version"),
+            protocols=[Protocol.Redfish],
+            redfish=RedfishInfo(
+                reachable=True,
+                api_version=raw_data.get("redfish_version"),
+                endpoint=raw_data.get("endpoint"),
+            ),
+            ipmi=IPMIInfo(),
+            ssh=SSHInfo(),
+        )
+
+        # Power/Thermal
+        power_data = raw_data.get("power", {})
+        psus: list[PSU] = []
+        for psu in power_data.get("PowerSupplies", []):
+            psus.append(PSU(
+                name=self.safe_str(psu.get("Name")),
+                capacity_w=self.safe_float(psu.get("PowerOutputWatts") or psu.get("LineInputVoltage")),
+                health=_health_from_str(psu.get("Status", {}).get("Health") if isinstance(psu.get("Status"), dict) else None),
+                state=self.safe_str(psu.get("Status", {}).get("State") if isinstance(psu.get("Status"), dict) else None),
+            ))
+
+        power_info = PowerInfo(
+            current_watts=self.safe_float(power_data.get("PowerControl", [{}])[0].get("PowerConsumedWatts")) if power_data.get("PowerControl") else None,
+            capacity_watts=sum(p.capacity_w for p in psus if p.capacity_w) if psus else None,
+            psus=psus,
+            redundancy=self.safe_str(power_data.get("Redundancy", [{}])[0].get("Mode")) if power_data.get("Redundancy") else None,
+        )
+
+        thermal_data = raw_data.get("thermal", {})
+        temps: list[TemperatureReading] = []
+        for temp in thermal_data.get("Temperatures", []):
+            temps.append(TemperatureReading(
+                name=self.safe_str(temp.get("Name")),
+                reading_c=self.safe_float(temp.get("ReadingCelsius")),
+                health=_health_from_str(temp.get("Status", {}).get("Health") if isinstance(temp.get("Status"), dict) else None),
+            ))
+
+        fans: list[FanReading] = []
+        for fan in thermal_data.get("Fans", []):
+            fans.append(FanReading(
+                name=self.safe_str(fan.get("Name")),
+                reading_rpm=self.safe_int(fan.get("ReadingRPM") or fan.get("Reading")),
+                health=_health_from_str(fan.get("Status", {}).get("Health") if isinstance(fan.get("Status"), dict) else None),
+            ))
+
+        thermal_info = ThermalInfo(temperatures=temps, fans=fans)
+        power_thermal = PowerThermal(power=power_info, thermal=thermal_info)
+
+        # Health (from system status)
+        sys_health = _health_from_str(system.get("Status", {}).get("Health") if isinstance(system.get("Status"), dict) else None)
+        health = _build_health(sys_health, cpu, memory, storage, network, power_thermal)
+
+        # Vendor ext
+        from ..models.inventory import VendorExt, DellExt, HPEExt
+        vendor_ext = VendorExt()
+        if vendor == Vendor.Dell:
+            ext_data = vendor_adapter.get_vendor_ext()
+            vendor_ext = VendorExt(dell=DellExt(**ext_data))
+        elif vendor == Vendor.HPE:
+            ext_data = vendor_adapter.get_vendor_ext()
+            vendor_ext = VendorExt(hpe=HPEExt(**ext_data))
+
+        return ServerInventory(
+            identity=identity,
+            topology=topology,
+            hardware=hardware,
+            management=management,
+            power_thermal=power_thermal,
+            health=health,
+            vendor_ext=vendor_ext,
+        )
+
+
+def _build_health(
+    system_health: HealthStatus,
+    cpu: CPU,
+    memory: Memory,
+    storage: Storage,
+    network: Network,
+    power_thermal: PowerThermal,
+) -> Any:
+    """Build Health model from component healths."""
+    from ..models.inventory import Health
+
+    cpu_health = _max_health(*(p.health for p in cpu.processors)) if cpu.processors else HealthStatus.UNKNOWN
+    mem_health = _max_health(*(m.health for m in memory.modules)) if memory.modules else HealthStatus.UNKNOWN
+    net_health = _max_health(*(a.health for a in network.adapters)) if network.adapters else HealthStatus.UNKNOWN
+    psu_health = _max_health(*(p.health for p in power_thermal.power.psus)) if power_thermal.power.psus else HealthStatus.UNKNOWN
+
+    # Thermal health from temperature readings
+    temp_health = _max_health(*(t.health for t in power_thermal.thermal.temperatures)) if power_thermal.thermal.temperatures else HealthStatus.UNKNOWN
+    fan_health = _max_health(*(f.health for f in power_thermal.thermal.fans)) if power_thermal.thermal.fans else HealthStatus.UNKNOWN
+
+    storage_health = HealthStatus.UNKNOWN
+    for ctrl in storage.controllers:
+        storage_health = _max_health(storage_health, ctrl.health)
+    for disk in storage.physical_disks:
+        storage_health = _max_health(storage_health, disk.health)
+
+
+    return Health(
+        system=system_health,
+        cpu=cpu_health,
+        memory=mem_health,
+        storage=storage_health,
+        thermal=temp_health,
+        network=net_health,
+        psu=psu_health,
+        fan=fan_health,
+    )

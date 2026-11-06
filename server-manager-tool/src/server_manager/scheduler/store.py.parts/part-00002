@@ -1,0 +1,6 @@
+rror_message=row["error_message"],
+                recovery_id=row["recovery_id"],
+                recovery_count=row["recovery_count"],
+            ))
+        
+        return executions

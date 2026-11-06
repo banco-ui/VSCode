@@ -1,0 +1,653 @@
+"""StarlingX Provider Adapter — Phase 28E.
+
+Minimal read-only StarlingX integration.
+
+Architecture:
+
+    StarlingX
+        ↓
+    StarlingXProviderAdapter (composes API + CLI collectors)
+        ↓
+    RawProviderSnapshot
+        ↓
+    [StarlingXProviderNormalizer → Canonical Domain Model]
+
+Components:
+    1. StarlingXAPICollector — 6 confirmed REST endpoints (GET-only, Keystone auth)
+    2. StarlingXCLICollector — 3 confirmed CLI commands (allow-list, no arbitrary exec)
+    3. StarlingXProviderAdapter — composes both, returns RawProviderSnapshot
+
+Confirmed REST endpoints (Phase 28D live investigation):
+    1. GET :18002/v1/alarms            (FM alarms — 9 fields per alarm)
+    2. GET :18002/v1/event_log          (FM event log — singular, NOT /v1/events)
+    3. GET :6385/v1/isystems            (sysinv system info)
+    4. GET :6385/v1/ihosts              (sysinv hosts)
+    5. GET :6385/v1/ihosts/{uuid}/imemorys  (sysinv memory, sub-resource)
+    6. GET :7777/v1/nodes/              (smapi nodes)
+
+Confirmed CLI commands (Phase 28D live investigation):
+    1. fm alarm-show <uuid>  (7 CLI-only fields)
+    2. system health-query    (platform health summary)
+    3. software list           (USM release info)
+
+Excluded (not confirmed or returns empty):
+    - USM REST API (port 5492) — returns empty even with valid token
+    - VIM REST API (port 4545) — deferred
+    - Write operations (acknowledge, lock/unlock, etc.)
+
+Safety:
+    - GET-only REST; CLI allow-list; no tokens in logs/fixtures
+    - Live validation NOT performed — fixture-based testing only
+"""
+from __future__ import annotations
+
+import logging
+import re
+import uuid as _uuid
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional, Protocol
+
+from ..models.canonical import (
+    ProviderType,
+    RelationshipEvidenceType,
+    SourceEvidence,
+)
+from ..models.enums import Confidence
+from ..orchestrator.models import ErrorCategory, OrchestrationStatus
+from .base import (
+    AdapterCapability,
+    CapabilityResult,
+    ProviderAdapter,
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+logger = logging.getLogger(__name__)
+
+# Port constants from Phase 28D
+SYSINV_PORT = 6385
+FM_PORT = 18002
+SMAPI_PORT = 7777
+DEFAULT_TIMEOUT = 30
+
+# 6 confirmed REST endpoints: (payload_key, service, path)
+_CONFIRMED_ENDPOINTS: list[tuple[str, str, str]] = [
+    ("sysinv_isystems", "sysinv", "/v1/isystems"),
+    ("sysinv_ihosts", "sysinv", "/v1/ihosts"),
+    ("fm_alarms", "fm", "/v1/alarms"),
+    ("fm_event_log", "fm", "/v1/event_log"),
+    ("smapi_nodes", "smapi", "/v1/nodes/"),
+]
+
+_SERVICE_PORTS: dict[str, int] = {
+    "sysinv": SYSINV_PORT,
+    "fm": FM_PORT,
+    "smapi": SMAPI_PORT,
+}
+
+# 3 confirmed CLI command prefixes
+_CONFIRMED_CLI_COMMANDS: list[str] = [
+    "fm alarm-show",
+    "system health-query",
+    "software list",
+]
+
+# Secret masking patterns
+_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(token['\"\s:=]+)([A-Za-z0-9\-_]{20,})", re.IGNORECASE),
+    re.compile(r"(password['\"\s:=]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(X-Auth-Token['\"\s:]+)(\S+)", re.IGNORECASE),
+    re.compile(r"(secret['\"\s:=]+)(\S+)", re.IGNORECASE),
+]
+
+# Capabilities declared by this adapter
+_STLINGX_CAPABILITIES: list[AdapterCapability] = [
+    AdapterCapability.PLATFORM,
+    AdapterCapability.CLUSTER,
+    AdapterCapability.NODE,
+    AdapterCapability.HEALTH,
+    AdapterCapability.EVENTS,
+]
+
+
+class _HttpResponse(Protocol):
+    status_code: int
+    text: str
+    def json(self) -> Any: ...
+
+
+class _HttpSession(Protocol):
+    def get(self, url: str, *, headers: Optional[dict[str, str]] = None,
+            timeout: Optional[int] = None, verify: bool = True) -> _HttpResponse: ...
+
+
+class _SSHClient(Protocol):
+    def exec_command(self, command: str, *, timeout: Optional[int] = None) -> tuple[int, str, str]: ...
+
+
+def _mask_secrets(text: str) -> str:
+    """Mask token/password/secret patterns in CLI output and error messages."""
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub(r"\1***", text)
+    return text
+
+
+def _sanitize_error_message(exc: Exception) -> str:
+    """Sanitize exception messages to prevent credential leakage.
+    
+    Phase 0.2: Ensure error messages don't expose sensitive information.
+    """
+    msg = str(exc)
+    # Apply secret masking
+    msg = _mask_secrets(msg)
+    # Remove potential URL with credentials (though our URLs don't have them)
+    # Keep only the error type and brief message
+    return msg
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  STARLINGX API COLLECTOR
+# ════════════════════════════════════════════════════════════════════════
+
+
+class StarlingXAPIError(Exception):
+    """StarlingX API error with category classification."""
+
+    def __init__(
+        self,
+        message: str,
+        error_category: ErrorCategory = ErrorCategory.UNKNOWN_ERROR,
+    ) -> None:
+        super().__init__(message)
+        self.error_category = error_category
+
+
+class StarlingXAPICollector:
+    """StarlingX REST API collector — 6 confirmed endpoints.
+
+    GET-only. Keystone token authentication via X-Auth-Token header.
+
+    Handles: token auth, multi-service REST calls (sysinv/fm/smapi),
+    sub-resource URL pattern for host-scoped resources (imemorys),
+    per-endpoint error handling (partial collection),
+    auth expiry (401), not found (404), rate limit (429), timeout.
+    """
+
+    def __init__(
+        self,
+        platform_ip: str,
+        http_session: Optional[_HttpSession] = None,
+        token_provider: Optional[Callable[[], str]] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> None:
+        self._platform_ip = platform_ip
+        self._session = http_session
+        self._token_provider = token_provider
+        self._timeout = timeout
+
+    def collect(self) -> tuple[dict[str, Any], dict[str, str]]:
+        """Collect all 6 confirmed REST endpoints.
+
+        Returns:
+            (payload, errors) — payload has endpoint keys, errors maps key→msg.
+        """
+        if self._session is None:
+            raise RuntimeError(
+                "StarlingXAPICollector: no http_session injected. "
+                "Pass a fixture to StarlingXProviderAdapter instead."
+            )
+
+        payload: dict[str, Any] = {}
+        errors: dict[str, str] = {}
+        token = self._token_provider() if self._token_provider else None
+
+        for key, service, path in _CONFIRMED_ENDPOINTS:
+            try:
+                payload[key] = self._get(service, path, token)
+            except Exception as exc:
+                errors[key] = _sanitize_error_message(exc)
+                logger.warning("StarlingX API %s failed: %s", key, _sanitize_error_message(exc))
+
+        # Collect imemorys per host (sub-resource pattern)
+        host_list = payload.get("sysinv_ihosts")
+        if isinstance(host_list, list):
+            imemorys: dict[str, list] = {}
+            for host in host_list:
+                if not isinstance(host, dict):
+                    continue
+                host_uuid = host.get("uuid")
+                if not host_uuid:
+                    continue
+                try:
+                    mem = self._get(
+                        "sysinv", f"/v1/ihosts/{host_uuid}/imemorys", token
+                    )
+                    imemorys[host_uuid] = mem if isinstance(mem, list) else []
+                except Exception as exc:
+                    errors[f"sysinv_imemorys/{host_uuid}"] = _sanitize_error_message(exc)
+                    logger.warning("imemorys for %s failed: %s", host_uuid, _sanitize_error_message(exc))
+            payload["sysinv_imemorys"] = imemorys
+
+        return payload, errors
+
+    def _get(self, service: str, path: str, token: Optional[str]) -> Any:
+        """Execute a single GET request to a StarlingX API endpoint."""
+        port = _SERVICE_PORTS[service]
+        url = f"http://{self._platform_ip}:{port}{path}"
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if token:
+            headers["X-Auth-Token"] = token  # never logged
+
+        # Phase 0.2: Default to verify=True for TLS security
+        # For self-signed certs, inject a custom session with verify=False
+        response = self._session.get(
+            url, headers=headers, timeout=self._timeout, verify=True
+        )
+
+        if response.status_code == 401:
+            raise StarlingXAPIError(
+                f"Auth expired (401) for {path}",
+                error_category=ErrorCategory.AUTHENTICATION_ERROR,
+            )
+        if response.status_code == 404:
+            raise StarlingXAPIError(
+                f"Endpoint not found (404): {path}",
+                error_category=ErrorCategory.PROTOCOL_ERROR,
+            )
+        if response.status_code == 429:
+            raise StarlingXAPIError(
+                f"Rate limited (429) for {path}",
+                error_category=ErrorCategory.PROTOCOL_ERROR,
+            )
+        if response.status_code >= 400:
+            raise StarlingXAPIError(
+                f"HTTP {response.status_code} for {path}",
+                error_category=ErrorCategory.UNKNOWN_ERROR,
+            )
+
+        data = response.json()
+        return self._unwrap(data)
+
+    @staticmethod
+    def _unwrap(data: Any) -> Any:
+        """Extract list from response wrapper.
+
+        sysinv: {"isystems": [...], "ihosts": [...], "imemorys": [...]}
+        fm: {"alarms": [...], "event_log": [...]}
+        smapi: [...] (bare list)
+        """
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            list_values = [v for v in data.values() if isinstance(v, list)]
+            if len(list_values) == 1:
+                return list_values[0]
+            return data
+        return data
+
+
+class StarlingXCLIError(Exception):
+    """StarlingX CLI execution error."""
+
+
+class StarlingXCLICollector:
+    """StarlingX CLI collector — 3 confirmed commands.
+
+    Allow-list only — no arbitrary command execution.
+    Each command: timeout, exit code check, stdout/stderr separation,
+    secret masking. CLI failure ≠ data absence.
+    """
+
+    def __init__(
+        self,
+        ssh_client: Optional[_SSHClient] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> None:
+        self._ssh = ssh_client
+        self._timeout = timeout
+
+    def collect(
+        self, alarm_uuids: Optional[list[str]] = None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Collect all 3 confirmed CLI commands."""
+        if self._ssh is None:
+            raise RuntimeError(
+                "StarlingXCLICollector: no ssh_client injected."
+            )
+
+        payload: dict[str, Any] = {}
+        errors: dict[str, str] = {}
+
+        if alarm_uuids:
+            alarm_detail: dict[str, Any] = {}
+            for alarm_uuid in alarm_uuids:
+                try:
+                    alarm_detail[alarm_uuid] = self._exec_fm_alarm_show(alarm_uuid)
+                except Exception as exc:
+                    errors[f"fm_alarm_show/{alarm_uuid}"] = _sanitize_error_message(exc)
+            payload["fm_alarm_detail"] = alarm_detail
+
+        try:
+            payload["system_health"] = self._exec_system_health_query()
+        except Exception as exc:
+            errors["system_health_query"] = _sanitize_error_message(exc)
+
+        try:
+            payload["software_list"] = self._exec_software_list()
+        except Exception as exc:
+            errors["software_list"] = _sanitize_error_message(exc)
+
+        return payload, errors
+
+    def _exec_fm_alarm_show(self, alarm_uuid: str) -> dict[str, Any]:
+        exit_code, stdout, stderr = self._exec(f"fm alarm-show {alarm_uuid}")
+        if exit_code != 0:
+            raise StarlingXCLIError(
+                f"fm alarm-show {alarm_uuid} exited {exit_code}: "
+                f"{_mask_secrets(stderr.strip())}"
+            )
+        return _parse_fm_alarm_show(_mask_secrets(stdout))
+
+    def _exec_system_health_query(self) -> dict[str, Any]:
+        exit_code, stdout, stderr = self._exec("system health-query")
+        if exit_code != 0:
+            raise StarlingXCLIError(
+                f"system health-query exited {exit_code}: "
+                f"{_mask_secrets(stderr.strip())}"
+            )
+        return _parse_system_health(_mask_secrets(stdout))
+
+    def _exec_software_list(self) -> list[dict[str, Any]]:
+        exit_code, stdout, stderr = self._exec("software list")
+        if exit_code != 0:
+            raise StarlingXCLIError(
+                f"software list exited {exit_code}: "
+                f"{_mask_secrets(stderr.strip())}"
+            )
+        return _parse_software_list(_mask_secrets(stdout))
+
+    def _exec(self, command: str) -> tuple[int, str, str]:
+        """Execute a CLI command with allow-list validation."""
+        if not self._is_allowed(command):
+            raise StarlingXCLIError(
+                f"Command not in allow-list: {' '.join(command.split()[:2])}"
+            )
+        return self._ssh.exec_command(command, timeout=self._timeout)
+
+    @staticmethod
+    def _is_allowed(command: str) -> bool:
+        for allowed in _CONFIRMED_CLI_COMMANDS:
+            if command.startswith(allowed):
+                return True
+        return False
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CLI OUTPUT PARSERS
+# ════════════════════════════════════════════════════════════════════════
+
+
+def _parse_fm_alarm_show(stdout: str) -> dict[str, Any]:
+    """Parse fm alarm-show output (16-field key-value table)."""
+    result: dict[str, Any] = {}
+    for line in stdout.strip().splitlines():
+        line = line.strip()
+        if line.startswith("|") and line.endswith("|"):
+            parts = [p.strip() for p in line.split("|")]
+            parts = [p for p in parts if p]
+            if len(parts) >= 2:
+                result[parts[0]] = parts[1]
+    return result
+
+
+def _parse_system_health(stdout: str) -> dict[str, Any]:
+    """Parse 'system health-query' output into a dict."""
+    result: dict[str, Any] = {}
+    for line in stdout.strip().splitlines():
+        line = line.strip()
+        if ":" in line:
+            key, _, value = line.partition(":")
+            result[key.strip()] = value.strip()
+    if not result:
+        result["raw"] = stdout.strip()
+    return result
+
+
+def _parse_software_list(stdout: str) -> list[dict[str, Any]]:
+    """Parse 'software list' output into a list of release dicts."""
+    releases: list[dict[str, Any]] = []
+    lines = stdout.strip().splitlines()
+    if not lines:
+        return releases
+
+    header_line = None
+    headers: list[str] = []
+    for line in lines:
+        lower = line.lower()
+        if "release" in lower or "state" in lower:
+            header_line = line
+            break
+
+    if header_line:
+        headers = [h.strip() for h in header_line.split("|") if h.strip()]
+        header_idx = lines.index(header_line)
+        for line in lines[header_idx + 1:]:
+            line = line.strip()
+            if not line or line.startswith("+") or line.startswith("-"):
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            parts = [p for p in parts if p != ""]
+            if len(parts) >= len(headers):
+                release: dict[str, Any] = {}
+                for i, h in enumerate(headers):
+                    release[h] = parts[i]
+                releases.append(release)
+
+    return releases
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  STARLINGX PROVIDER ADAPTER
+# ════════════════════════════════════════════════════════════════════════
+
+
+class StarlingXProviderAdapter(ProviderAdapter):
+    """StarlingX native management API provider adapter.
+
+    Composes StarlingXAPICollector + StarlingXCLICollector.
+    Two input modes: fixture (for testing) or live (injected collectors).
+
+    Identity: provider_type=WRCP, provider_id=system UUID or constructor arg.
+    Capabilities: PLATFORM, CLUSTER, NODE, HEALTH, EVENTS.
+    NOT declared: PHYSICAL (bm_type=none), OS, EE, WORKLOAD, NETWORK,
+    STORAGE, ACCELERATOR (no evidence from confirmed API/CLI).
+
+    Safety: GET-only REST, CLI allow-list, no write operations.
+    """
+
+    def __init__(
+        self,
+        platform_ip: str = "",
+        *,
+        provider_id: Optional[str] = None,
+        api_collector: Optional[StarlingXAPICollector] = None,
+        cli_collector: Optional[StarlingXCLICollector] = None,
+        fixture: Optional[dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(ProviderType.WRCP, provider_id)
+        self._platform_ip = platform_ip
+        self._api_collector = api_collector
+        self._cli_collector = cli_collector
+        self._fixture = fixture
+
+    @property
+    def capabilities(self) -> list[AdapterCapability]:
+        return list(_STLINGX_CAPABILITIES)
+
+    def collect(self, **kwargs: Any) -> RawProviderSnapshot:
+        """Collect raw data from StarlingX (fixture or live mode)."""
+        snapshot_id = f"snap-{_uuid.uuid4().hex[:12]}"
+        collected_at = datetime.now(timezone.utc).isoformat()
+
+        fixture = kwargs.get("fixture") or self._fixture
+        if fixture is not None:
+            return self._collect_from_fixture(fixture, snapshot_id, collected_at)
+
+        api_c = kwargs.get("api_collector") or self._api_collector
+        cli_c = kwargs.get("cli_collector") or self._cli_collector
+        if api_c is not None or cli_c is not None:
+            return self._collect_from_live(api_c, cli_c, snapshot_id, collected_at)
+
+        return RawProviderSnapshot(
+            snapshot_id=snapshot_id,
+            provider_type=ProviderType.WRCP,
+            provider_id=self.provider_id,
+            collection_status=OrchestrationStatus.FAILED,
+            errors=["[WRCP] No fixture or collectors provided."],
+        )
+
+    # ── Fixture mode ────────────────────────────────────────────────────
+
+    def _collect_from_fixture(
+        self,
+        fixture: dict[str, Any],
+        snapshot_id: str,
+        collected_at: str,
+    ) -> RawProviderSnapshot:
+        """Build snapshot from fixture dict."""
+        fixture_errors = fixture.get("errors", {})
+        merged_alarms = self._merge_alarm_data(
+            fixture.get("fm_alarms", []),
+            fixture.get("fm_alarm_detail", {}),
+        )
+        payload: dict[str, Any] = {
+            "sysinv_isystems": fixture.get("sysinv_isystems", []),
+            "sysinv_ihosts": fixture.get("sysinv_ihosts", []),
+            "sysinv_imemorys": fixture.get("sysinv_imemorys", {}),
+            "fm_alarms": merged_alarms,
+            "fm_event_log": fixture.get("fm_event_log", []),
+            "smapi_nodes": fixture.get("smapi_nodes", []),
+            "system_health": fixture.get("system_health", {}),
+            "software_list": fixture.get("software_list", []),
+        }
+
+        provider_id = self._derive_provider_id(payload)
+        cap_results = self._build_capability_results(payload, fixture_errors)
+        rel_evidence = self._extract_relationship_evidence(payload)
+        errors_list = [f"[{k}] {v}" for k, v in fixture_errors.items()]
+        status = self._determine_status(cap_results, errors_list)
+        source_ev = self._make_source_evidence(provider_id, collected_at, snapshot_id)
+
+        return RawProviderSnapshot(
+            snapshot_id=snapshot_id,
+            provider_type=ProviderType.WRCP,
+            provider_id=provider_id,
+            collected_at=collected_at,
+            collection_status=status,
+            declared_capabilities=list(_STLINGX_CAPABILITIES),
+            capability_results=cap_results,
+            payload=payload,
+            relationship_evidence=rel_evidence,
+            source_evidence=source_ev,
+            errors=errors_list,
+            warnings=[],
+        )
+
+    # ── Live mode ───────────────────────────────────────────────────────
+
+    def _collect_from_live(
+        self,
+        api_c: Optional[StarlingXAPICollector],
+        cli_c: Optional[StarlingXCLICollector],
+        snapshot_id: str,
+        collected_at: str,
+    ) -> RawProviderSnapshot:
+        """Build snapshot from live API + CLI collectors."""
+        api_payload: dict[str, Any] = {}
+        api_errors: dict[str, str] = {}
+        cli_payload: dict[str, Any] = {}
+        cli_errors: dict[str, str] = {}
+
+        if api_c is not None:
+            api_payload, api_errors = api_c.collect()
+        if cli_c is not None:
+            alarm_uuids = [
+                a["uuid"] for a in api_payload.get("fm_alarms", [])
+                if isinstance(a, dict) and a.get("uuid")
+            ]
+            cli_payload, cli_errors = cli_c.collect(alarm_uuids)
+
+        merged_alarms = self._merge_alarm_data(
+            api_payload.get("fm_alarms", []),
+            cli_payload.get("fm_alarm_detail", {}),
+        )
+        payload: dict[str, Any] = {
+            "sysinv_isystems": api_payload.get("sysinv_isystems", []),
+            "sysinv_ihosts": api_payload.get("sysinv_ihosts", []),
+            "sysinv_imemorys": api_payload.get("sysinv_imemorys", {}),
+            "fm_alarms": merged_alarms,
+            "fm_event_log": api_payload.get("fm_event_log", []),
+            "smapi_nodes": api_payload.get("smapi_nodes", []),
+            "system_health": cli_payload.get("system_health", {}),
+            "software_list": cli_payload.get("software_list", []),
+        }
+
+        all_errors = {**api_errors, **cli_errors}
+        provider_id = self._derive_provider_id(payload)
+        cap_results = self._build_capability_results(payload, all_errors)
+        rel_evidence = self._extract_relationship_evidence(payload)
+        errors_list = [f"[{k}] {v}" for k, v in all_errors.items()]
+        status = self._determine_status(cap_results, errors_list)
+        source_ev = self._make_source_evidence(provider_id, collected_at, snapshot_id)
+
+        return RawProviderSnapshot(
+            snapshot_id=snapshot_id,
+            provider_type=ProviderType.WRCP,
+            provider_id=provider_id,
+            collected_at=collected_at,
+            collection_status=status,
+            declared_capabilities=list(_STLINGX_CAPABILITIES),
+            capability_results=cap_results,
+            payload=payload,
+            relationship_evidence=rel_evidence,
+            source_evidence=source_ev,
+            errors=errors_list,
+            warnings=[],
+        )
+
+    # ── Alarm deduplication (REST + CLI merge) ───────────────────────────
+
+    @staticmethod
+    def _merge_alarm_data(
+        rest_alarms: list[dict[str, Any]],
+        cli_detail: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge REST and CLI alarm data by UUID.
+
+        REST: 9 fields. CLI: 16 fields (7 CLI-only).
+        If UUID in both → merge dicts (CLI supplements REST), record sources.
+        """
+        merged: list[dict[str, Any]] = []
+        cli_used: set[str] = set()
+        for alarm in rest_alarms:
+            if not isinstance(alarm, dict):
+                continue
+            alarm_uuid = alarm.get("uuid", "")
+            merged_alarm = dict(alarm)
+            if alarm_uuid and alarm_uuid in cli_detail:
+                cli_data = cli_detail[alarm_uuid]
+                if isinstance(cli_data, dict):
+                    for key, value in cli_data.items():
+                        if key not in merged_alarm:
+                            merged_alarm[key] = value
+                    merged_alarm["_sources"] = ["rest", "cli"]
+                    cli_used.add(alarm_uuid)
+                else:
+                    merged_alarm["_sources"] = ["rest"]
+            else:
+                merged_alarm["_sources"] = ["rest"]
+            merged.append(merged_alarm)
+        for alarm_uuid, cli_data in cli_detail.items():
+            if alarm_uuid in cli_used:
+                continue
+            if isinstance(cli_data,

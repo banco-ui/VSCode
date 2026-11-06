@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_platform_health.py",
+  "originalSize": 31878,
+  "sha256": "bdf2876705e7f8ef6d44003237d2ff6c55706bc6c7e87acf4344c731cd7bdcf3",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_platform_health.py\""
+}

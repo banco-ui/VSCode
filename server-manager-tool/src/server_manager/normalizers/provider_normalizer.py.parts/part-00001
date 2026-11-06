@@ -1,0 +1,625 @@
+"""Provider Normalizer — Phase 13G-3.
+
+Transforms RawProviderSnapshot → Canonical Domain Model entities.
+
+    RawProviderSnapshot
+        ↓
+    ProviderNormalizer
+        ↓
+    Canonical Domain Model (Physical, OS, Platform, Cluster, Node,
+                            ExecutionEnvironment, Workload, Network,
+                            Storage, Accelerator)
+
+Architecture boundaries:
+    ProviderNormalizer = deterministically transforms
+    Verifier = validates
+    Store = persists
+    Orchestrator = coordinates
+
+The normalizer does NOT:
+    ❌ Connect to providers
+    ❌ Verify data semantics (Verifier's job)
+    ❌ Persist data (Store's job)
+    ❌ Orchestrate workflows
+    ❌ Infer/guess missing data
+    ❌ Create INFERRED/UNKNOWN relationships
+    ❌ Use LLM/heuristic/fuzzy matching
+
+Relationship to existing BaseNormalizer:
+    BaseNormalizer targets ServerInventory (inventory model).
+    ProviderNormalizer targets canonical entities.
+    They are NOT duplicates — different output models.
+
+Reused from existing codebase:
+    - All canonical entity classes and enums (models.canonical)
+    - OrchestrationStatus, ErrorCategory (orchestrator.models)
+    - RawProviderSnapshot, RawRelationshipEvidence (providers.base)
+    - SourceEvidence, Confidence (models)
+"""
+from __future__ import annotations
+
+import logging
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+from ..models.canonical import (
+    Accelerator,
+    AcceleratorType,
+    Cluster,
+    ClusterType,
+    ExecutionEnvironment,
+    ExecutionEnvironmentType,
+    Network,
+    NetworkType,
+    Node,
+    OS,
+    OSType,
+    Physical,
+    Platform,
+    PlatformType,
+    ProviderType,
+    RelationshipEvidenceType,
+    SourceEvidence,
+    Storage,
+    StorageType,
+    Workload,
+    WorkloadType,
+)
+from ..models.enums import Confidence
+from ..orchestrator.models import ErrorCategory, OrchestrationStatus
+from ..providers.base import (
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  NORMALIZATION ERROR
+# ════════════════════════════════════════════════════════════════════════
+
+
+class NormalizationError(BaseModel):
+    """A single normalization error.
+
+    Captures a specific normalization failure with enough context
+    to identify which entity and field caused the error.
+
+    Error categories reuse ErrorCategory from orchestrator.models:
+      - NORMALIZATION_ERROR: field mapping/conversion failure
+      - PARSING_ERROR: malformed payload structure
+      - UNSUPPORTED: unknown provider representation
+    """
+
+    entity_type: str
+    provider_ref: Optional[str] = None
+    error_category: ErrorCategory = ErrorCategory.NORMALIZATION_ERROR
+    message: str
+    field: Optional[str] = None
+
+    model_config = {"extra": "forbid"}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  NORMALIZATION RESULT
+# ════════════════════════════════════════════════════════════════════════
+
+
+class NormalizationResult(BaseModel):
+    """Result of normalizing a RawProviderSnapshot into canonical entities.
+
+    Entities are stored in typed lists per canonical entity type.
+    This avoids untyped list[CanonicalEntity] which would lose
+    subclass field validation due to extra="forbid" on CanonicalEntity.
+
+    Status semantics:
+        SUCCESS: all entities normalized without errors
+        PARTIAL: some entities normalized, some errors occurred
+        FAILED: no entities normalized, errors occurred
+        Empty result with no errors = SUCCESS (empty is not failure)
+    """
+
+    snapshot_id: str = Field(min_length=1)
+    provider_type: ProviderType
+    status: OrchestrationStatus = OrchestrationStatus.SUCCESS
+
+    # Canonical entities (typed per entity type)
+    physicals: list[Physical] = Field(default_factory=list)
+    os_entities: list[OS] = Field(default_factory=list)
+    platforms: list[Platform] = Field(default_factory=list)
+    clusters: list[Cluster] = Field(default_factory=list)
+    nodes: list[Node] = Field(default_factory=list)
+    execution_environments: list[ExecutionEnvironment] = Field(default_factory=list)
+    workloads: list[Workload] = Field(default_factory=list)
+    networks: list[Network] = Field(default_factory=list)
+    storages: list[Storage] = Field(default_factory=list)
+    accelerators: list[Accelerator] = Field(default_factory=list)
+
+    # Preserved from snapshot (provider-side refs, not resolved)
+    relationship_evidence: list[RawRelationshipEvidence] = Field(default_factory=list)
+
+    # Errors and warnings
+    errors: list[NormalizationError] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    normalized_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    model_config = {"extra": "forbid"}
+
+    @property
+    def entity_count(self) -> int:
+        """Total number of canonical entities produced."""
+        return (
+            len(self.physicals)
+            + len(self.os_entities)
+            + len(self.platforms)
+            + len(self.clusters)
+            + len(self.nodes)
+            + len(self.execution_environments)
+            + len(self.workloads)
+            + len(self.networks)
+            + len(self.storages)
+            + len(self.accelerators)
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        """True if no canonical entities were produced."""
+        return self.entity_count == 0
+
+    @property
+    def is_partial(self) -> bool:
+        """True if some entities were produced but errors occurred."""
+        return self.status == OrchestrationStatus.PARTIAL
+
+    @property
+    def is_success(self) -> bool:
+        """True if normalization completed without errors."""
+        return self.status == OrchestrationStatus.SUCCESS
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CANONICAL IDENTITY GENERATOR
+# ════════════════════════════════════════════════════════════════════════
+
+
+class CanonicalIdentityGenerator:
+    """Deterministic canonical ID generator.
+
+    Generates namespace-qualified canonical IDs that are guaranteed
+    to differ from provider_id.
+
+    Format: canon-{provider_type}-{entity_kind}-{provider_ref}
+
+    This is NOT a random ID strategy. It is deterministic and
+    namespace-qualified, ensuring:
+      - canonical_id != provider_id (always, due to "canon-" prefix)
+      - Same provider_ref always produces same canonical_id
+      - Different provider types produce different canonical_ids
+
+    If provider_ref is missing, uses an index-based fallback.
+    """
+
+    @staticmethod
+    def generate(
+        provider_type: ProviderType,
+        entity_kind: str,
+        provider_ref: Optional[str],
+        index: Optional[int] = None,
+    ) -> str:
+        """Generate a deterministic canonical ID.
+
+        Args:
+            provider_type: Provider type (KUBERNETES, WRCP, etc.)
+            entity_kind: Entity kind (physical, os, node, etc.)
+            provider_ref: Provider-side identifier (provider_id)
+            index: Fallback index if provider_ref is None/empty
+
+        Returns:
+            Deterministic canonical ID string.
+        """
+        pt = provider_type.value.lower()
+        kind = entity_kind.lower()
+        if provider_ref and provider_ref.strip():
+            ref = provider_ref.strip()
+        elif index is not None:
+            ref = f"idx-{index}"
+        else:
+            ref = "unidentified"
+        return f"canon-{pt}-{kind}-{ref}"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  ENUM MAPPING TABLES
+# ════════════════════════════════════════════════════════════════════════
+
+# Maps provider string values to canonical enum values.
+# Any string NOT in these maps is an unknown enum value -> error.
+
+_OS_TYPE_MAP: dict[str, OSType] = {e.value: e for e in OSType}
+_PLATFORM_TYPE_MAP: dict[str, PlatformType] = {e.value: e for e in PlatformType}
+_CLUSTER_TYPE_MAP: dict[str, ClusterType] = {e.value: e for e in ClusterType}
+_EE_TYPE_MAP: dict[str, ExecutionEnvironmentType] = {
+    e.value: e for e in ExecutionEnvironmentType
+}
+_WORKLOAD_TYPE_MAP: dict[str, WorkloadType] = {e.value: e for e in WorkloadType}
+_NETWORK_TYPE_MAP: dict[str, NetworkType] = {e.value: e for e in NetworkType}
+_STORAGE_TYPE_MAP: dict[str, StorageType] = {e.value: e for e in StorageType}
+_ACCELERATOR_TYPE_MAP: dict[str, AcceleratorType] = {
+    e.value: e for e in AcceleratorType
+}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  STRICT TYPE CONVERSION HELPERS
+# ════════════════════════════════════════════════════════════════════════
+
+
+def strict_int(value: Any) -> tuple[Optional[int], Optional[str]]:
+    """Convert to int. Returns (None, error_msg) on failure. None stays None."""
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return None, f"Boolean cannot be converted to int: {value}"
+    try:
+        return int(value), None
+    except (ValueError, TypeError):
+        return None, f"Cannot convert to int: '{value}'"
+
+
+def strict_float(value: Any) -> tuple[Optional[float], Optional[str]]:
+    """Convert to float. Returns (None, error_msg) on failure. None stays None."""
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return None, f"Boolean cannot be converted to float: {value}"
+    try:
+        return float(value), None
+    except (ValueError, TypeError):
+        return None, f"Cannot convert to float: '{value}'"
+
+
+def strict_bool(value: Any) -> tuple[Optional[bool], Optional[str]]:
+    """Convert to bool. Returns (None, error_msg) on failure. None stays None."""
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return value, None
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "on"):
+            return True, None
+        if v in ("false", "0", "no", "off"):
+            return False, None
+        return None, f"Cannot convert to bool: '{value}'"
+    if isinstance(value, (int, float)):
+        if value in (0, 0.0):
+            return False, None
+        if value in (1, 1.0):
+            return True, None
+        return None, f"Cannot convert to bool: {value}"
+    return None, f"Cannot convert to bool: '{value}'"
+
+
+def strict_str(value: Any) -> tuple[Optional[str], Optional[str]]:
+    """Convert to str. Returns (None, error_msg) on failure. None stays None."""
+    if value is None:
+        return None, None
+    if isinstance(value, str):
+        return value.strip(), None
+    return str(value), None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVIDER NORMALIZER ABC
+# ════════════════════════════════════════════════════════════════════════
+
+
+class ProviderNormalizer(ABC):
+    """Abstract base for provider-to-canonical normalizers.
+
+    Transforms RawProviderSnapshot -> Canonical Domain Model entities.
+
+    Contract:
+        normalize(snapshot) -> NormalizationResult
+        normalize_safe(snapshot) -> NormalizationResult (never raises)
+
+    The normalizer:
+      - Extracts raw payload fields
+      - Maps provider fields -> canonical fields
+      - Performs deterministic type conversion
+      - Maps provider enums -> canonical enums
+      - Generates canonical IDs (deterministic, namespace-qualified)
+      - Propagates provenance from snapshot to entities
+      - Preserves DIRECT/DERIVED relationship evidence
+      - Reports explicit errors for missing/invalid data
+
+    The normalizer does NOT:
+      - Connect to providers
+      - Verify data semantics
+      - Persist data
+      - Orchestrate workflows
+      - Infer/guess missing data
+      - Create INFERRED/UNKNOWN relationships
+      - Use LLM/heuristic/fuzzy matching
+    """
+
+    def __init__(self, provider_type: ProviderType) -> None:
+        self._provider_type = provider_type
+
+    @property
+    def provider_type(self) -> ProviderType:
+        return self._provider_type
+
+    @abstractmethod
+    def normalize(self, snapshot: RawProviderSnapshot) -> NormalizationResult:
+        """Normalize a raw snapshot into canonical entities.
+
+        Args:
+            snapshot: Raw provider snapshot to normalize.
+
+        Returns:
+            NormalizationResult with canonical entities, errors, and warnings.
+
+        Raises:
+            This method should catch internal errors and report them
+            in the result, not raise. Use normalize_safe() for a
+            guaranteed non-raising wrapper.
+        """
+        ...
+
+    def normalize_safe(self, snapshot: RawProviderSnapshot) -> NormalizationResult:
+        """Normalize with error handling. Returns FAILED result on exception.
+
+        This method wraps normalize() and catches any unhandled exception,
+        converting it to a FAILED NormalizationResult.
+        """
+        try:
+            return self.normalize(snapshot)
+        except Exception as exc:
+            logger.exception(
+                "Unhandled exception during normalization: %s", exc
+            )
+            return NormalizationResult(
+                snapshot_id=snapshot.snapshot_id,
+                provider_type=snapshot.provider_type,
+                status=OrchestrationStatus.FAILED,
+                errors=[
+                    NormalizationError(
+                        entity_type="UNKNOWN",
+                        provider_ref=None,
+                        error_category=ErrorCategory.NORMALIZATION_ERROR,
+                        message=f"Unhandled normalization exception: {exc}",
+                    )
+                ],
+            )
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GENERIC PROVIDER NORMALIZER (concrete implementation)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class GenericProviderNormalizer(ProviderNormalizer):
+    """Concrete normalizer for generic/synthetic provider payloads.
+
+    Expects a structured payload dict with keys for each entity type:
+        payload = {
+            "physicals": [...],
+            "os": [...],
+            "platforms": [...],
+            "clusters": [...],
+            "nodes": [...],
+            "execution_environments": [...],
+            "workloads": [...],
+            "networks": [...],
+            "storages": [...],
+            "accelerators": [...],
+        }
+
+    Each item is a dict with provider-side fields and refs.
+    Refs are provider_id strings, resolved to canonical_ids
+    in a second pass after all entities are created.
+    """
+
+    def normalize(self, snapshot: RawProviderSnapshot) -> NormalizationResult:
+        """Normalize a raw snapshot into canonical entities.
+
+        Process:
+            1. Initialize result
+            2. Normalize each entity type (first pass)
+            3. Resolve provider_id refs to canonical_ids (second pass)
+            4. Preserve relationship evidence from snapshot
+            5. Determine overall status
+        """
+        result = NormalizationResult(
+            snapshot_id=snapshot.snapshot_id,
+            provider_type=snapshot.provider_type,
+        )
+
+        id_map: dict[str, str] = {}
+
+        self._normalize_physicals(snapshot, result, id_map)
+        self._normalize_os(snapshot, result, id_map)
+        self._normalize_platforms(snapshot, result, id_map)
+        self._normalize_clusters(snapshot, result, id_map)
+        self._normalize_nodes(snapshot, result, id_map)
+        self._normalize_execution_environments(snapshot, result, id_map)
+        self._normalize_workloads(snapshot, result, id_map)
+        self._normalize_networks(snapshot, result, id_map)
+        self._normalize_storages(snapshot, result, id_map)
+        self._normalize_accelerators(snapshot, result, id_map)
+
+        self._resolve_all_refs(result, id_map)
+        result.relationship_evidence = list(snapshot.relationship_evidence)
+        self._determine_status(result)
+
+        return result
+
+    @staticmethod
+    def _make_source_evidence(snapshot: RawProviderSnapshot) -> SourceEvidence:
+        """Create SourceEvidence for a canonical entity from snapshot."""
+        return SourceEvidence(
+            provider_type=snapshot.provider_type,
+            provider_id=snapshot.provider_id,
+            collected_at=snapshot.collected_at,
+            raw_data_ref=snapshot.snapshot_id,
+            confidence=Confidence.HIGH,
+            discovery_method=RelationshipEvidenceType.DIRECT,
+        )
+
+    @staticmethod
+    def _map_enum(
+        value: Any,
+        enum_map: dict[str, Any],
+        field_name: str,
+    ) -> tuple[Any, Optional[str]]:
+        """Map a provider string to a canonical enum value.
+
+        Returns (enum_value, None) on success.
+        Returns (None, None) if value is None (missing, not error).
+        Returns (None, error_msg) if value is unknown.
+        """
+        if value is None:
+            return None, None
+        if isinstance(value, str) and value in enum_map:
+            return enum_map[value], None
+        return None, f"Unknown {field_name} value: '{value}'"
+
+    @staticmethod
+    def _missing_field_error(
+        entity_type: str, field_name: str, provider_ref: Optional[str] = None
+    ) -> NormalizationError:
+        return NormalizationError(
+            entity_type=entity_type,
+            provider_ref=provider_ref,
+            error_category=ErrorCategory.NORMALIZATION_ERROR,
+            message=f"Missing required field: {field_name}",
+            field=field_name,
+        )
+
+    @staticmethod
+    def _determine_status(result: NormalizationResult) -> None:
+        """Set result.status based on errors and entity count."""
+        if result.errors:
+            if result.entity_count > 0:
+                result.status = OrchestrationStatus.PARTIAL
+            else:
+                result.status = OrchestrationStatus.FAILED
+        else:
+            result.status = OrchestrationStatus.SUCCESS
+
+    # ── Entity: Physical ────────────────────────────────────────────
+
+    def _normalize_physicals(
+        self,
+        snapshot: RawProviderSnapshot,
+        result: NormalizationResult,
+        id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("physicals", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="Physical",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'physicals' must be a list",
+            ))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Physical",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Physical item at index {idx} is not a dict",
+                ))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Physical", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "physical", provider_id, idx
+            )
+            id_map[provider_id] = canonical_id
+            result.physicals.append(Physical(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                os_refs=item.get("os_refs", []),
+                node_refs=item.get("node_refs", []),
+                execution_environment_refs=item.get("execution_environment_refs", []),
+                network_refs=item.get("network_refs", []),
+                storage_refs=item.get("storage_refs", []),
+                accelerator_refs=item.get("accelerator_refs", []),
+            ))
+
+    # ── Entity: OS ──────────────────────────────────────────────────
+
+    def _normalize_os(
+        self,
+        snapshot: RawProviderSnapshot,
+        result: NormalizationResult,
+        id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("os", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="OS",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'os' must be a list",
+            ))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="OS",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"OS item at index {idx} is not a dict",
+                ))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "OS", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "os", provider_id, idx
+            )
+            id_map[provider_id] = canonical_id
+            os_type, enum_err = self._map_enum(
+                item.get("os_type"), _OS_TYPE_MAP, "os_type")
+            if enum_err:
+                result.warnings.append(f"OS '{provider_id}': {enum_err}")
+            result.os_entities.append(OS(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                os_type=os_type or OSType.UNKNOWN,
+                name=item.get("name", ""),
+                version=item.get("version", ""),
+                kernel=item.get("kernel", ""),
+                architecture=item.get("architecture", ""),
+                physical_ref=item.get("physical_ref"),
+                execution_environment_ref=item.get("execution_environment_ref"),
+            ))
+
+    # ── Entity: Platform ────────────────────────────────────────────
+
+    def _normalize_platforms(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("platforms", [])
+        if not isinstance(items, list):
+            result.error

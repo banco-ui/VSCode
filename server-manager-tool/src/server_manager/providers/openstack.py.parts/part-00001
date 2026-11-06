@@ -1,0 +1,439 @@
+"""OpenStack Provider Adapter — Phase 26.
+
+Collects OpenStack infrastructure resources and preserves them in a
+RawProviderSnapshot. The adapter does NOT create canonical entities —
+it only collects and preserves raw data.
+
+Input modes:
+    A. Fixture  — pass fixture dict to constructor or collect(fixture=...)
+    B. Client   — pass an OpenStack-compatible client to constructor.
+                  The adapter calls read-only list methods and
+                  serialises results to dicts at the adapter boundary.
+
+Fixture format (in-memory, mimics OpenStack API JSON responses)::
+
+    {
+        "platform": {"name": "openstack-cloud", "version": "Yoga"},
+        "availability_zones": [<AZ JSON>, ...],
+        "hypervisors": [<Hypervisor JSON>, ...],
+        "servers": [<Server JSON>, ...],
+        "networks": [<Network JSON>, ...],
+        "volumes": [<Volume JSON>, ...],
+        "flavors": [<Flavor JSON>, ...],
+        "errors": {
+            "servers": "403 Forbidden: permission denied",
+        }
+    }
+
+OpenStack API JSON mimic conventions (fixture items):
+    Hypervisor (os-hypervisors)::
+        {"hypervisor_hostname": "compute-01", "id": 1,
+         "state": "up", "status": "enabled",
+         "vcpus": 32, "memory_mb": 131072, "local_gb": 500}
+
+    Server (compute/servers)::
+        {"id": "uuid-001", "name": "vm-web-01", "status": "ACTIVE",
+         "OS-EXT-SRV-ATTR:hypervisor_hostname": "compute-01",
+         "flavor": {"id": "flavor-001"}}
+
+    Network (network/v2.0/networks)::
+        {"id": "net-uuid-001", "name": "public-net", "status": "ACTIVE"}
+
+    Volume (volume/v3/volumes)::
+        {"id": "vol-uuid-001", "name": "data-vol", "status": "in-use",
+         "size": 100, "attachments": [{"server_id": "uuid-001"}]}
+
+    Availability Zone (os-availability-zone)::
+        {"zoneName": "nova", "zoneState": {"available": true}}
+
+Partial collection: per-capability results allow partial success.
+Permission errors: distinguished from empty results (403 → FAILED).
+Relationship evidence: DIRECT (Server→Hypervisor) and DERIVED
+(Server→attached Volume) only — no inference, no heuristics.
+
+Live connection: only attempted when client is explicitly injected.
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from server_manager.models.canonical import (
+    Confidence,
+    ProviderType,
+    RelationshipEvidenceType,
+    SourceEvidence,
+)
+from server_manager.orchestrator.models import ErrorCategory, OrchestrationStatus
+from server_manager.providers.base import (
+    AdapterCapability,
+    CapabilityResult,
+    ProviderAdapter,
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Capabilities declared by this adapter ──────────────────────────────
+_OPENSTACK_CAPABILITIES: list[AdapterCapability] = [
+    AdapterCapability.PLATFORM,
+    AdapterCapability.CLUSTER,
+    AdapterCapability.NODE,
+    AdapterCapability.EXECUTION_ENVIRONMENT,
+    AdapterCapability.NETWORK,
+    AdapterCapability.STORAGE,
+]
+
+# Resource group keys → capability mapping
+_RESOURCE_GROUP_CAPS: list[tuple[str, AdapterCapability]] = [
+    ("availability_zones", AdapterCapability.CLUSTER),
+    ("hypervisors", AdapterCapability.NODE),
+    ("servers", AdapterCapability.EXECUTION_ENVIRONMENT),
+    ("networks", AdapterCapability.NETWORK),
+    ("volumes", AdapterCapability.STORAGE),
+]
+
+# All fixture payload keys (for preservation)
+_ALL_PAYLOAD_KEYS: tuple[str, ...] = (
+    "platform",
+    "availability_zones",
+    "hypervisors",
+    "servers",
+    "networks",
+    "volumes",
+    "flavors",
+)
+
+
+class OpenStackProviderAdapter(ProviderAdapter):
+    """OpenStack provider adapter — fixture + client injection.
+
+    Collects OpenStack resources and preserves them in a RawProviderSnapshot.
+    The adapter does NOT create canonical entities — it only collects
+    and preserves raw data.
+
+    Fixture format mimics OpenStack API JSON responses (see module docstring).
+
+    Partial collection: per-capability results allow partial success.
+    Permission errors: distinguished from empty results (403 → FAILED).
+    Relationship evidence: DIRECT (Server→Hypervisor) and DERIVED
+    (Server→attached Volume) only — no inference, no heuristics.
+
+    Live connection: only attempted when client is explicitly injected.
+    """
+
+    def __init__(
+        self,
+        provider_id: str = "openstack-cloud",
+        fixture: Optional[dict[str, Any]] = None,
+        client: Any = None,
+    ) -> None:
+        """Initialize the OpenStack provider adapter.
+
+        Args:
+            provider_id: Cloud identity for this adapter target.
+            fixture: In-memory fixture dict with OpenStack raw data.
+            client: Optional OpenStack-compatible client for live/mock
+                    collection. If provided, collect() will call
+                    read-only API methods and serialise results.
+        """
+        super().__init__(ProviderType.OPENSTACK, provider_id)
+        self._fixture = fixture or {}
+        self._client = client
+
+    def capabilities(self) -> list[AdapterCapability]:
+        """Declare what this adapter can collect.
+
+        Only capabilities with actual collection implementation.
+        ACCELERATOR, RELATIONSHIP_DISCOVERY, METRICS, EVENTS, HEALTH
+        are NOT declared.
+        """
+        return list(_OPENSTACK_CAPABILITIES)
+
+    def collect(self, **kwargs: Any) -> RawProviderSnapshot:
+        """Collect OpenStack resources from fixture or injected client.
+
+        Args:
+            fixture: Optional fixture dict to override constructor fixture.
+                      Ignored if a client was injected and no explicit fixture
+                      override is provided.
+
+        Returns:
+            RawProviderSnapshot with raw OpenStack data preserved in payload,
+            per-capability results, and relationship evidence.
+        """
+        snapshot_id = f"snap-os-{uuid.uuid4().hex[:12]}"
+        collected_at = datetime.now(timezone.utc).isoformat()
+
+        # ── Route: client injection vs fixture ──────────────────────────
+        fixture_override = kwargs.get("fixture")
+        if self._client is not None and fixture_override is None:
+            payload, errors_map = self._collect_from_client(collected_at)
+        else:
+            fixture = fixture_override if fixture_override is not None else self._fixture
+            if not isinstance(fixture, dict):
+                fixture = {}
+            payload, errors_map = self._collect_from_fixture(fixture)
+
+        platform_info = payload.get("platform", {})
+        if not isinstance(platform_info, dict):
+            platform_info = {}
+
+        # ── Build per-capability results ───────────────────────────────
+        capability_results: list[CapabilityResult] = []
+        snapshot_errors: list[str] = []
+
+        capability_results.append(CapabilityResult(
+            capability=AdapterCapability.PLATFORM,
+            status=OrchestrationStatus.SUCCESS,
+            item_count=1 if platform_info else 0,
+            collected_at=collected_at,
+        ))
+
+        for resource_key, cap in _RESOURCE_GROUP_CAPS:
+            items = payload.get(resource_key, [])
+            resource_error = errors_map.get(resource_key)
+
+            if resource_error:
+                err_lower = resource_error.lower()
+                is_permission = (
+                    "forbidden" in err_lower
+                    or "permission" in err_lower
+                    or "403" in err_lower
+                    or "unauthorized" in err_lower
+                )
+                cap_result = CapabilityResult(
+                    capability=cap,
+                    status=OrchestrationStatus.FAILED,
+                    errors=[resource_error],
+                    error_category=(
+                        ErrorCategory.AUTHENTICATION_ERROR
+                        if is_permission
+                        else ErrorCategory.UNKNOWN_ERROR
+                    ),
+                    item_count=0,
+                    collected_at=collected_at,
+                )
+                snapshot_errors.append(
+                    f"[{cap.value}] {resource_key}: {resource_error}"
+                )
+            else:
+                cap_result = CapabilityResult(
+                    capability=cap,
+                    status=OrchestrationStatus.SUCCESS,
+                    item_count=len(items),
+                    collected_at=collected_at,
+                )
+            capability_results.append(cap_result)
+
+        relationship_evidence = self._extract_relationship_evidence(payload)
+
+        any_success = any(
+            cr.status == OrchestrationStatus.SUCCESS
+            for cr in capability_results
+        )
+        any_failed = any(
+            cr.status == OrchestrationStatus.FAILED
+            for cr in capability_results
+        )
+        if any_success and any_failed:
+            collection_status = OrchestrationStatus.PARTIAL
+        elif any_failed and not any_success:
+            collection_status = OrchestrationStatus.FAILED
+        else:
+            collection_status = OrchestrationStatus.SUCCESS
+
+        return RawProviderSnapshot(
+            snapshot_id=snapshot_id,
+            provider_type=ProviderType.OPENSTACK,
+            provider_id=self._provider_id,
+            collected_at=collected_at,
+            collection_status=collection_status,
+            declared_capabilities=self.capabilities(),
+            capability_results=capability_results,
+            payload=payload,
+            relationship_evidence=relationship_evidence,
+            source_evidence=SourceEvidence(
+                provider_type=ProviderType.OPENSTACK,
+                provider_id=self._provider_id,
+                collected_at=collected_at,
+                raw_data_ref=snapshot_id,
+                confidence=Confidence.HIGH,
+                discovery_method=RelationshipEvidenceType.DIRECT,
+            ),
+            errors=snapshot_errors,
+        )
+
+    # ── Fixture collection ─────────────────────────────────────────────
+
+    @staticmethod
+    def _collect_from_fixture(
+        fixture: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Build payload from fixture dict (Phase 26 path)."""
+        errors_map = fixture.get("errors", {})
+        if not isinstance(errors_map, dict):
+            errors_map = {}
+        payload: dict[str, Any] = {}
+        for key in _ALL_PAYLOAD_KEYS:
+            data = fixture.get(key, [])
+            payload[key] = data if isinstance(data, list) else []
+        platform_info = fixture.get("platform", {})
+        if not isinstance(platform_info, dict):
+            platform_info = {}
+        payload["platform"] = platform_info
+        return payload, errors_map
+
+    # ── Client injection collection ─────────────────────────────────────
+
+    def _collect_from_client(
+        self, collected_at: str,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Collect from an OpenStack-compatible client (mock or live).
+
+        Calls read-only API methods and serialises results to dicts
+        at the adapter boundary.
+
+        Only read-only operations:
+            - list_hypervisors (compute)
+            - list_servers (compute)
+            - list_networks (neutron)
+            - list_volumes (cinder)
+            - list_availability_zones (compute)
+            - get_platform_info (identity/version)
+
+        No create/update/patch/delete is ever called.
+        """
+        client = self._client
+        payload: dict[str, Any] = {key: [] for key in _ALL_PAYLOAD_KEYS}
+        errors_map: dict[str, str] = {}
+
+        # ── Platform info ──────────────────────────────────────────────
+        platform_info: dict[str, Any] = {"name": self._provider_id}
+        try:
+            if hasattr(client, "get_platform_info"):
+                version_resp = client.get_platform_info()
+                if isinstance(version_resp, dict):
+                    version_str = version_resp.get("version", "")
+                    if version_str:
+                        platform_info["version"] = version_str
+                elif isinstance(version_resp, str):
+                    platform_info["version"] = version_resp
+        except Exception as exc:
+            errors_map["platform_version"] = str(exc)
+            logger.warning("Failed to get OpenStack platform info: %s", exc)
+        payload["platform"] = platform_info
+
+        # ── Resource lists ─────────────────────────────────────────────
+        self._collect_list_resource(
+            client, "list_availability_zones", "availability_zones",
+            payload, errors_map)
+        self._collect_list_resource(
+            client, "list_hypervisors", "hypervisors",
+            payload, errors_map)
+        self._collect_list_resource(
+            client, "list_servers", "servers",
+            payload, errors_map)
+        self._collect_list_resource(
+            client, "list_networks", "networks",
+            payload, errors_map)
+        self._collect_list_resource(
+            client, "list_volumes", "volumes",
+            payload, errors_map)
+        self._collect_list_resource(
+            client, "list_flavors", "flavors",
+            payload, errors_map)
+
+        return payload, errors_map
+
+    @staticmethod
+    def _collect_list_resource(
+        client: Any,
+        method_name: str,
+        payload_key: str,
+        payload: dict[str, Any],
+        errors_map: dict[str, str],
+    ) -> None:
+        """Call a client list method and serialize items into payload.
+
+        Handles exceptions per-resource — 403, timeout, etc. are recorded
+        in errors_map without aborting other resources.
+        """
+        if not hasattr(client, method_name):
+            return
+        try:
+            method = getattr(client, method_name)
+            response = method()
+            if isinstance(response, dict):
+                item_list = response.get("items", response.get(payload_key, []))
+            elif isinstance(response, list):
+                item_list = response
+            else:
+                item_list = []
+            payload[payload_key] = item_list if isinstance(item_list, list) else []
+        except Exception as exc:
+            errors_map[payload_key] = str(exc)
+            logger.warning("OpenStack client call %s failed: %s", method_name, exc)
+
+    @staticmethod
+    def _extract_relationship_evidence(
+        payload: dict[str, Any],
+    ) -> list[RawRelationshipEvidence]:
+        """Extract DIRECT/DERIVED relationship evidence from raw OpenStack data.
+
+        Only explicitly stated relationships:
+        - Server OS-EXT-SRV-ATTR:hypervisor_hostname → DIRECT: Server runs on Hypervisor
+        - Volume attachments[].server_id → DIRECT: Volume attached to Server
+
+        Prohibited: inference, heuristics, label/name similarity, LLM.
+        """
+        evidence: list[RawRelationshipEvidence] = []
+
+        for server in payload.get("servers", []):
+            if not isinstance(server, dict):
+                continue
+            server_id = server.get("id", "")
+            if not server_id:
+                continue
+
+            # ── Server → Hypervisor (DIRECT) ──────────────────────────
+            hv_host = server.get("OS-EXT-SRV-ATTR:hypervisor_hostname")
+            if hv_host:
+                evidence.append(RawRelationshipEvidence(
+                    source_entity_ref=server_id,
+                    target_entity_ref=hv_host,
+                    relationship_type="runs_on",
+                    evidence_type=RelationshipEvidenceType.DIRECT,
+                    raw_data={"server": server_id, "hypervisor": hv_host},
+                ))
+
+        for volume in payload.get("volumes", []):
+            if not isinstance(volume, dict):
+                continue
+            volume_id = volume.get("id", "")
+            if not volume_id:
+                continue
+
+            # ── Volume → Server (DIRECT, via attachment) ──────────────
+            attachments = volume.get("attachments", [])
+            if isinstance(attachments, list):
+                for attachment in attachments:
+                    if not isinstance(attachment, dict):
+                        continue
+                    attached_server_id = attachment.get("server_id", "")
+                    if attached_server_id:
+                        evidence.append(RawRelationshipEvidence(
+                            source_entity_ref=volume_id,
+                            target_entity_ref=attached_server_id,
+                            relationship_type="attached_to",
+                            evidence_type=RelationshipEvidenceType.DIRECT,
+                            raw_data={
+                                "volume": volume_id,
+                                "server": attached_server_id,
+                            },
+                        ))
+
+        return evidence

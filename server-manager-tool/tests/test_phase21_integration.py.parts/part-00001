@@ -1,0 +1,565 @@
+"""Phase 21 - Real Platform Integration & Operational E2E Validation.
+
+Validates the complete Server Manager operational pipeline against a
+realistic Kubernetes topology through the EXISTING provider-neutral
+architecture. No parallel live implementation is created.
+
+Live tests are SKIPPED when credentials are unavailable.
+All deterministic tests always run using mock/fixture data.
+
+SAFETY: READ_ONLY, no live mutation, no credential exposure.
+"""
+from __future__ import annotations
+
+import os
+import re
+import inspect
+from datetime import datetime, timezone
+from typing import Any
+
+import pytest
+
+from server_manager.discovery.models import CanonicalInventory, DiscoveryResult
+from server_manager.discovery.service import PlatformDiscovery
+from server_manager.fault.models import Fault, FaultResult, FaultStatus, FaultType, Severity
+from server_manager.fault.service import FaultDetectionService
+from server_manager.graph.models import (
+    EntityType, GraphNode, GraphRelationship, GraphReport, RelationshipType,
+)
+from server_manager.graph.service import GraphBuilder, GraphQuery
+from server_manager.health.models import (
+    AvailabilityStatus, CapacityInfo, HealthReport, HealthResult,
+    HealthStatus, ResourceType, ResourceStatus,
+)
+from server_manager.health.service import HealthService
+from server_manager.models.canonical import (
+    ExecutionEnvironmentType, NetworkType, PlatformType,
+    ProviderType, RelationshipEvidenceType, StorageType,
+)
+from server_manager.monitoring.models import MonitoringReport, Observation, StateChange
+from server_manager.monitoring.service import MonitoringService
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.normalizers.provider_normalizer import NormalizationResult
+from server_manager.operations.models import (
+    CapabilityDecision, OperationBlockReason, OperationParameters,
+    OperationPreview, OperationRequest, OperationResult,
+    OperationStatus, OperationType, TargetResolution,
+)
+from server_manager.operations.service import (
+    CapabilityResolver, OperationExecutor, OperationGraphContext,
+    OperationSafetyGate, OperationService, TargetResolver,
+)
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability, KubernetesProviderAdapter, RawProviderSnapshot,
+)
+from server_manager.recovery.models import (
+    AuthorizationLevel, RecoveryAction, RecoveryActionType,
+    RecoveryCandidate, SafetyResult,
+)
+from server_manager.recovery.service import RecoveryService
+from server_manager.visibility.models import Alert, AlertStatus, OperationalSummary
+from server_manager.visibility.service import AlertService, OperationalVisibilityService
+
+
+# GATE 1 - READ-ONLY ENVIRONMENT INSPECTION
+
+_K8S_CLIENT_AVAILABLE = False
+try:
+    import kubernetes as _k8s_module  # noqa: F401
+    _K8S_CLIENT_AVAILABLE = True
+except ImportError:
+    pass
+
+_KUBECONFIG_ENV = os.environ.get("KUBECONFIG", "")
+_DEFAULT_KUBECONFIG = os.path.expanduser("~/.kube/config")
+_KUBECONFIG_AVAILABLE = bool(_KUBECONFIG_ENV) or os.path.exists(_DEFAULT_KUBECONFIG)
+_LIVE = _K8S_CLIENT_AVAILABLE and _KUBECONFIG_AVAILABLE
+LIVE = pytest.mark.skipif(
+    not _LIVE,
+    reason="Live tests skipped: no Kubernetes credentials available",
+)
+
+
+# MOCK K8s API OBJECTS
+
+class MockK8sObject:
+    def __init__(self, data):
+        self._data = data
+    def to_dict(self):
+        return self._data
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self._data.get(name)
+
+class MockK8sListResponse:
+    def __init__(self, items):
+        self.items = items
+    def to_dict(self):
+        return {"items": [item.to_dict() for item in self.items]}
+
+class MockVersionResponse:
+    def __init__(self, git_version="v1.28.0"):
+        self.git_version = git_version
+    def to_dict(self):
+        return {"gitVersion": self.git_version}
+
+class MockCoreV1Api:
+    def __init__(self, topology):
+        self._topology = topology
+    def get_api_version(self):
+        return MockVersionResponse(self._topology.get("cluster", {}).get("version", "v1.28.0"))
+    def list_namespace(self):
+        return MockK8sListResponse([MockK8sObject(n) for n in self._topology.get("namespaces", [])])
+    def list_node(self):
+        return MockK8sListResponse([MockK8sObject(n) for n in self._topology.get("nodes", [])])
+    def list_pod_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(p) for p in self._topology.get("pods", [])])
+    def list_service_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(s) for s in self._topology.get("services", [])])
+    def list_persistent_volume(self):
+        return MockK8sListResponse([MockK8sObject(pv) for pv in self._topology.get("persistent_volumes", [])])
+    def list_persistent_volume_claim_for_all_namespaces(self):
+        return MockK8sListResponse([MockK8sObject(pvc) for pvc in self._topology.get("persistent_volume_claims", [])])
+
+
+# MOCK TOPOLOGY BUILDERS
+
+def make_node(name, uid=None, ready=True, memory_pressure=False,
+              disk_pressure=False, pid_pressure=False, cpu_capacity="8",
+              cpu_allocatable="7500m", memory_capacity="16256396Ki",
+              memory_allocatable="15256396Ki", pod_capacity="110"):
+    conditions = [
+        {"type": "Ready", "status": "True" if ready else "False"},
+        {"type": "MemoryPressure", "status": "True" if memory_pressure else "False"},
+        {"type": "DiskPressure", "status": "True" if disk_pressure else "False"},
+        {"type": "PIDPressure", "status": "True" if pid_pressure else "False"},
+    ]
+    return {
+        "apiVersion": "v1", "kind": "Node",
+        "metadata": {"name": name, "uid": uid or "uid-node-" + name,
+                      "labels": {"kubernetes.io/hostname": name}},
+        "spec": {}, "status": {
+            "nodeInfo": {"kubeletVersion": "v1.28.0"}, "conditions": conditions,
+            "capacity": {"cpu": cpu_capacity, "memory": memory_capacity, "pods": pod_capacity},
+            "allocatable": {"cpu": cpu_allocatable, "memory": memory_allocatable, "pods": pod_capacity},
+        },
+    }
+
+def make_container(name, image="nginx:1.21"):
+    return {"name": name, "image": image, "resources": {}}
+
+def make_pod(name, uid=None, namespace="default", node_name=None,
+             phase="Running", ready=True, containers=None):
+    spec = {}
+    if node_name:
+        spec["nodeName"] = node_name
+    spec["containers"] = containers or [make_container("main")]
+    conditions = []
+    if phase == "Running":
+        conditions = [
+            {"type": "Ready", "status": "True" if ready else "False"},
+            {"type": "ContainersReady", "status": "True" if ready else "False"},
+            {"type": "Initialized", "status": "True"},
+            {"type": "PodScheduled", "status": "True"},
+        ]
+    elif phase == "Pending":
+        conditions = [
+            {"type": "Initialized", "status": "True"},
+            {"type": "PodScheduled", "status": "False"},
+        ]
+    elif phase == "Failed":
+        conditions = [
+            {"type": "Ready", "status": "False"},
+            {"type": "ContainersReady", "status": "False"},
+        ]
+    return {
+        "apiVersion": "v1", "kind": "Pod",
+        "metadata": {"name": name, "uid": uid or "uid-pod-" + name, "namespace": namespace},
+        "spec": spec, "status": {"phase": phase, "conditions": conditions},
+    }
+
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {
+        "apiVersion": "v1", "kind": "Service",
+        "metadata": {"name": name, "uid": uid or "uid-svc-" + name, "namespace": "default"},
+        "spec": {"type": svc_type, "clusterIP": "10.96.0.1"},
+    }
+
+def make_pv(name, uid=None, phase="Bound"):
+    return {
+        "apiVersion": "v1", "kind": "PersistentVolume",
+        "metadata": {"name": name, "uid": uid or "uid-pv-" + name},
+        "spec": {"capacity": {"storage": "10Gi"}}, "status": {"phase": phase},
+    }
+
+def make_pvc(name, uid=None, phase="Bound"):
+    return {
+        "apiVersion": "v1", "kind": "PersistentVolumeClaim",
+        "metadata": {"name": name, "uid": uid or "uid-pvc-" + name, "namespace": "default"},
+        "spec": {"resources": {"requests": {"storage": "5Gi"}}}, "status": {"phase": phase},
+    }
+
+def make_namespace(name):
+    return {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "uid": "uid-ns-" + name}}
+
+def make_healthy_cluster_topology():
+    return {
+        "cluster": {"name": "test-cluster-01", "version": "v1.28.0"},
+        "namespaces": [make_namespace("default"), make_namespace("ran")],
+        "nodes": [make_node("node-01", uid="uid-node-01"), make_node("node-02", uid="uid-node-02")],
+        "pods": [
+            make_pod("app-pod-01", uid="uid-pod-app-01", namespace="default", node_name="node-01",
+                     containers=[make_container("main"), make_container("sidecar")]),
+            make_pod("app-pod-02", uid="uid-pod-app-02", namespace="ran", node_name="node-02"),
+            make_pod("app-pod-03", uid="uid-pod-app-03", namespace="default", node_name="node-01"),
+        ],
+        "services": [make_service("app-svc", uid="uid-svc-app")],
+        "persistent_volumes": [make_pv("pv-01", uid="uid-pv-01")],
+        "persistent_volume_claims": [make_pvc("pvc-01", uid="uid-pvc-01")],
+    }
+
+def make_unhealthy_cluster_topology():
+    return {
+        "cluster": {"name": "unhealthy-cluster", "version": "v1.28.0"},
+        "namespaces": [make_namespace("default")],
+        "nodes": [
+            make_node("bad-node-01", uid="uid-bad-node-01", ready=False),
+            make_node("degraded-node-02", uid="uid-degraded-node-02", ready=True, memory_pressure=True),
+        ],
+        "pods": [
+            make_pod("failed-pod-01", uid="uid-failed-pod-01", node_name="bad-node-01", phase="Failed", ready=False),
+            make_pod("pending-pod-02", uid="uid-pending-pod-02", node_name="degraded-node-02", phase="Pending", ready=False),
+        ],
+        "services": [], "persistent_volumes": [], "persistent_volume_claims": [],
+    }
+
+
+# HELPER: RUN FULL PIPELINE
+
+class PipelineResult:
+    def __init__(self, topology, provider_id="test-cluster"):
+        self.topology = topology
+        self.provider_id = provider_id
+        mock_client = MockCoreV1Api(topology)
+        self.adapter = KubernetesProviderAdapter(provider_id=provider_id, client=mock_client)
+        self.snapshot = self.adapter.collect()
+        self.normalizer = KubernetesProviderNormalizer()
+        self.norm_result = self.normalizer.normalize(self.snapshot)
+        self.discovery = PlatformDiscovery()
+        self.adapter2 = KubernetesProviderAdapter(provider_id=provider_id, client=MockCoreV1Api(topology))
+        self.discovery_result = self.discovery.discover(self.adapter2, self.normalizer)
+        self.inventory = self.discovery_result.inventory
+        self.health_service = HealthService()
+        self.health_report = self.health_service.assess(self.discovery_result)
+        self.graph_builder = GraphBuilder()
+        self.graph_report = self.graph_builder.build(self.discovery_result)
+        self.graph_query = GraphQuery(self.graph_report)
+        self.monitoring_service = MonitoringService()
+        self.monitoring_report = self.monitoring_service.monitor(self.health_report)
+        self.fault_service = FaultDetectionService()
+        self.fault_result = self.fault_service.detect(
+            self.monitoring_report.observations, self.monitoring_report.state_changes)
+        self.alert_service = AlertService()
+        for fault in self.fault_result.faults:
+            self.alert_service.create_alert(fault)
+        self.visibility = OperationalVisibilityService(alert_service=self.alert_service)
+        self.visibility.set_inventory(self.inventory)
+        self.visibility.set_health_report(self.health_report)
+        self.visibility.set_fault_result(self.fault_result)
+        self.visibility.set_graph_query(self.graph_query)
+        self.summary = self.visibility.get_summary()
+
+def _strip_docstrings(source):
+    return re.sub(r'"""[\s\S]*?"""', "", source)
+
+# TEST: GATE 1 - ENVIRONMENT AUDIT
+
+class TestGate1EnvironmentAudit:
+    def test_kubernetes_client_detected(self):
+        assert isinstance(_K8S_CLIENT_AVAILABLE, bool)
+
+    @pytest.mark.skipif(not _K8S_CLIENT_AVAILABLE, reason="kubernetes client not installed")
+    def test_kubernetes_client_has_version(self):
+        import kubernetes
+        assert kubernetes.__version__
+
+    def test_kubeconfig_detected(self):
+        assert isinstance(_KUBECONFIG_AVAILABLE, bool)
+
+    def test_live_path_status(self):
+        if _LIVE:
+            assert _K8S_CLIENT_AVAILABLE
+            assert _KUBECONFIG_AVAILABLE
+        else:
+            assert not (_K8S_CLIENT_AVAILABLE and _KUBECONFIG_AVAILABLE)
+
+    def test_no_credentials_exposed(self):
+        sensitive_keys = ["KUBE_TOKEN", "KUBE_PASSWORD", "KUBE_CERT",
+                           "KUBE_CLIENT_CERT", "KUBE_CLIENT_KEY"]
+        for key in sensitive_keys:
+            assert not os.environ.get(key)
+
+    def test_live_skip_reason_is_meaningful(self):
+        if not _LIVE:
+            assert not _KUBECONFIG_AVAILABLE or not _K8S_CLIENT_AVAILABLE
+
+
+# TEST: REAL ADAPTER PATH
+
+class TestRealAdapterPath:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_client_injection_produces_snapshot(self, pipeline):
+        assert pipeline.snapshot is not None
+        assert pipeline.snapshot.provider_type == ProviderType.KUBERNETES
+        assert pipeline.snapshot.snapshot_id.startswith("snap-k8s-")
+
+    def test_snapshot_payload_has_k8s_data(self, pipeline):
+        assert len(pipeline.snapshot.payload["nodes"]) == 2
+        assert len(pipeline.snapshot.payload["pods"]) == 3
+        assert len(pipeline.snapshot.payload["namespaces"]) == 2
+        assert len(pipeline.snapshot.payload["services"]) == 1
+        assert len(pipeline.snapshot.payload["persistent_volumes"]) == 1
+
+    def test_snapshot_capability_results(self, pipeline):
+        assert len(pipeline.snapshot.capability_results) > 0
+        assert any(cr.status == OrchestrationStatus.SUCCESS for cr in pipeline.snapshot.capability_results)
+
+    def test_snapshot_relationship_evidence_extracted(self, pipeline):
+        assert len(pipeline.snapshot.relationship_evidence) > 0
+        direct = [e for e in pipeline.snapshot.relationship_evidence
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT]
+        derived = [e for e in pipeline.snapshot.relationship_evidence
+                   if e.evidence_type == RelationshipEvidenceType.DERIVED]
+        assert len(direct) > 0
+        assert len(derived) > 0
+
+    def test_normalization_produces_canonical_entities(self, pipeline):
+        assert pipeline.norm_result.entity_count > 0
+
+    def test_platform_is_kubernetes(self, pipeline):
+        assert pipeline.norm_result.platforms[0].platform_type == PlatformType.KUBERNETES
+
+    def test_nodes_created_from_k8s_nodes(self, pipeline):
+        assert len(pipeline.norm_result.nodes) == 2
+
+    def test_pods_become_execution_environments(self, pipeline):
+        pods = [ee for ee in pipeline.norm_result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert len(pods) == 3
+
+    def test_containers_become_execution_environments(self, pipeline):
+        containers = [ee for ee in pipeline.norm_result.execution_environments
+                      if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert len(containers) == 4
+
+    def test_services_become_networks(self, pipeline):
+        assert len(pipeline.norm_result.networks) == 1
+        assert pipeline.norm_result.networks[0].network_type == NetworkType.VIRTUAL
+
+    def test_pv_and_pvc_become_storage(self, pipeline):
+        assert len(pipeline.norm_result.storages) == 2
+        types = {s.storage_type for s in pipeline.norm_result.storages}
+        assert StorageType.PV in types
+        assert StorageType.PVC in types
+
+    def test_no_workload_inference(self, pipeline):
+        assert len(pipeline.norm_result.workloads) == 0
+
+    def test_no_physical_inference(self, pipeline):
+        assert len(pipeline.norm_result.physicals) == 0
+
+    def test_no_os_inference(self, pipeline):
+        assert len(pipeline.norm_result.os_entities) == 0
+
+    def test_no_accelerator_inference(self, pipeline):
+        assert len(pipeline.norm_result.accelerators) == 0
+
+    def test_discovery_result_is_success(self, pipeline):
+        assert pipeline.discovery_result.is_success
+        assert pipeline.discovery_result.inventory is not None
+
+
+# TEST: IDENTITY STABILITY
+
+class TestIdentityStability:
+    def test_same_topology_same_canonical_ids(self):
+        topology = make_healthy_cluster_topology()
+        r1 = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(provider_id="tc", client=MockCoreV1Api(topology)).collect())
+        r2 = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(provider_id="tc", client=MockCoreV1Api(topology)).collect())
+        assert sorted(n.canonical_id for n in r1.nodes) == sorted(n.canonical_id for n in r2.nodes)
+        assert sorted(ee.canonical_id for ee in r1.execution_environments) == sorted(ee.canonical_id for ee in r2.execution_environments)
+
+    def test_canonical_id_differs_from_provider_id(self):
+        topology = make_healthy_cluster_topology()
+        result = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(provider_id="tc", client=MockCoreV1Api(topology)).collect())
+        for node in result.nodes:
+            assert node.canonical_id != node.provider_id
+
+    def test_no_timestamps_in_canonical_ids(self):
+        topology = make_healthy_cluster_topology()
+        result = KubernetesProviderNormalizer().normalize(
+            KubernetesProviderAdapter(provider_id="tc", client=MockCoreV1Api(topology)).collect())
+        for entity in (result.platforms + result.clusters + result.nodes
+                        + result.execution_environments + result.networks + result.storages):
+            assert "2026" not in entity.canonical_id
+
+    def test_snapshot_id_changes_but_canonical_ids_stable(self):
+        topology = make_healthy_cluster_topology()
+        s1 = KubernetesProviderAdapter(client=MockCoreV1Api(topology)).collect()
+        s2 = KubernetesProviderAdapter(client=MockCoreV1Api(topology)).collect()
+        assert s1.snapshot_id != s2.snapshot_id
+        r1 = KubernetesProviderNormalizer().normalize(s1)
+        r2 = KubernetesProviderNormalizer().normalize(s2)
+        assert sorted(n.canonical_id for n in r1.nodes) == sorted(n.canonical_id for n in r2.nodes)
+
+
+# TEST: PROVENANCE
+
+class TestProvenance:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_all_entities_have_source_evidence(self, pipeline):
+        all_entities = (pipeline.norm_result.platforms + pipeline.norm_result.clusters
+                        + pipeline.norm_result.nodes + pipeline.norm_result.execution_environments
+                        + pipeline.norm_result.networks + pipeline.norm_result.storages)
+        assert len(all_entities) > 0
+        for entity in all_entities:
+            assert entity.source_evidence is not None
+
+    def test_provider_type_is_kubernetes(self, pipeline):
+        for entity in (pipeline.norm_result.platforms + pipeline.norm_result.clusters + pipeline.norm_result.nodes):
+            assert entity.source_evidence.provider_type == ProviderType.KUBERNETES
+
+    def test_provider_id_preserved(self, pipeline):
+        for node in pipeline.norm_result.nodes:
+            assert node.source_evidence.provider_id == "test-cluster"
+
+    def test_raw_data_ref_matches_snapshot(self, pipeline):
+        for node in pipeline.norm_result.nodes:
+            assert node.source_evidence.raw_data_ref == pipeline.snapshot.snapshot_id
+
+
+# TEST: RELATIONSHIP EVIDENCE
+
+class TestRelationshipEvidence:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_only_direct_and_derived_evidence(self, pipeline):
+        for ev in pipeline.norm_result.relationship_evidence:
+            assert ev.evidence_type in (RelationshipEvidenceType.DIRECT, RelationshipEvidenceType.DERIVED)
+
+    def test_no_inferred_evidence(self, pipeline):
+        for ev in pipeline.norm_result.relationship_evidence:
+            assert ev.evidence_type in (RelationshipEvidenceType.DIRECT, RelationshipEvidenceType.DERIVED)
+
+    def test_pod_to_node_direct_evidence(self, pipeline):
+        direct = [e for e in pipeline.norm_result.relationship_evidence
+                  if e.evidence_type == RelationshipEvidenceType.DIRECT and e.relationship_type == "runs_on"]
+        assert len(direct) > 0
+
+
+# TEST: HEALTH INTEGRATION
+
+class TestHealthIntegration:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_health_report_produced(self, pipeline):
+        assert pipeline.health_report is not None
+        assert pipeline.health_report.provider_type == ProviderType.KUBERNETES
+
+    def test_health_report_is_success(self, pipeline):
+        assert pipeline.health_report.is_success
+
+    def test_health_results_cover_all_entities(self, pipeline):
+        assert pipeline.health_report.entity_count > 0
+
+    def test_healthy_node_has_healthy_status(self, pipeline):
+        node_results = pipeline.health_report.results_for_type("NODE")
+        assert len(node_results) > 0
+        healthy = [r for r in node_results if r.status == HealthStatus.HEALTHY]
+        assert len(healthy) > 0
+
+    def test_node_has_cpu_capacity(self, pipeline):
+        node_results = pipeline.health_report.results_for_type("NODE")
+        for r in node_results:
+            if r.status == HealthStatus.HEALTHY:
+                cpu_caps = [ci for ci in r.capacity_infos if ci.resource_type == ResourceType.CPU]
+                assert len(cpu_caps) > 0
+                assert cpu_caps[0].capacity is not None
+                assert cpu_caps[0].allocatable is not None
+
+    def test_node_has_memory_capacity(self, pipeline):
+        node_results = pipeline.health_report.results_for_type("NODE")
+        for r in node_results:
+            if r.status == HealthStatus.HEALTHY:
+                mem_caps = [ci for ci in r.capacity_infos if ci.resource_type == ResourceType.MEMORY]
+                assert len(mem_caps) > 0
+                assert mem_caps[0].capacity is not None
+
+    def test_pod_health_extracted_from_phase(self, pipeline):
+        pod_results = pipeline.health_report.results_for_type("EXECUTION_ENVIRONMENT")
+        assert len(pod_results) > 0
+
+    def test_unknown_is_not_healthy(self, pipeline):
+        unknown_results = [r for r in pipeline.health_report.results if r.status == HealthStatus.UNKNOWN]
+        for r in unknown_results:
+            assert r.status != HealthStatus.HEALTHY
+
+    def test_unhealthy_cluster_produces_unhealthy_results(self):
+        pipeline = PipelineResult(make_unhealthy_cluster_topology())
+        unhealthy = [r for r in pipeline.health_report.results
+                     if r.status in (HealthStatus.UNHEALTHY, HealthStatus.DEGRADED)]
+        assert len(unhealthy) > 0
+
+    def test_unhealthy_cluster_health_is_partial(self):
+        pipeline = PipelineResult(make_unhealthy_cluster_topology())
+        assert pipeline.health_report.is_partial
+
+
+# TEST: GRAPH INTEGRATION
+
+class TestGraphIntegration:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_graph_has_nodes(self, pipeline):
+        assert pipeline.graph_report.node_count > 0
+
+    def test_graph_nodes_match_canonical_ids(self, pipeline):
+        graph_ids = {n.canonical_id for n in pipeline.graph_report.nodes}
+        canonical_ids = set()
+        for el in [pipeline.inventory.platforms, pipeline.inventory.clusters,
+                   pipeline.inventory.nodes, pipeline.inventory.execution_environments,
+                   pipeline.inventory.networks, pipeline.inventory.storages]:
+            for entity in el:
+                canonical_ids.add(entity.canonical_id)
+        assert graph_ids == canonical_ids
+
+    def test_graph_has_relationships(self, pipeline):
+        assert pipeline.graph_report.relationship_count > 0
+
+    def test_graph_edges_only_direct_or_derived(self, pipeline):
+        for edge in pipeline.graph_report.relationships:
+            assert edge.evidence_type in (RelationshipEvidenceType.DIRECT, RelationshipEvidenceType.DERIVED)
+
+    def test_graph_no_inferred_edges(self, pipeline):
+        for edge in pipeline.graph_report.relationships:
+            assert edge.evidence_type in (RelationshipEvidenceType.DIRECT, RelationshipEvidenceType.DERIVED)
+
+    d

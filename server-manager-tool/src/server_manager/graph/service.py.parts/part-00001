@@ -1,0 +1,547 @@
+"""Graph Builder & Query Service — Phase 16.
+
+Builds a Unified Infrastructure Graph from CanonicalInventory and
+provides read-only traversal/query.
+
+    CanonicalInventory + Relationship Evidence
+        ↓
+    GraphBuilder.build()
+        ↓
+    GraphReport (nodes + relationships)
+        ↓
+    GraphQuery (read-only traversal)
+
+The graph builder does NOT:
+    ❌ Connect to providers (no API calls)
+    ❌ Infer relationships
+    ❌ Create fake nodes for missing endpoints
+    ❌ Mutate any data
+    ❌ Create INFERRED or UNKNOWN edges
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+from server_manager.discovery.models import CanonicalInventory, DiscoveryResult
+from server_manager.models.canonical import (
+    ProviderType,
+    RelationshipEvidenceType,
+    SourceEvidence,
+)
+from server_manager.models.enums import Confidence
+from server_manager.providers.base import RawRelationshipEvidence
+
+from .models import (
+    EntityType,
+    GraphNode,
+    GraphRelationship,
+    GraphReport,
+    RelationshipType,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  REF FIELD → RELATIONSHIP TYPE MAPPING
+# ════════════════════════════════════════════════════════════════════════
+
+# Maps entity_class_name → list of (ref_field_name, RelationshipType, is_list)
+# These are DERIVED edges — computed from provider data by the normalizer.
+_REF_FIELD_MAP: dict[str, list[tuple[str, RelationshipType, bool]]] = {
+    "Physical": [
+        ("os_refs", RelationshipType.CONTAINS, True),
+        ("node_refs", RelationshipType.CONTAINS, True),
+        ("execution_environment_refs", RelationshipType.CONTAINS, True),
+        ("network_refs", RelationshipType.CONTAINS, True),
+        ("storage_refs", RelationshipType.CONTAINS, True),
+        ("accelerator_refs", RelationshipType.CONTAINS, True),
+    ],
+    "OS": [
+        ("physical_ref", RelationshipType.RUNS_ON, False),
+        ("execution_environment_ref", RelationshipType.HOSTS, False),
+    ],
+    "Platform": [
+        ("cluster_refs", RelationshipType.CONTAINS, True),
+    ],
+    "Cluster": [
+        ("platform_ref", RelationshipType.MEMBER_OF, False),
+        ("node_refs", RelationshipType.CONTAINS, True),
+    ],
+    "Node": [
+        ("cluster_ref", RelationshipType.MEMBER_OF, False),
+        ("physical_ref", RelationshipType.RUNS_ON, False),
+        ("execution_environment_refs", RelationshipType.HOSTS, True),
+    ],
+    "ExecutionEnvironment": [
+        ("physical_ref", RelationshipType.RUNS_ON, False),
+        ("node_ref", RelationshipType.RUNS_ON, False),
+        ("os_ref", RelationshipType.USES, False),
+        ("workload_ref", RelationshipType.HOSTS, False),
+        ("accelerator_refs", RelationshipType.USES, True),
+    ],
+    "Workload": [
+        ("execution_environment_refs", RelationshipType.USES, True),
+        ("network_refs", RelationshipType.USES, True),
+        ("storage_refs", RelationshipType.USES, True),
+    ],
+    "Accelerator": [
+        ("physical_ref", RelationshipType.ATTACHED_TO, False),
+        ("execution_environment_ref", RelationshipType.ATTACHED_TO, False),
+    ],
+}
+
+_ENTITY_TYPE_MAP: dict[str, EntityType] = {
+    "Physical": EntityType.PHYSICAL,
+    "OS": EntityType.OS,
+    "Platform": EntityType.PLATFORM,
+    "Cluster": EntityType.CLUSTER,
+    "Node": EntityType.NODE,
+    "ExecutionEnvironment": EntityType.EXECUTION_ENVIRONMENT,
+    "Workload": EntityType.WORKLOAD,
+    "Network": EntityType.NETWORK,
+    "Storage": EntityType.STORAGE,
+    "Accelerator": EntityType.ACCELERATOR,
+}
+
+
+_REL_TYPE_NORMALIZE: dict[str, RelationshipType] = {
+    "runs_on": RelationshipType.RUNS_ON,
+    "contains": RelationshipType.CONTAINS,
+    "member_of": RelationshipType.MEMBER_OF,
+    "hosts": RelationshipType.HOSTS,
+    "uses": RelationshipType.USES,
+    "attached_to": RelationshipType.ATTACHED_TO,
+}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GRAPH BUILDER
+# ════════════════════════════════════════════════════════════════════════
+
+
+class GraphBuilder:
+    """Builds a Unified Infrastructure Graph from CanonicalInventory.
+
+    The builder is provider-neutral — it consumes CanonicalInventory
+    and relationship evidence without calling any provider API.
+
+    Construction order:
+        1. Canonical Nodes (from entity lists)
+        2. Valid Relationships (from entity ref fields + RawRelationshipEvidence)
+        3. Relationship Evidence (evidence_type preserved)
+        4. Provenance (source_evidence on nodes and edges)
+        5. Graph validation
+
+    Usage::
+
+        builder = GraphBuilder()
+        report = builder.build(discovery_result)
+        query = GraphQuery(report)
+        neighbors = query.get_neighbors(canonical_id)
+    """
+
+    def build(self, discovery_result: DiscoveryResult) -> GraphReport:
+        """Build graph from a DiscoveryResult.
+
+        Handles SKIPPED/FAILED discovery by returning an empty graph
+        with a warning.
+        """
+        if discovery_result.inventory is None:
+            return GraphReport(
+                warnings=[
+                    f"Discovery {discovery_result.discovery_status.value}: "
+                    f"no inventory — graph is empty"
+                ],
+            )
+        return self._build_from_inventory(discovery_result.inventory)
+
+    def build_from_inventory(
+        self, inventory: CanonicalInventory,
+    ) -> GraphReport:
+        """Build graph directly from a CanonicalInventory."""
+        return self._build_from_inventory(inventory)
+
+    # ── Internal: build from inventory ──────────────────────────────
+
+    def _build_from_inventory(
+        self, inventory: CanonicalInventory,
+    ) -> GraphReport:
+        """Core graph construction logic."""
+        report = GraphReport()
+        node_ids: set[str] = set()
+
+        # ── Step 1: Build nodes ──────────────────────────────────────
+        self._build_nodes(inventory, report, node_ids)
+
+        # ── Step 2: Build id_map (provider_id → canonical_id) ────────
+        id_map = self._build_id_map(inventory)
+
+        # ── Step 3: Build edges ──────────────────────────────────────
+        candidate_edges: list[GraphRelationship] = []
+
+        # 3a. Edges from entity ref fields (DERIVED)
+        self._build_edges_from_refs(inventory, candidate_edges)
+
+        # 3b. Edges from RawRelationshipEvidence (DIRECT/DERIVED)
+        self._build_edges_from_evidence(
+            inventory, id_map, candidate_edges, report.warnings,
+        )
+
+        # ── Step 4: Deduplicate edges ────────────────────────────────
+        deduped = self._deduplicate_edges(candidate_edges)
+
+        # ── Step 5: Validate endpoints ───────────────────────────────
+        valid_edges: list[GraphRelationship] = []
+        for edge in deduped:
+            if edge.source_id not in node_ids:
+                report.warnings.append(
+                    f"Edge rejected: source '{edge.source_id}' not in nodes "
+                    f"({edge.relationship_type.value} → {edge.target_id})"
+                )
+                continue
+            if edge.target_id not in node_ids:
+                report.warnings.append(
+                    f"Edge rejected: target '{edge.target_id}' not in nodes "
+                    f"({edge.source_id} {edge.relationship_type.value})"
+                )
+                continue
+            valid_edges.append(edge)
+
+        report.relationships = valid_edges
+
+        # ── Step 6: Validation ───────────────────────────────────────
+        self._validate(report, node_ids)
+
+        return report
+
+    # ── Step 1: Build nodes ──────────────────────────────────────────
+
+    @staticmethod
+    def _build_nodes(
+        inventory: CanonicalInventory,
+        report: GraphReport,
+        node_ids: set[str],
+    ) -> None:
+        """Create GraphNodes from all canonical entities."""
+        entity_lists: list[tuple[list, str]] = [
+            (inventory.physicals, "Physical"),
+            (inventory.os_entities, "OS"),
+            (inventory.platforms, "Platform"),
+            (inventory.clusters, "Cluster"),
+            (inventory.nodes, "Node"),
+            (inventory.execution_environments, "ExecutionEnvironment"),
+            (inventory.workloads, "Workload"),
+            (inventory.networks, "Network"),
+            (inventory.storages, "Storage"),
+            (inventory.accelerators, "Accelerator"),
+        ]
+        for entity_list, class_name in entity_lists:
+            entity_type = _ENTITY_TYPE_MAP.get(class_name)
+            if entity_type is None:
+                continue
+            for entity in entity_list:
+                node = GraphNode(
+                    canonical_id=entity.canonical_id,
+                    entity_type=entity_type,
+                    provider_type=entity.provider_type,
+                    source_evidence=entity.source_evidence,
+                )
+                report.nodes.append(node)
+                node_ids.add(entity.canonical_id)
+
+    # ── Step 2: Build id_map ────────────────────────────────────────
+
+    @staticmethod
+    def _build_id_map(
+        inventory: CanonicalInventory,
+    ) -> dict[str, str]:
+        """Map provider_id → canonical_id for all entities."""
+        id_map: dict[str, str] = {}
+        all_entities: list[Any] = []
+        all_entities.extend(inventory.physicals)
+        all_entities.extend(inventory.os_entities)
+        all_entities.extend(inventory.platforms)
+        all_entities.extend(inventory.clusters)
+        all_entities.extend(inventory.nodes)
+        all_entities.extend(inventory.execution_environments)
+        all_entities.extend(inventory.workloads)
+        all_entities.extend(inventory.networks)
+        all_entities.extend(inventory.storages)
+        all_entities.extend(inventory.accelerators)
+        for entity in all_entities:
+            if entity.provider_id:
+                id_map[entity.provider_id] = entity.canonical_id
+        return id_map
+
+    # ── Step 3a: Edges from entity ref fields ────────────────────────
+
+    @staticmethod
+    def _build_edges_from_refs(
+        inventory: CanonicalInventory,
+        edges: list[GraphRelationship],
+    ) -> None:
+        """Create edges from canonical entity ref fields.
+
+        These are DERIVED edges — refs already resolved to canonical_ids.
+        """
+        entity_lists: list[tuple[list, str]] = [
+            (inventory.physicals, "Physical"),
+            (inventory.os_entities, "OS"),
+            (inventory.platforms, "Platform"),
+            (inventory.clusters, "Cluster"),
+            (inventory.nodes, "Node"),
+            (inventory.execution_environments, "ExecutionEnvironment"),
+            (inventory.workloads, "Workload"),
+            (inventory.accelerators, "Accelerator"),
+        ]
+        for entity_list, class_name in entity_lists:
+            ref_fields = _REF_FIELD_MAP.get(class_name, [])
+            for entity in entity_list:
+                for field_name, rel_type, is_list in ref_fields:
+                    value = getattr(entity, field_name, None)
+                    if value is None:
+                        continue
+                    if is_list:
+                        for ref in value:
+                            if ref:
+                                edges.append(GraphRelationship(
+                                    source_id=entity.canonical_id,
+                                    target_id=ref,
+                                    relationship_type=rel_type,
+                                    evidence_type=RelationshipEvidenceType.DERIVED,
+                                    source_evidence=entity.source_evidence,
+                                ))
+                    else:
+                        if value:
+                            edges.append(GraphRelationship(
+                                source_id=entity.canonical_id,
+                                target_id=value,
+                                relationship_type=rel_type,
+                                evidence_type=RelationshipEvidenceType.DERIVED,
+                                source_evidence=entity.source_evidence,
+                            ))
+
+    # ── Step 3b: Edges from RawRelationshipEvidence ──────────────────
+
+    @staticmethod
+    def _build_edges_from_evidence(
+        inventory: CanonicalInventory,
+        id_map: dict[str, str],
+        edges: list[GraphRelationship],
+        warnings: list[str],
+    ) -> None:
+        """Create edges from RawRelationshipEvidence.
+
+        Resolves provider_id refs to canonical_ids using id_map.
+        Preserves DIRECT/DERIVED evidence type from source.
+        """
+        for evidence in inventory.relationship_evidence:
+            source_id = id_map.get(evidence.source_entity_ref)
+            if source_id is None:
+                warnings.append(
+                    f"Relationship evidence: cannot resolve source "
+                    f"'{evidence.source_entity_ref}' — edge skipped"
+                )
+                continue
+            target_id = id_map.get(evidence.target_entity_ref)
+            if target_id is None:
+                warnings.append(
+                    f"Relationship evidence: cannot resolve target "
+                    f"'{evidence.target_entity_ref}' — edge skipped"
+                )
+                continue
+            rel_type = GraphBuilder._normalize_rel_type(
+                evidence.relationship_type, warnings,
+            )
+            if rel_type is None:
+                continue
+            edge_source_ev = SourceEvidence(
+                provider_type=inventory.provider_type,
+                provider_id=inventory.provider_id,
+                raw_data_ref=inventory.snapshot_id,
+                confidence=Confidence.HIGH,
+                discovery_method=evidence.evidence_type,
+            )
+            edges.append(GraphRelationship(
+                source_id=source_id,
+                target_id=target_id,
+                relationship_type=rel_type,
+                evidence_type=evidence.evidence_type,
+                source_evidence=edge_source_ev,
+                raw_data=evidence.raw_data,
+            ))
+
+    @staticmethod
+    def _normalize_rel_type(
+        rel_type_str: str,
+        warnings: list[str],
+    ) -> Optional[RelationshipType]:
+        """Normalize relationship_type string to RelationshipType enum."""
+        key = rel_type_str.strip().lower()
+        if key in _REL_TYPE_NORMALIZE:
+            return _REL_TYPE_NORMALIZE[key]
+        try:
+            return RelationshipType(rel_type_str.strip().upper())
+        except ValueError:
+            warnings.append(
+                f"Unknown relationship_type '{rel_type_str}' — edge skipped"
+            )
+            return None
+
+    # ── Step 4: Deduplicate edges ────────────────────────────────────
+
+    @staticmethod
+    def _deduplicate_edges(
+        edges: list[GraphRelationship],
+    ) -> list[GraphRelationship]:
+        """Deduplicate edges by (source_id, target_id, relationship_type).
+
+        When duplicates exist, prefer DIRECT evidence over DERIVED.
+        """
+        best: dict[tuple[str, str, RelationshipType], GraphRelationship] = {}
+        for edge in edges:
+            key = edge.edge_key
+            existing = best.get(key)
+            if existing is None:
+                best[key] = edge
+                continue
+            if (edge.evidence_type == RelationshipEvidenceType.DIRECT
+                    and existing.evidence_type != RelationshipEvidenceType.DIRECT):
+                best[key] = edge
+        return list(best.values())
+
+    # ── Step 6: Validation ───────────────────────────────────────────
+
+    @staticmethod
+    def _validate(report: GraphReport, node_ids: set[str]) -> None:
+        """Run graph validation checks."""
+        errors: list[str] = []
+
+        # Check: every node has canonical_id
+        for node in report.nodes:
+            if not node.canonical_id or not node.canonical_id.strip():
+                errors.append(f"Node missing canonical_id: {node}")
+
+        # Check: every edge source/target exists
+        for edge in report.relationships:
+            if edge.source_id not in node_ids:
+                errors.append(
+                    f"Edge source '{edge.source_id}' not in nodes "
+                    f"({edge.relationship_type.value} → {edge.target_id})"
+                )
+            if edge.target_id not in node_ids:
+                errors.append(
+                    f"Edge target '{edge.target_id}' not in nodes "
+                    f"({edge.source_id} {edge.relationship_type.value})"
+                )
+
+        # Check: no duplicate edge
+        seen: set[tuple[str, str, RelationshipType]] = set()
+        for edge in report.relationships:
+            key = edge.edge_key
+            if key in seen:
+                errors.append(
+                    f"Duplicate edge: {edge.source_id} "
+                    f"{edge.relationship_type.value} {edge.target_id}"
+                )
+            seen.add(key)
+
+        # Check: no INFERRED or UNKNOWN edge
+        for edge in report.relationships:
+            if edge.evidence_type not in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            ):
+                errors.append(
+                    f"Invalid evidence_type '{edge.evidence_type}' on edge "
+                    f"{edge.source_id} {edge.relationship_type.value} "
+                    f"{edge.target_id}"
+                )
+
+        # Check: provenance preserved
+        for node in report.nodes:
+            if node.source_evidence is None:
+                errors.append(
+                    f"Node '{node.canonical_id}' missing source_evidence"
+                )
+
+        report.validation_errors = errors
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  GRAPH QUERY (read-only traversal)
+# ════════════════════════════════════════════════════════════════════════
+
+
+class GraphQuery:
+    """Read-only graph traversal/query.
+
+    Wraps a GraphReport and provides efficient lookup methods.
+
+    Usage::
+
+        query = GraphQuery(report)
+        node = query.get_node(canonical_id)
+        rels = query.get_relationships(canonical_id)
+        neighbors = query.get_neighbors(canonical_id)
+        related = query.get_related_entities(canonical_id, RelationshipType.RUNS_ON)
+    """
+
+    def __init__(self, report: GraphReport) -> None:
+        self._report = report
+        self._nodes: dict[str, GraphNode] = {
+            n.canonical_id: n for n in report.nodes
+        }
+        self._outgoing: dict[str, list[GraphRelationship]] = {}
+        self._incoming: dict[str, list[GraphRelationship]] = {}
+        for rel in report.relationships:
+            self._outgoing.setdefault(rel.source_id, []).append(rel)
+            self._incoming.setdefault(rel.target_id, []).append(rel)
+
+    def get_node(self, canonical_id: str) -> Optional[GraphNode]:
+        """Get a graph node by canonical_id. Returns None if not found."""
+        return self._nodes.get(canonical_id)
+
+    def get_relationships(
+        self, canonical_id: str,
+    ) -> list[GraphRelationship]:
+        """Get all relationships involving this node (both directions)."""
+        return (
+            list(self._outgoing.get(canonical_id, []))
+            + list(self._incoming.get(canonical_id, []))
+        )
+
+    def get_neighbors(self, canonical_id: str) -> list[str]:
+        """Get all neighbor canonical_ids (both directions)."""
+        neighbors: set[str] = set()
+        for rel in self._outgoing.get(canonical_id, []):
+            neighbors.add(rel.target_id)
+        for rel in self._incoming.get(canonical_id, []):
+            neighbors.add(rel.source_id)
+        return list(neighbors)
+
+    def get_related_entities(
+        self,
+        canonical_id: str,
+        relationship_type: RelationshipType,
+    ) -> list[str]:
+        """Get target IDs of outgoing edges with the specified type."""
+        result: list[str] = []
+        for rel in self._outgoing.get(canonical_id, []):
+            if rel.relationship_type == relationship_type:
+                result.append(rel.target_id)
+        return result
+
+    @property
+    def node_count(self) -> int:
+        return len(self._nodes)
+
+    @property
+    def relationship_count(self) -> int:
+        return len(self._report.relationships)
+
+    @property
+    def node_ids(self) -> set[str]:
+        return set(self._nodes.keys())

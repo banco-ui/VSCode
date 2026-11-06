@@ -1,0 +1,279 @@
+ize(raw)
+        assert inv.hardware.memory.modules[0].health == HealthStatus.UNKNOWN
+        assert inv.health.memory == HealthStatus.UNKNOWN
+
+    def test_empty_raw_all_health_unknown(self):
+        """No components → component healths stay UNKNOWN, never OK."""
+        norm = RedfishNormalizer()
+        inv = norm.normalize({})
+        assert inv.health.system == HealthStatus.UNKNOWN
+        assert inv.health.cpu == HealthStatus.UNKNOWN
+        assert inv.health.memory == HealthStatus.UNKNOWN
+        assert inv.health.storage == HealthStatus.UNKNOWN
+        assert inv.health.network == HealthStatus.UNKNOWN
+        assert inv.health.psu == HealthStatus.UNKNOWN
+        assert inv.health.thermal == HealthStatus.UNKNOWN
+        assert inv.health.fan == HealthStatus.UNKNOWN
+
+    def test_component_ok_does_not_promote_unknown_system(self):
+        """Processor OK must not promote the unknown system status."""
+        raw = self._minimal_raw()
+        raw["processors"] = [{
+            "Model": "Intel Xeon", "TotalCores": 24,
+            "Status": {"Health": "OK"},
+        }]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.health.system == HealthStatus.UNKNOWN
+        assert inv.health.cpu == HealthStatus.OK
+
+    def test_component_healths_reported_independently(self):
+        raw = self._minimal_raw({"Status": {"Health": "OK"}})
+        raw["processors"] = [{"Model": "P1", "TotalCores": 8, "Status": {"Health": "OK"}}]
+        raw["memory"] = [{"DeviceLocator": "A1", "CapacityMiB": 16384, "Status": {"Health": "WARNING"}}]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.health.cpu == HealthStatus.OK
+        assert inv.health.memory == HealthStatus.WARNING
+
+
+class TestRedfishNormalizerRobustness:
+    """P1-RF.7: Type safety, partial failure isolation, determinism."""
+
+    def _minimal_raw(self):
+        return {
+            "source": "redfish",
+            "endpoint": "https://10.0.0.1:443",
+            "system": {
+                "Manufacturer": "Dell Inc.",
+                "Model": "PowerEdge R750",
+                "SerialNumber": "SN12345",
+                "Status": {"Health": "OK"},
+            },
+        }
+
+    def test_processor_with_null_fields_does_not_break_others(self):
+        raw = self._minimal_raw()
+        raw["processors"] = [
+            {"Model": "Bad CPU", "TotalCores": None, "TotalThreads": "not-a-number"},
+            {"Model": "Good CPU", "TotalCores": 24, "TotalThreads": 48,
+             "Status": {"Health": "OK"}},
+        ]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.cpu.count == 2
+        # Good CPU still normalized with real values
+        good = inv.hardware.cpu.processors[1]
+        assert good.cores == 24
+        assert good.threads == 48
+        assert good.health == HealthStatus.OK
+        # Bad CPU: unparseable values fall back per BaseNormalizer contract
+        bad = inv.hardware.cpu.processors[0]
+        assert bad.cores == 0
+        assert bad.threads == 0
+
+    def test_memory_with_garbage_capacity_does_not_break_others(self):
+        raw = self._minimal_raw()
+        raw["memory"] = [
+            {"DeviceLocator": "A1", "CapacityMiB": "garbage"},
+            {"DeviceLocator": "A2", "CapacityMiB": 16384, "Status": {"Health": "OK"}},
+        ]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.memory.dimm_count == 2
+        assert inv.hardware.memory.modules[1].capacity_gb == 16.0
+        assert inv.hardware.memory.modules[1].health == HealthStatus.OK
+
+    def test_volume_with_non_dict_status_does_not_crash(self):
+        """Volume Status guard: non-dict Status must not crash normalization."""
+        raw = self._minimal_raw()
+        raw["storage"] = [{
+            "volumes": [
+                {"Name": "vd0", "CapacityBytes": 1000000000, "Status": "OK"},
+            ],
+        }]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.storage.virtual_disks[0].health == HealthStatus.UNKNOWN
+
+    def test_malformed_item_status_escalates_only_via_safe_normalize(self):
+        """P1-RF.11: A non-dict Status inside a list item no longer fails
+        normalize() — the item maps to UNKNOWN while other items are
+        normalized. safe_normalize remains a safety net for other failures."""
+        raw = self._minimal_raw()
+        raw["processors"] = [{"Model": "P1", "Status": "OK"}]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert isinstance(inv, ServerInventory)
+        assert inv.hardware.cpu.processors[0].health == HealthStatus.UNKNOWN
+        assert inv.identity.vendor == Vendor.Dell
+
+    def test_null_list_values_contained_by_safe_normalize(self):
+        """processors/memory explicitly None must not crash safe_normalize."""
+        norm = RedfishNormalizer()
+        inv = norm.safe_normalize({"processors": None, "memory": None})
+        assert isinstance(inv, ServerInventory)
+
+    def test_identity_deterministic_across_runs(self):
+        raw = self._minimal_raw()
+        raw["processors"] = [{"Model": "P1", "TotalCores": 8}]
+        norm = RedfishNormalizer()
+        inv1 = norm.normalize(raw)
+        inv2 = norm.normalize(raw)
+        assert inv1.identity.server_id == inv2.identity.server_id == "SN12345"
+        assert inv1.identity.model == inv2.identity.model
+        assert inv1.identity.vendor == inv2.identity.vendor
+        assert inv1.hardware.cpu.total_cores == inv2.hardware.cpu.total_cores
+
+    def test_server_id_fallback_chain(self):
+        norm = RedfishNormalizer()
+        # No SerialNumber → "unknown" (no Id either)
+        raw_no_ids = self._minimal_raw()
+        del raw_no_ids["system"]["SerialNumber"]
+        inv_no_ids = norm.normalize(raw_no_ids)
+        assert inv_no_ids.identity.server_id == "unknown"
+        # SerialNumber missing but Id present → Id used
+        raw_with_id = self._minimal_raw()
+        del raw_with_id["system"]["SerialNumber"]
+        raw_with_id["system"]["Id"] = "sys-1"
+        inv_with_id = norm.normalize(raw_with_id)
+        assert inv_with_id.identity.server_id == "sys-1"
+
+    def test_uuid_presence_flag(self):
+        norm = RedfishNormalizer()
+        raw = self._minimal_raw()
+        raw["system"]["UUID"] = "12345678-1234-1234-1234-123456789012"
+        assert norm.normalize(raw).identity.uuid_present is True
+        assert norm.normalize(self._minimal_raw()).identity.uuid_present is False
+
+    def test_unknown_manufacturer_maps_to_unknown_vendor(self):
+        norm = RedfishNormalizer()
+        inv = norm.normalize(self._minimal_raw())
+        raw2 = self._minimal_raw()
+        raw2["system"]["Manufacturer"] = "Acme Systems"
+        inv2 = norm.normalize(raw2)
+        assert inv2.identity.vendor == Vendor.Unknown
+        assert inv.identity.vendor == Vendor.Dell
+
+    def test_non_dict_status_memory_does_not_break_others(self):
+        """P1-RF.11: Memory item with non-dict Status → UNKNOWN, others intact."""
+        raw = self._minimal_raw()
+        raw["memory"] = [
+            {"DeviceLocator": "A1", "CapacityMiB": 16384, "Status": "OK"},
+            {"DeviceLocator": "A2", "CapacityMiB": 8192, "Status": {"Health": "OK"}},
+        ]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.memory.dimm_count == 2
+        assert inv.hardware.memory.modules[0].health == HealthStatus.UNKNOWN
+        assert inv.hardware.memory.modules[1].health == HealthStatus.OK
+        assert inv.health.memory == HealthStatus.OK
+
+    def test_non_dict_status_system_stays_unknown(self):
+        """P1-RF.11: Non-dict system Status → UNKNOWN, never promoted to OK."""
+        raw = self._minimal_raw()
+        raw["system"]["Status"] = "OK"  # non-dict
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.health.system == HealthStatus.UNKNOWN
+
+    def test_non_dict_status_network_does_not_break_others(self):
+        """P1-RF.11: Network adapter with non-dict Status → UNKNOWN, others intact."""
+        raw = self._minimal_raw()
+        raw["network_interfaces"] = [
+            {"Name": "NIC0", "SpeedMbps": "10000", "Status": "OK"},
+        ]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.health.network == HealthStatus.UNKNOWN
+
+    def test_non_dict_status_psu_thermal_does_not_break_others(self):
+        """P1-RF.11: PSU/temperature/fan with non-dict Status → UNKNOWN each."""
+        raw = self._minimal_raw()
+        raw["power"] = {"PowerSupplies": [{"Name": "PSU0", "Status": "OK"}]}
+        raw["thermal"] = {
+            "Temperatures": [{"Name": "CPU", "ReadingCelsius": 40, "Status": "OK"}],
+            "Fans": [{"Name": "FAN0", "ReadingRPM": 5000, "Status": "OK"}],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.power_thermal.power.psus[0].health == HealthStatus.UNKNOWN
+        assert inv.power_thermal.thermal.temperatures[0].health == HealthStatus.UNKNOWN
+        assert inv.power_thermal.thermal.fans[0].health == HealthStatus.UNKNOWN
+        # Valid metric values are still preserved
+        assert inv.power_thermal.thermal.temperatures[0].reading_c == 40.0
+        assert inv.power_thermal.power.psus[0].name == "PSU0"
+
+    def test_capacity_real_zero_is_preserved(self):
+        """P1-RF.18: A real capacity of 0 stays 0.0 — not reinterpreted as missing."""
+        raw = self._minimal_raw()
+        raw["memory"] = [{"DeviceLocator": "A1", "CapacityMiB": 0}]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.memory.modules[0].capacity_gb == 0.0
+
+    def test_capacity_missing_is_none_for_dimm_drive_volume(self):
+        """P1-RF.18: Missing capacity → None for DIMM, Drive and Volume."""
+        raw = self._minimal_raw()
+        raw["memory"] = [{"DeviceLocator": "A1"}]  # no CapacityMiB
+        raw["storage"] = [{
+            "controllers": [],
+            "drives": [{"Name": "D0"}],   # no CapacityBytes
+            "volumes": [{"Name": "V0"}],  # no CapacityBytes/Capacity
+        }]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.memory.modules[0].capacity_gb is None
+        assert inv.hardware.storage.physical_disks[0].capacity_gb is None
+        assert inv.hardware.storage.virtual_disks[0].capacity_gb is None
+
+    def test_capacity_null_is_none(self):
+        """P1-RF.18: Explicit null capacity → None."""
+        raw = self._minimal_raw()
+        raw["memory"] = [{"DeviceLocator": "A1", "CapacityMiB": None}]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.memory.modules[0].capacity_gb is None
+
+    def test_capacity_parse_failure_is_none(self):
+        """P1-RF.18: Unparseable capacity → None (not 0.0)."""
+        raw = self._minimal_raw()
+        raw["memory"] = [{"DeviceLocator": "A1", "CapacityMiB": "garbage"}]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.memory.modules[0].capacity_gb is None
+
+    def test_capacity_failure_isolated_across_resources(self):
+        """P1-RF.18: A bad capacity on one DIMM must not affect others."""
+        raw = self._minimal_raw()
+        raw["memory"] = [
+            {"DeviceLocator": "A1", "CapacityMiB": "garbage"},
+            {"DeviceLocator": "A2", "CapacityMiB": 16384},
+            {"DeviceLocator": "A3", "CapacityMiB": 0},
+        ]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.memory.modules[0].capacity_gb is None
+        assert inv.hardware.memory.modules[1].capacity_gb == 16.0
+        assert inv.hardware.memory.modules[2].capacity_gb == 0.0
+
+    def test_drive_volume_capacity_semantics(self):
+        """P1-RF.18: Drive/Volume capacity follows the same rules — real 0 kept,
+        valid converted, parse failure None."""
+        raw = self._minimal_raw()
+        raw["storage"] = [{
+            "controllers": [],
+            "drives": [
+                {"Name": "D0", "CapacityBytes": 0},           # real zero
+                {"Name": "D1", "CapacityBytes": 1000000000},  # valid
+                {"Name": "D2", "CapacityBytes": "bad"},       # parse failure
+            ],
+            "volumes": [{"Name": "V0", "CapacityBytes": 2000000000}],
+        }]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.storage.physical_disks[0].capacity_gb == 0.0
+        assert inv.hardware.storage.physical_disks[1].capacity_gb == round(1000000000 / (1024 ** 3), 2)
+        assert inv.hardware.storage.physical_disks[2].capacity_gb is None
+        assert inv.hardware.storage.virtual_disks[0].capacity_gb == round(2000000000 / (1024 ** 3), 2)
+        assert inv.health.system == HealthStatus.OK

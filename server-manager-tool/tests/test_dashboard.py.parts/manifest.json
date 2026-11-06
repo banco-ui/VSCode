@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/tests/test_dashboard.py",
+  "originalSize": 19327,
+  "sha256": "037b093432e366d6c994ba91955ac9dbb0001d289e3d8b52becd471c0b893cb9",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_dashboard.py\""
+}

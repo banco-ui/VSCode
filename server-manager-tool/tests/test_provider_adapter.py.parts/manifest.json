@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_provider_adapter.py",
+  "originalSize": 35381,
+  "sha256": "871fecb0f21f8989e6c0a8b4e807ef8ee407814c262e1e3c82bbb490d9ec752c",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_provider_adapter.py\""
+}

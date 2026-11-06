@@ -1,0 +1,395 @@
+s.append(NormalizationError(
+                entity_type="Platform",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'platforms' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Platform",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Platform item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Platform", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "platform", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            platform_type, enum_err = self._map_enum(
+                item.get("platform_type"), _PLATFORM_TYPE_MAP, "platform_type")
+            if enum_err:
+                result.warnings.append(f"Platform '{provider_id}': {enum_err}")
+            result.platforms.append(Platform(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                platform_type=platform_type or PlatformType.UNKNOWN,
+                version=item.get("version", ""),
+                cluster_refs=item.get("cluster_refs", []),
+            ))
+
+    # ── Entity: Cluster ──────────────────────────────────────────────
+
+    def _normalize_clusters(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("clusters", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="Cluster",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'clusters' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Cluster",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Cluster item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Cluster", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "cluster", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            cluster_type, enum_err = self._map_enum(
+                item.get("cluster_type"), _CLUSTER_TYPE_MAP, "cluster_type")
+            if enum_err:
+                result.warnings.append(f"Cluster '{provider_id}': {enum_err}")
+            result.clusters.append(Cluster(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                cluster_type=cluster_type or ClusterType.UNKNOWN,
+                platform_ref=item.get("platform_ref"),
+                node_refs=item.get("node_refs", []),
+            ))
+
+    # ── Entity: Node ────────────────────────────────────────────────
+
+    def _normalize_nodes(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("nodes", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="Node",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'nodes' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Node",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Node item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Node", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "node", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            result.nodes.append(Node(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                name=item.get("name", ""),
+                cluster_ref=item.get("cluster_ref"),
+                physical_ref=item.get("physical_ref"),
+                execution_environment_refs=item.get("execution_environment_refs", []),
+            ))
+
+    # ── Entity: ExecutionEnvironment ────────────────────────────────
+
+    def _normalize_execution_environments(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("execution_environments", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="ExecutionEnvironment",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'execution_environments' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="ExecutionEnvironment",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"EE item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "ExecutionEnvironment", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "ee", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            ee_type, enum_err = self._map_enum(
+                item.get("ee_type"), _EE_TYPE_MAP, "ee_type")
+            if enum_err:
+                result.warnings.append(f"EE '{provider_id}': {enum_err}")
+            result.execution_environments.append(ExecutionEnvironment(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                ee_type=ee_type or ExecutionEnvironmentType.UNKNOWN,
+                name=item.get("name", ""),
+                physical_ref=item.get("physical_ref"),
+                node_ref=item.get("node_ref"),
+                os_ref=item.get("os_ref"),
+                workload_ref=item.get("workload_ref"),
+                accelerator_refs=item.get("accelerator_refs", []),
+            ))
+
+    # ── Entity: Workload ────────────────────────────────────────────
+
+    def _normalize_workloads(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("workloads", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="Workload",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'workloads' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Workload",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Workload item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Workload", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "workload", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            wl_type, enum_err = self._map_enum(
+                item.get("workload_type"), _WORKLOAD_TYPE_MAP, "workload_type")
+            if enum_err:
+                result.warnings.append(f"Workload '{provider_id}': {enum_err}")
+            result.workloads.append(Workload(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                workload_type=wl_type or WorkloadType.CUSTOM,
+                name=item.get("name", ""),
+                execution_environment_refs=item.get("execution_environment_refs", []),
+                network_refs=item.get("network_refs", []),
+                storage_refs=item.get("storage_refs", []),
+            ))
+
+    # ── Entity: Network ──────────────────────────────────────────────
+
+    def _normalize_networks(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("networks", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="Network",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'networks' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Network",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Network item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Network", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "network", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            net_type, enum_err = self._map_enum(
+                item.get("network_type"), _NETWORK_TYPE_MAP, "network_type")
+            if enum_err:
+                result.warnings.append(f"Network '{provider_id}': {enum_err}")
+            result.networks.append(Network(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                network_type=net_type or NetworkType.UNKNOWN,
+                name=item.get("name", ""),
+            ))
+
+    # ── Entity: Storage ──────────────────────────────────────────────
+
+    def _normalize_storages(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("storages", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="Storage",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'storages' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Storage",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Storage item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Storage", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "storage", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            st_type, enum_err = self._map_enum(
+                item.get("storage_type"), _STORAGE_TYPE_MAP, "storage_type")
+            if enum_err:
+                result.warnings.append(f"Storage '{provider_id}': {enum_err}")
+            result.storages.append(Storage(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                storage_type=st_type or StorageType.UNKNOWN,
+                name=item.get("name", ""),
+            ))
+
+    # ── Entity: Accelerator ─────────────────────────────────────────
+
+    def _normalize_accelerators(
+        self, snapshot: RawProviderSnapshot,
+        result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        items = snapshot.payload.get("accelerators", [])
+        if not isinstance(items, list):
+            result.errors.append(NormalizationError(
+                entity_type="Accelerator",
+                error_category=ErrorCategory.PARSING_ERROR,
+                message="'accelerators' must be a list"))
+            return
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                result.errors.append(NormalizationError(
+                    entity_type="Accelerator",
+                    error_category=ErrorCategory.PARSING_ERROR,
+                    message=f"Accelerator item at index {idx} is not a dict"))
+                continue
+            provider_id = item.get("provider_id")
+            if not provider_id:
+                result.errors.append(self._missing_field_error(
+                    "Accelerator", "provider_id"))
+                continue
+            canonical_id = CanonicalIdentityGenerator.generate(
+                snapshot.provider_type, "accelerator", provider_id, idx)
+            id_map[provider_id] = canonical_id
+            acc_type, enum_err = self._map_enum(
+                item.get("accelerator_type"), _ACCELERATOR_TYPE_MAP,
+                "accelerator_type")
+            if enum_err:
+                result.warnings.append(
+                    f"Accelerator '{provider_id}': {enum_err}")
+            result.accelerators.append(Accelerator(
+                canonical_id=canonical_id,
+                provider_id=provider_id,
+                provider_type=snapshot.provider_type,
+                source_evidence=self._make_source_evidence(snapshot),
+                metadata=item.get("metadata", {}),
+                accelerator_type=acc_type or AcceleratorType.UNKNOWN,
+                name=item.get("name", ""),
+                physical_ref=item.get("physical_ref"),
+                execution_environment_ref=item.get("execution_environment_ref"),
+            ))
+
+    # ── Second Pass: Resolve provider_id refs → canonical_ids ────────
+
+    def _resolve_all_refs(
+        self, result: NormalizationResult, id_map: dict[str, str],
+    ) -> None:
+        """Resolve provider_id refs to canonical_ids in all entities."""
+
+        def resolve_list(refs: list[str]) -> list[str]:
+            return [id_map.get(r, r) for r in refs]
+
+        def resolve_single(ref: Optional[str]) -> Optional[str]:
+            if ref is None:
+                return None
+            return id_map.get(ref, ref)
+
+        for p in result.physicals:
+            p.os_refs = resolve_list(p.os_refs)
+            p.node_refs = resolve_list(p.node_refs)
+            p.execution_environment_refs = resolve_list(p.execution_environment_refs)
+            p.network_refs = resolve_list(p.network_refs)
+            p.storage_refs = resolve_list(p.storage_refs)
+            p.accelerator_refs = resolve_list(p.accelerator_refs)
+
+        for o in result.os_entities:
+            o.physical_ref = resolve_single(o.physical_ref)
+            o.execution_environment_ref = resolve_single(o.execution_environment_ref)
+
+        for pf in result.platforms:
+            pf.cluster_refs = resolve_list(pf.cluster_refs)
+
+        for c in result.clusters:
+            c.platform_ref = resolve_single(c.platform_ref)
+            c.node_refs = resolve_list(c.node_refs)
+
+        for n in result.nodes:
+            n.cluster_ref = resolve_single(n.cluster_ref)
+            n.physical_ref = resolve_single(n.physical_ref)
+            n.execution_environment_refs = resolve_list(n.execution_environment_refs)
+
+        for ee in result.execution_environments:
+            ee.physical_ref = resolve_single(ee.physical_ref)
+            ee.node_ref = resolve_single(ee.node_ref)
+            ee.os_ref = resolve_single(ee.os_ref)
+            ee.workload_ref = resolve_single(ee.workload_ref)
+            ee.accelerator_refs = resolve_list(ee.accelerator_refs)
+
+        for w in result.workloads:
+            w.execution_environment_refs = resolve_list(w.execution_environment_refs)
+            w.network_refs = resolve_list(w.network_refs)
+            w.storage_refs = resolve_list(w.storage_refs)
+
+        for a in result.accelerators:
+            a.physical_ref = resolve_single(a.physical_ref)
+            a.execution_environment_ref = resolve_single(a.execution_environment_ref)
+

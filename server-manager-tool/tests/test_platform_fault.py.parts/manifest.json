@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/tests/test_platform_fault.py",
+  "originalSize": 21505,
+  "sha256": "68b348caa73e856e8a35ca9fb7f4c45c94d34dbd328fab3eb2216639f8fbfacb",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_platform_fault.py\""
+}

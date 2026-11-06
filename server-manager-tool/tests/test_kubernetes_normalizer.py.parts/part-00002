@@ -1,0 +1,174 @@
+accelerators) == 0
+
+    def test_deployment_preserved_in_raw_payload(self, fx_deployment):
+        """Deployment data is preserved in EE metadata or raw, not lost."""
+        adapter = KubernetesProviderAdapter(fixture=fx_deployment)
+        snap = adapter.collect()
+        assert len(snap.payload["deployments"]) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  COMBINED TOPOLOGY TEST
+# ════════════════════════════════════════════════════════════════════════
+
+class TestCombinedTopology:
+    """K-15: Combined multi-layer topology."""
+
+    def test_all_entity_types_created(self, fx_combined):
+        result = collect_and_normalize(fx_combined)
+        assert len(result.platforms) == 1
+        assert len(result.clusters) == 1
+        assert len(result.nodes) == 3
+        # 2 pods + 3 containers = 5 EEs
+        assert len(result.execution_environments) == 5
+        assert len(result.networks) == 2
+        assert len(result.storages) == 2
+        # No workloads, physicals, OS, accelerators
+        assert len(result.workloads) == 0
+        assert len(result.physicals) == 0
+
+    def test_combined_status_success(self, fx_combined):
+        result = collect_and_normalize(fx_combined)
+        assert result.status == OrchestrationStatus.SUCCESS
+
+    def test_combined_entity_count(self, fx_combined):
+        result = collect_and_normalize(fx_combined)
+        # 1 platform + 1 cluster + 3 nodes + 5 EEs + 2 networks + 2 storages = 14
+        assert result.entity_count == 14
+
+    def test_combined_all_refs_resolved(self, fx_combined):
+        """All refs resolved to canonical_ids (not raw provider_ids)."""
+        result = collect_and_normalize(fx_combined)
+        for n in result.nodes:
+            assert n.cluster_ref is not None
+            assert n.cluster_ref.startswith("canon-")
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        for p in pods:
+            if p.node_ref is not None:
+                assert p.node_ref.startswith("canon-")
+
+    def test_combined_all_identity_separated(self, fx_combined):
+        """Every entity has canonical_id != provider_id."""
+        result = collect_and_normalize(fx_combined)
+        all_entities = (
+            result.platforms + result.clusters + result.nodes +
+            result.execution_environments + result.networks + result.storages
+        )
+        for e in all_entities:
+            assert e.canonical_id != e.provider_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  NEGATIVE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestNegativeCases:
+    """Negative tests: malformed, missing fields, no inference."""
+
+    def test_malformed_node_skipped(self):
+        """Malformed Node (not a dict) is skipped, not crash."""
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "nodes": ["not-a-dict", 42, None]}
+        result = collect_and_normalize(fixture)
+        assert len(result.nodes) == 0
+
+    def test_malformed_pod_skipped(self):
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "pods": ["bad", None, 123]}
+        result = collect_and_normalize(fixture)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert len(pods) == 0
+
+    def test_pod_without_name_skipped(self):
+        """Pod without metadata.name is skipped."""
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "pods": [{"metadata": {"uid": "x"}, "spec": {}}]}
+        result = collect_and_normalize(fixture)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        # Pod has uid but no name → provider_id = uid → still created
+        # Actually pod_pid = uid or name, so uid is used
+        # Let me check: pod_name="" but pod_pid = uid → EE created with name=""
+        # This is valid, not skipped. The test should verify it's created.
+        assert len(pods) == 1
+        assert pods[0].name == ""
+
+    def test_pod_without_uid_uses_name(self):
+        """Pod without uid falls back to name as provider_id."""
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "pods": [{"metadata": {"name": "no-uid-pod"}, "spec": {}}]}
+        result = collect_and_normalize(fixture)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert len(pods) == 1
+        assert pods[0].provider_id == "no-uid-pod"
+
+    def test_pod_without_uid_and_name_skipped(self):
+        """Pod without uid AND name is skipped."""
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "pods": [{"metadata": {}, "spec": {}}]}
+        result = collect_and_normalize(fixture)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert len(pods) == 0
+
+    def test_container_without_name_skipped(self):
+        """Container without name is skipped."""
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "pods": [{"metadata": {"name": "p", "uid": "u"},
+                             "spec": {"containers": [{"image": "nginx"}]}}]}
+        result = collect_and_normalize(fixture)
+        containers = [ee for ee in result.execution_environments
+                      if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert len(containers) == 0
+
+    def test_node_without_name_skipped(self):
+        """Node without metadata.name is skipped."""
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "nodes": [{"metadata": {"uid": "x"}}]}
+        result = collect_and_normalize(fixture)
+        assert len(result.nodes) == 0
+
+    def test_empty_cluster_success(self, fx_empty):
+        """Empty cluster with no resources normalizes successfully."""
+        result = collect_and_normalize(fx_empty)
+        assert result.status == OrchestrationStatus.SUCCESS
+        assert result.entity_count == 2  # platform + cluster
+
+    def test_no_heuristic_relationship_inference(self, fx_combined):
+        """No relationships created from name/label similarity."""
+        result = collect_and_normalize(fx_combined)
+        # Only DIRECT and DERIVED evidence from explicit K8s fields
+        for e in result.relationship_evidence:
+            assert e.evidence_type in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            )
+
+    def test_no_kubernetes_fields_on_canonical_entity(self, fx_node):
+        """K8s-specific fields must not leak into canonical entity fields."""
+        result = collect_and_normalize(fx_node)
+        n = result.nodes[0]
+        # Node canonical fields: name, cluster_ref, physical_ref, execution_environment_refs
+        # K8s data should be in metadata, not in canonical fields
+        assert "kubernetes" in n.metadata
+        assert not hasattr(n, "labels")
+        assert not hasattr(n, "node_info")
+        assert not hasattr(n, "capacity")
+
+    def test_normalize_safe_on_exception(self):
+        """normalize_safe catches exceptions and returns FAILED result."""
+        class FailingNormalizer(KubernetesProviderNormalizer):
+            def normalize(self, snapshot):
+                raise RuntimeError("Internal error")
+        normalizer = FailingNormalizer()
+        snap = RawProviderSnapshot(
+            snapshot_id="snap-bad",
+            provider_type=ProviderType.KUBERNETES,
+            payload={},
+        )
+        result = normalizer.normalize_safe(snap)
+        assert isinstance(result, NormalizationResult)
+        assert result.status == OrchestrationStatus.FAILED

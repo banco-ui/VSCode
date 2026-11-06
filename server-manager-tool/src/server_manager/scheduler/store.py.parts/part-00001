@@ -1,0 +1,718 @@
+"""SchedulerStore — SQLite persistence for schedules — Phase 10B.
+
+Atomic claim, duplicate prevention, lock retry.
+"""
+from __future__ import annotations
+
+import logging
+import sqlite3
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from .models import ScheduleDefinition, ScheduleExecution, ScheduleStatus
+
+logger = logging.getLogger(__name__)
+
+SCHEDULER_SCHEMA_SQL = """
+-- Schedule definitions
+CREATE TABLE IF NOT EXISTS schedule_definitions (
+    schedule_id        TEXT PRIMARY KEY,
+    name               TEXT NOT NULL,
+    server_ids_json    TEXT NOT NULL DEFAULT '[]',
+    enabled            INTEGER NOT NULL DEFAULT 1,
+    cron_expression    TEXT,
+    interval_seconds   INTEGER,
+    last_run_at        TEXT,
+    next_run_at        TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    metadata_json      TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Schedule executions (atomic claim tracking)
+CREATE TABLE IF NOT EXISTS schedule_executions (
+    execution_id       TEXT PRIMARY KEY,
+    schedule_id        TEXT NOT NULL,
+    server_id          TEXT NOT NULL,
+    run_id             TEXT,
+    status             TEXT NOT NULL DEFAULT 'PENDING',
+    claimed_at         TEXT NOT NULL,
+    started_at         TEXT,
+    completed_at       TEXT,
+    error_message      TEXT,
+    recovery_id        TEXT,
+    recovery_count     INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (schedule_id) REFERENCES schedule_definitions(schedule_id)
+);
+
+-- Index for due schedule lookup
+CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedule_definitions(enabled);
+CREATE INDEX IF NOT EXISTS idx_schedules_next_run ON schedule_definitions(next_run_at);
+CREATE INDEX IF NOT EXISTS idx_executions_schedule ON schedule_executions(schedule_id);
+CREATE INDEX IF NOT EXISTS idx_executions_status ON schedule_executions(status);
+CREATE INDEX IF NOT EXISTS idx_executions_started ON schedule_executions(started_at);
+"""
+
+# SQLite lock retry configuration
+DEFAULT_LOCK_RETRY_COUNT = 3
+DEFAULT_LOCK_RETRY_BACKOFF = 0.1  # seconds
+
+
+class SchedulerStore:
+    """SQLite-backed scheduler persistence store.
+    
+    Provides atomic claim, duplicate prevention, and lock retry.
+    """
+    
+    def __init__(
+        self,
+        db_path: str | Path = ":memory:",
+        lock_retry_count: int = DEFAULT_LOCK_RETRY_COUNT,
+        lock_retry_backoff: float = DEFAULT_LOCK_RETRY_BACKOFF,
+    ) -> None:
+        self.db_path = str(db_path)
+        self._conn: Optional[sqlite3.Connection] = None
+        self._lock_retry_count = lock_retry_count
+        self._lock_retry_backoff = lock_retry_backoff
+        self.init()
+    
+    def init(self) -> None:
+        """Initialize database connection and create tables."""
+        self._conn = sqlite3.connect(self.db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.executescript(SCHEDULER_SCHEMA_SQL)
+        self._conn.commit()
+    
+    def close(self) -> None:
+        """Close the database connection."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+    
+    @property
+    def conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise RuntimeError("Database not initialized. Call init() first.")
+        return self._conn
+    
+    def _is_lock_error(self, e: Exception) -> bool:
+        """Check if exception is a SQLite lock error."""
+        if not isinstance(e, sqlite3.OperationalError):
+            return False
+        msg = str(e).lower()
+        return "locked" in msg or "database is locked" in msg
+    
+    def _execute_with_retry(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Execute SQL with retry on lock error."""
+        last_error: Optional[Exception] = None
+        
+        for attempt in range(self._lock_retry_count):
+            try:
+                cursor = self.conn.execute(sql, params)
+                return cursor
+            except sqlite3.OperationalError as e:
+                last_error = e
+                if self._is_lock_error(e) and attempt < self._lock_retry_count - 1:
+                    logger.warning(
+                        "SQLite lock detected, retrying in %.2fs (attempt %d/%d)",
+                        self._lock_retry_backoff * (attempt + 1),
+                        attempt + 1,
+                        self._lock_retry_count,
+                    )
+                    time.sleep(self._lock_retry_backoff * (attempt + 1))
+                else:
+                    raise
+        
+        if last_error:
+            raise last_error
+        raise RuntimeError("Unexpected retry loop exit")
+    
+    # ── ScheduleDefinition persistence ─────────────────────────────────
+    
+    def save_schedule(self, schedule: ScheduleDefinition) -> None:
+        """Save or update a schedule definition."""
+        import json
+        
+        sql = """
+        INSERT OR REPLACE INTO schedule_definitions
+            (schedule_id, name, server_ids_json, enabled, cron_expression,
+             interval_seconds, last_run_at, next_run_at, created_at,
+             updated_at, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        self._execute_with_retry(sql, (
+            schedule.schedule_id,
+            schedule.name,
+            json.dumps(schedule.server_ids),
+            1 if schedule.enabled else 0,
+            schedule.cron_expression,
+            schedule.interval_seconds,
+            schedule.last_run_at,
+            schedule.next_run_at,
+            schedule.created_at,
+            schedule.updated_at,
+            json.dumps(schedule.metadata),
+        ))
+        self.conn.commit()
+    
+    def get_schedule(self, schedule_id: str) -> Optional[ScheduleDefinition]:
+        """Get a schedule definition by ID."""
+        import json
+        
+        cursor = self.conn.execute(
+            "SELECT * FROM schedule_definitions WHERE schedule_id = ?",
+            (schedule_id,),
+        )
+        row = cursor.fetchone()
+        
+        if row is None:
+            return None
+        
+        return ScheduleDefinition(
+            schedule_id=row["schedule_id"],
+            name=row["name"],
+            server_ids=json.loads(row["server_ids_json"]),
+            enabled=bool(row["enabled"]),
+            cron_expression=row["cron_expression"],
+            interval_seconds=row["interval_seconds"],
+            last_run_at=row["last_run_at"],
+            next_run_at=row["next_run_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            metadata=json.loads(row["metadata_json"]),
+        )
+    
+    def get_all_schedules(self) -> list[ScheduleDefinition]:
+        """Get all schedule definitions."""
+        import json
+        
+        cursor = self.conn.execute("SELECT * FROM schedule_definitions")
+        schedules = []
+        
+        for row in cursor.fetchall():
+            schedules.append(ScheduleDefinition(
+                schedule_id=row["schedule_id"],
+                name=row["name"],
+                server_ids=json.loads(row["server_ids_json"]),
+                enabled=bool(row["enabled"]),
+                cron_expression=row["cron_expression"],
+                interval_seconds=row["interval_seconds"],
+                last_run_at=row["last_run_at"],
+                next_run_at=row["next_run_at"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                metadata=json.loads(row["metadata_json"]),
+            ))
+        
+        return schedules
+    
+    def get_due_schedules(
+        self,
+        current_time: Optional[datetime] = None,
+        missed_policy: str = "skip",
+    ) -> list[ScheduleDefinition]:
+        """Get all enabled schedules that are due for execution.
+        
+        Phase 10D: Missed Schedule Policy
+        - "skip": Skip missed executions (default, prevents backlog)
+        - "latest": Execute latest missed (catch-up)
+        - "all": Execute all missed (can cause backlog)
+        
+        Args:
+            current_time: Time to check against (defaults to now).
+            missed_policy: Policy for missed schedules.
+            
+        Returns:
+            List of due schedules.
+        """
+        current = current_time or datetime.now(timezone.utc)
+        current_str = current.isoformat()
+        
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM schedule_definitions
+            WHERE enabled = 1
+              AND (next_run_at IS NULL OR next_run_at <= ?)
+            """,
+            (current_str,),
+        )
+        
+        import json
+        schedules = []
+        
+        for row in cursor.fetchall():
+            schedule = ScheduleDefinition(
+                schedule_id=row["schedule_id"],
+                name=row["name"],
+                server_ids=json.loads(row["server_ids_json"]),
+                enabled=bool(row["enabled"]),
+                cron_expression=row["cron_expression"],
+                interval_seconds=row["interval_seconds"],
+                last_run_at=row["last_run_at"],
+                next_run_at=row["next_run_at"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                metadata=json.loads(row["metadata_json"]),
+            )
+            
+            # Apply missed schedule policy
+            if schedule.is_due(current_time, missed_policy):
+                schedules.append(schedule)
+        
+        return schedules
+    
+    def update_schedule_after_execution(
+        self,
+        schedule_id: str,
+        success: bool,
+        next_run_at: str,
+    ) -> None:
+        """Update schedule after execution (last_run_at, next_run_at)."""
+        sql = """
+        UPDATE schedule_definitions
+        SET last_run_at = ?,
+            next_run_at = ?,
+            updated_at = ?
+        WHERE schedule_id = ?
+        """
+        
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute_with_retry(sql, (
+            now if success else None,
+            next_run_at,
+            now,
+            schedule_id,
+        ))
+        self.conn.commit()
+    
+    # ── ScheduleExecution (atomic claim) ──────────────────────────────
+    
+    def claim_execution(
+        self,
+        schedule: ScheduleDefinition,
+        server_id: str,
+    ) -> Optional[ScheduleExecution]:
+        """Atomically claim a schedule execution.
+        
+        This prevents duplicate execution by using INSERT OR IGNORE
+        with a unique execution_id.
+        
+        Args:
+            schedule: The schedule to execute.
+            server_id: Target server for this execution.
+            
+        Returns:
+            ScheduleExecution if claim succeeded, None if already claimed.
+        """
+        import uuid
+        
+        execution_id = f"exec-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        
+        sql = """
+        INSERT OR IGNORE INTO schedule_executions
+            (execution_id, schedule_id, server_id, status, claimed_at, recovery_count)
+        VALUES (?, ?, ?, 'CLAIMED', ?, 0)
+        """
+        
+        try:
+            cursor = self._execute_with_retry(sql, (
+                execution_id,
+                schedule.schedule_id,
+                server_id,
+                now,
+            ))
+            self.conn.commit()
+            
+            if cursor.rowcount == 0:
+                # INSERT was ignored (duplicate claim)
+                logger.debug(
+                    "Duplicate claim prevented for schedule=%s server=%s",
+                    schedule.schedule_id,
+                    server_id,
+                )
+                return None
+            
+            return ScheduleExecution(
+                execution_id=execution_id,
+                schedule_id=schedule.schedule_id,
+                server_id=server_id,
+                status="CLAIMED",
+                claimed_at=now,
+                recovery_count=0,
+            )
+            
+        except sqlite3.IntegrityError:
+            # Unique constraint violation (concurrent claim)
+            logger.debug(
+                "Concurrent claim detected for schedule=%s server=%s",
+                schedule.schedule_id,
+                server_id,
+            )
+            return None
+    
+    def start_execution(self, execution: ScheduleExecution, run_id: str) -> None:
+        """Mark execution as started with run_id."""
+        sql = """
+        UPDATE schedule_executions
+        SET status = 'RUNNING',
+            run_id = ?,
+            started_at = ?
+        WHERE execution_id = ?
+        """
+        
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute_with_retry(sql, (run_id, now, execution.execution_id))
+        self.conn.commit()
+    
+    def complete_execution(
+        self,
+        execution_id: str,
+        success: bool,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Mark execution as completed."""
+        sql = """
+        UPDATE schedule_executions
+        SET status = ?,
+            completed_at = ?,
+            error_message = ?
+        WHERE execution_id = ?
+        """
+        
+        now = datetime.now(timezone.utc).isoformat()
+        status = "SUCCESS" if success else "FAILED"
+        
+        self._execute_with_retry(sql, (status, now, error_message, execution_id))
+        self.conn.commit()
+    
+    def get_stale_executions(
+        self,
+        stale_timeout_seconds: int = 300,
+    ) -> list[ScheduleExecution]:
+        """Get executions that are stale (RUNNING for too long).
+        
+        Phase 10D: Crash Recovery - detects executions that have been
+        RUNNING longer than the timeout threshold, indicating a crash.
+        
+        Args:
+            stale_timeout_seconds: Time threshold in seconds (default: 300 = 5 minutes).
+            
+        Returns:
+            List of stale execution records.
+        """
+        from datetime import timedelta
+        
+        threshold = (datetime.now(timezone.utc) - timedelta(seconds=stale_timeout_seconds)).isoformat()
+        
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM schedule_executions
+            WHERE status = 'RUNNING'
+              AND started_at IS NOT NULL
+              AND started_at < ?
+            """,
+            (threshold,),
+        )
+        
+        executions = []
+        for row in cursor.fetchall():
+            executions.append(ScheduleExecution(
+                execution_id=row["execution_id"],
+                schedule_id=row["schedule_id"],
+                server_id=row["server_id"],
+                run_id=row["run_id"],
+                status=row["status"],
+                claimed_at=row["claimed_at"],
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                error_message=row["error_message"],
+                recovery_id=row["recovery_id"],
+                recovery_count=row["recovery_count"],
+            ))
+        
+        return executions
+    
+    def recover_execution(
+        self,
+        execution_id: str,
+        recovery_id: str,
+    ) -> bool:
+        """Mark an execution as recovered from crash.
+        
+        Phase 10D: Crash Recovery - atomically marks a stale execution
+        as RECOVERED and increments recovery_count.
+        
+        Uses conditional UPDATE to ensure idempotency:
+        - Only affects executions still in RUNNING state
+        - Returns False if execution was already recovered
+        
+        Args:
+            execution_id: The execution to recover.
+            recovery_id: Unique identifier for this recovery operation.
+            
+        Returns:
+            True if recovery succeeded, False if already recovered.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        
+        # Atomic conditional update for idempotency
+        sql = """
+        UPDATE schedule_executions
+        SET status = 'RECOVERED',
+            recovery_id = ?,
+            recovery_count = recovery_count + 1,
+            completed_at = ?,
+            error_message = COALESCE(error_message, 'Recovered from crash')
+        WHERE execution_id = ?
+          AND status = 'RUNNING'
+        """
+        
+        cursor = self._execute_with_retry(sql, (recovery_id, now, execution_id))
+        self.conn.commit()
+        
+        # Check if update affected any rows
+        return cursor.rowcount > 0
+    
+    def get_all_executions(
+        self,
+        status_filter: Optional[str] = None,
+        limit: int = 1000,
+    ) -> list[ScheduleExecution]:
+        """Get all executions, optionally filtered by status.
+        
+        Phase 10D: Used for recovery scan and observability.
+        
+        Args:
+            status_filter: Optional status filter.
+            limit: Maximum results (default 1000).
+            
+        Returns:
+            List of executions.
+        """
+        query = "SELECT * FROM schedule_executions"
+        params: list = []
+        
+        if status_filter is not None:
+            query += " WHERE status = ?"
+            params.append(status_filter)
+        
+        query += " ORDER BY claimed_at DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor = self.conn.execute(query, params)
+        executions = []
+        
+        for row in cursor.fetchall():
+            executions.append(ScheduleExecution(
+                execution_id=row["execution_id"],
+                schedule_id=row["schedule_id"],
+                server_id=row["server_id"],
+                run_id=row["run_id"],
+                status=row["status"],
+                claimed_at=row["claimed_at"],
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                error_message=row["error_message"],
+                recovery_id=row["recovery_id"],
+                recovery_count=row["recovery_count"],
+            ))
+        
+        return executions
+    
+    def get_execution(self, execution_id: str) -> Optional[ScheduleExecution]:
+        """Get an execution record by ID."""
+        cursor = self.conn.execute(
+            "SELECT * FROM schedule_executions WHERE execution_id = ?",
+            (execution_id,),
+        )
+        row = cursor.fetchone()
+        
+        if row is None:
+            return None
+        
+        return ScheduleExecution(
+            execution_id=row["execution_id"],
+            schedule_id=row["schedule_id"],
+            server_id=row["server_id"],
+            run_id=row["run_id"],
+            status=row["status"],
+            claimed_at=row["claimed_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            error_message=row["error_message"],
+            recovery_id=row["recovery_id"],
+            recovery_count=row["recovery_count"],
+        )
+    
+    def get_executions_by_schedule(
+        self,
+        schedule_id: str,
+        status_filter: Optional[str] = None,
+        server_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ScheduleExecution]:
+        """Get executions for a specific schedule.
+        
+        Args:
+            schedule_id: Schedule identifier.
+            status_filter: Optional status filter.
+            server_id: Optional server filter.
+            limit: Maximum results (default 100).
+            offset: Pagination offset (default 0).
+            
+        Returns:
+            List of executions matching the criteria.
+        """
+        import json
+        
+        # Build query with optional filters
+        query = "SELECT * FROM schedule_executions WHERE schedule_id = ?"
+        params: list = [schedule_id]
+        
+        if status_filter is not None:
+            query += " AND status = ?"
+            params.append(status_filter)
+        
+        if server_id is not None:
+            query += " AND server_id = ?"
+            params.append(server_id)
+        
+        query += " ORDER BY claimed_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cursor = self.conn.execute(query, params)
+        executions = []
+        
+        for row in cursor.fetchall():
+            executions.append(ScheduleExecution(
+                execution_id=row["execution_id"],
+                schedule_id=row["schedule_id"],
+                server_id=row["server_id"],
+                run_id=row["run_id"],
+                status=row["status"],
+                claimed_at=row["claimed_at"],
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                error_message=row["error_message"],
+                recovery_id=row["recovery_id"],
+                recovery_count=row["recovery_count"],
+            ))
+        
+        return executions
+
+    def get_stale_executions(self, stale_timeout_seconds: int) -> list[ScheduleExecution]:
+        """Get executions that are stale (RUNNING for too long).
+        
+        Phase 10D: Crash Recovery - Find executions that need recovery.
+        
+        Args:
+            stale_timeout_seconds: Executions older than this are considered stale.
+            
+        Returns:
+            List of stale execution records.
+        """
+        from datetime import datetime, timezone, timedelta
+        
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_timeout_seconds)
+        cutoff_iso = cutoff.isoformat()
+        
+        cursor = self.conn.execute(
+            "SELECT * FROM schedule_executions "
+            "WHERE status = 'RUNNING' AND started_at < ? "
+            "ORDER BY started_at ASC",
+            (cutoff_iso,),
+        )
+        
+        executions = []
+        for row in cursor.fetchall():
+            executions.append(ScheduleExecution(
+                execution_id=row["execution_id"],
+                schedule_id=row["schedule_id"],
+                server_id=row["server_id"],
+                run_id=row["run_id"],
+                status=row["status"],
+                claimed_at=row["claimed_at"],
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                error_message=row["error_message"],
+                recovery_id=row["recovery_id"],
+                recovery_count=row["recovery_count"],
+            ))
+        
+        return executions
+
+    def recover_execution(self, execution_id: str, recovery_id: str) -> int:
+        """Recover a stale execution atomically.
+        
+        Phase 10D: Crash Recovery - Atomically mark execution as recovered.
+        
+        Uses conditional UPDATE to ensure idempotency and race-safety.
+        
+        Args:
+            execution_id: The execution to recover.
+            recovery_id: Unique identifier for this recovery operation.
+            
+        Returns:
+            Number of rows affected (1 = recovered, 0 = already recovered/not found).
+        """
+        from datetime import datetime, timezone
+        
+        cursor = self.conn.execute(
+            "UPDATE schedule_executions "
+            "SET status = 'RECOVERED', "
+            "    recovery_id = ?, "
+            "    recovery_count = recovery_count + 1, "
+            "    completed_at = ? "
+            "WHERE execution_id = ? "
+            "  AND status = 'RUNNING'",
+            (recovery_id, datetime.now(timezone.utc).isoformat(), execution_id),
+        )
+        
+        self.conn.commit()
+        return cursor.rowcount
+
+    def get_all_executions(
+        self,
+        status_filter: Optional[str] = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> list[ScheduleExecution]:
+        """Get all execution records.
+        
+        Args:
+            status_filter: Optional status filter (e.g., 'RUNNING', 'SUCCESS').
+            limit: Maximum results (default 1000).
+            offset: Pagination offset (default 0).
+            
+        Returns:
+            List of all executions matching criteria.
+        """
+        query = "SELECT * FROM schedule_executions"
+        params: list = []
+        
+        if status_filter is not None:
+            query += " WHERE status = ?"
+            params.append(status_filter)
+        
+        query += " ORDER BY claimed_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cursor = self.conn.execute(query, params)
+        executions = []
+        
+        for row in cursor.fetchall():
+            executions.append(ScheduleExecution(
+                execution_id=row["execution_id"],
+                schedule_id=row["schedule_id"],
+                server_id=row["server_id"],
+                run_id=row["run_id"],
+                status=row["status"],
+                claimed_at=row["claimed_at"],
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                e

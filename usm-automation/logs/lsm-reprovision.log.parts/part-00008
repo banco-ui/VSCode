@@ -1,0 +1,511 @@
+�
+[2026-08-11T11:36:33.208Z] [LSM-REPROV] [INFO] 3. 조회 버튼 클릭...
+[2026-08-11T11:36:33.394Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06c-search-result.png
+[2026-08-11T11:36:33.397Z] [LSM-REPROV] [INFO] 4. 파일 선택...
+[2026-08-11T11:36:33.411Z] [LSM-REPROV] [INFO] ✓ 파일 입력 필드: #cm_profile_import_csvfileselector
+[2026-08-11T11:36:35.448Z] [LSM-REPROV] [INFO] ✓ 파일 선택 완료: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv
+[2026-08-11T11:36:35.452Z] [LSM-REPROV] [INFO] 5. 적용 버튼 클릭 (CSV 에러 체크)...
+[2026-08-11T11:36:35.477Z] [LSM-REPROV] [INFO] ✓ 적용 버튼 클릭 완료 (JavaScript)
+[2026-08-11T11:36:40.595Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06d-applied.png
+[2026-08-11T11:36:40.598Z] [LSM-REPROV] [INFO] 6. 가져오기 버튼 클릭...
+[2026-08-11T11:36:45.644Z] [LSM-REPROV] [INFO] ✓ 가져오기 버튼 클릭 완료 (증설 시작)
+[2026-08-11T11:36:45.647Z] [LSM-REPROV] [INFO] 증설 진행바 대기 중... (30초)
+[2026-08-11T11:37:15.787Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06e-imported.png
+[2026-08-11T11:37:15.790Z] [LSM-REPROV] [INFO] ✓ eNB 증설 완료: eNB_150201_26B
+[2026-08-11T11:37:15.793Z] [LSM-REPROV] [INFO] 닫기 버튼 클릭...
+[2026-08-11T11:37:15.803Z] [LSM-REPROV] [INFO] ✓ 닫기 버튼 클릭 완료
+[2026-08-11T11:37:18.946Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06f-closed.png
+[2026-08-11T11:37:18.950Z] [LSM-REPROV] [INFO] 리포트 저장: d:\Data\AI\VSCode\usm-automation\output\reports\lsm-reprovision_eNB_150201_26B_2026-08-11T11-37-18-948Z.json
+[2026-08-11T11:37:18.953Z] [LSM-REPROV] [INFO] 브라우저 종료...
+[2026-08-11T11:37:52.339Z] [LSM-REPROV] [INFO] === LSM eNB 감설→재증설 시작 ===
+[2026-08-11T11:37:52.343Z] [LSM-REPROV] [INFO] XML: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv, NE: eNB_150201_26B, Dry-run: false
+[2026-08-11T11:37:52.347Z] [LSM-REPROV] [INFO] Chrome 브라우저 시작...
+[2026-08-11T11:37:55.065Z] [LSM-REPROV] [INFO] LSM 로그인: https://10.251.175.31:7443/aceman/
+[2026-08-11T11:38:00.664Z] [LSM-REPROV] [INFO] 페이지 로드 완료: CognitiV LSM
+[2026-08-11T11:38:00.666Z] [LSM-REPROV] [INFO] SSO 체크박스 해제 시도...
+[2026-08-11T11:38:00.761Z] [LSM-REPROV] [INFO] ✓ 체크박스 해제됨
+[2026-08-11T11:38:00.798Z] [LSM-REPROV] [INFO] ✓ SSO 라벨 클릭
+[2026-08-11T11:38:02.886Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\01-login-sso-off.png
+[2026-08-11T11:38:02.903Z] [LSM-REPROV] [INFO] ✓ ID 필드: input[placeholder*="ID"]
+[2026-08-11T11:38:02.916Z] [LSM-REPROV] [INFO] ✓ PW 필드: input[type="password"]:visible
+[2026-08-11T11:38:02.939Z] [LSM-REPROV] [INFO] ✓ ID/PW 입력 완료
+[2026-08-11T11:38:02.954Z] [LSM-REPROV] [INFO] ✓ 로그인 버튼: #loginBtn
+[2026-08-11T11:38:06.013Z] [LSM-REPROV] [INFO] 중복 세션 다이얼로그 확인...
+[2026-08-11T11:38:06.050Z] [LSM-REPROV] [INFO] ✓ 중복 세션 "예" 클릭
+[2026-08-11T11:38:11.054Z] [LSM-REPROV] [INFO] 메뉴 구성 완료 대기...
+[2026-08-11T11:38:11.061Z] [LSM-REPROV] [INFO] ✓ 메뉴 구성 완료
+[2026-08-11T11:38:11.064Z] [LSM-REPROV] [INFO] "준비중" 페이지 대기 중...
+[2026-08-11T11:38:11.069Z] [LSM-REPROV] [INFO] 대기 중... (1/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:38:13.078Z] [LSM-REPROV] [INFO] 대기 중... (2/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:38:15.094Z] [LSM-REPROV] [INFO] 대기 중... (3/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:38:17.102Z] [LSM-REPROV] [INFO] 대기 중... (4/30) 텍스트: 준비중입니다..
+[2026-08-11T11:38:19.109Z] [LSM-REPROV] [INFO] 대기 중... (5/30) 텍스트: 준비중입니다..
+[2026-08-11T11:38:21.127Z] [LSM-REPROV] [INFO] 대기 중... (6/30) 텍스트: 메뉴를 구성중입니다..
+[2026-08-11T11:38:23.141Z] [LSM-REPROV] [INFO] ✓ 메인 페이지 로드 완료
+[2026-08-11T11:38:26.249Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\01-login-complete.png
+[2026-08-11T11:38:26.251Z] [LSM-REPROV] [INFO] 로그인 완료, URL: https://10.251.175.31:7443/aceman/main.do?srcId=qwerty&loginTime=1786448334987
+[2026-08-11T11:38:26.255Z] [LSM-REPROV] [INFO] DOM 구조 분석...
+[2026-08-11T11:38:26.264Z] [LSM-REPROV] [INFO] iframe 수: 0
+[2026-08-11T11:38:26.268Z] [LSM-REPROV] [INFO] 메뉴 항목: 도움말CognitiV 정보새 창으로 열기라이선스새 창으로 열기매뉴얼새 창으로 열기, 대시보드, Locked
+						1, Shutting Down
+						0, Initializing
+						0, Not Initialized
+						6, Disconnected
+						2, Connected, CRITICAL, Severity, Code, Group, Location, ProbableCause, Alarm Time
+[2026-08-11T11:38:26.271Z] [LSM-REPROV] [INFO] 트리 항목 (0개): 
+[2026-08-11T11:38:26.275Z] [LSM-REPROV] [INFO] 버튼: Submit, Option, + Add
+[2026-08-11T11:38:26.277Z] [LSM-REPROV] [INFO] 입력 필드: []
+[2026-08-11T11:38:26.281Z] [LSM-REPROV] [INFO] 페이지 텍스트 (첫 500자): 구성관리
+장애관리
+성능관리
+일반관리
+보안관리
+SON관리
+도움말
+ 
+대시보드
+Submit
+ NE Search
+NE
+Current
+9
+Max
+4,500
+CELL
+Current
+14
+Locked
+8
+Max
+3,000
+NB-IoT CELL
+Current
+0
+Max
+300
+RRH
+Current
+8
+Performance Statistics
+0.00%
+Click for Detail
+Option
+ALARM
+30
+14
+0
+CRITICAL
+30
+MAJOR
+14
+MINOR
+0
+UNACK
+30
+UNACK
+14
+UNACK
+0
+STATUS
+0(0%)
+Normal
+ Locked
+1
+ Shutting Down
+0
+ Initializing
+0
+ Not Initialized
+6
+ Disconnected
+2
+Abnormal
+9(100
+%)
+VALIDATION
+Deleted Cell
+	
+Mismatched Cell
+	
+Mismatched eNB
+	
+Remote Flag
+0
+	
+0
+	
+0
+	
+0
+ Connected
+ C
+[2026-08-11T11:38:26.283Z] [LSM-REPROV] [INFO] 프로파일 업로드: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv
+[2026-08-11T11:38:26.285Z] [LSM-REPROV] [INFO] 구성관리 → eNB 생성 메뉴로 이동...
+[2026-08-11T11:38:28.359Z] [LSM-REPROV] [INFO] eNB 생성 하위 메뉴 클릭...
+[2026-08-11T11:38:28.368Z] [LSM-REPROV] [INFO] ✓ eNB 생성 메뉴: a:has-text("eNB 생성")
+[2026-08-11T11:38:36.631Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06-create-enb-page.png
+[2026-08-11T11:38:36.636Z] [LSM-REPROV] [INFO] ✓ eNB 생성 페이지 로드
+[2026-08-11T11:38:36.638Z] [LSM-REPROV] [INFO] 1. 점세개(⋮) 아이콘 클릭...
+[2026-08-11T11:38:36.700Z] [LSM-REPROV] [INFO] ✓ 점세개 아이콘: [class*="option"]
+[2026-08-11T11:38:39.848Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06a-option-clicked.png
+[2026-08-11T11:38:39.851Z] [LSM-REPROV] [INFO] ✓ 점세개 메뉴 열림
+[2026-08-11T11:38:39.854Z] [LSM-REPROV] [INFO] 드롭다운 메뉴 항목 분석...
+[2026-08-11T11:38:39.866Z] [LSM-REPROV] [INFO] 드롭다운 메뉴 항목 11개 발견:
+[2026-08-11T11:38:39.870Z] [LSM-REPROV] [INFO]   - "장애관리이벤트 이력새 창으로 열기현재 알람새 창으로 열기장애 통계새 창으로 열기알람 설정새 창으로 열기" (LI.)
+[2026-08-11T11:38:39.873Z] [LSM-REPROV] [INFO]   - "일반관리상태 감시새 창으로 열기자원 관리새 창으로 열기자원 통계새 창으로 열기DB 로그 관리새 창으로 열기자가 진단새 창으로 열기로그 뷰어새 창으로 열기" (LI.)
+[2026-08-11T11:38:39.876Z] [LSM-REPROV] [INFO]   - "보안관리사용자 관리새 창으로 열기Role 관리새 창으로 열기IP 관리새 창으로 열기로그인 이력새 창으로 열기세션 관리새 창으로 열기운용 이력새 창으로 열기" (LI.)
+[2026-08-11T11:38:39.879Z] [LSM-REPROV] [INFO]   - "도움말CognitiV 정보새 창으로 열기라이선스새 창으로 열기매뉴얼새 창으로 열기" (LI.)
+[2026-08-11T11:38:39.882Z] [LSM-REPROV] [INFO]   - "STEP1" (LI.current)
+[2026-08-11T11:38:39.886Z] [LSM-REPROV] [INFO]   - "STEP2" (LI.)
+[2026-08-11T11:38:39.889Z] [LSM-REPROV] [INFO]   - "Profile 저장" (DIV.ui-state-disabled ui-grow-context-item ui-menu-item)
+[2026-08-11T11:38:39.892Z] [LSM-REPROV] [INFO]   - "Profile 가져오기" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:38:39.896Z] [LSM-REPROV] [INFO]   - "Profile" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:38:39.898Z] [LSM-REPROV] [INFO]   - "NE image 내보내기" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:38:39.900Z] [LSM-REPROV] [INFO]   - "Frequency Profile" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:38:39.902Z] [LSM-REPROV] [INFO] 2. Profile 가져오기 메뉴 클릭...
+[2026-08-11T11:38:39.970Z] [LSM-REPROV] [INFO] ✓ Profile 가져오기 메뉴: text="Profile 가져오기"
+[2026-08-11T11:38:43.114Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06b-profile-import.png
+[2026-08-11T11:38:43.117Z] [LSM-REPROV] [INFO] ✓ Profile 가져오기 다이얼로그 열림
+[2026-08-11T11:38:43.120Z] [LSM-REPROV] [INFO] 3. 조회 버튼 클릭...
+[2026-08-11T11:38:43.239Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06c-search-result.png
+[2026-08-11T11:38:43.242Z] [LSM-REPROV] [INFO] 4. 파일 선택...
+[2026-08-11T11:38:43.250Z] [LSM-REPROV] [INFO] ✓ 파일 입력 필드: #cm_profile_import_csvfileselector
+[2026-08-11T11:38:45.269Z] [LSM-REPROV] [INFO] ✓ 파일 선택 완료: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv
+[2026-08-11T11:38:45.271Z] [LSM-REPROV] [INFO] 5. 적용 버튼 클릭 (CSV 에러 체크)...
+[2026-08-11T11:38:45.289Z] [LSM-REPROV] [INFO] ✓ 적용 버튼 클릭 완료 (JavaScript)
+[2026-08-11T11:38:50.384Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06d-applied.png
+[2026-08-11T11:38:50.387Z] [LSM-REPROV] [INFO] 6. 가져오기 버튼 클릭...
+[2026-08-11T11:38:55.413Z] [LSM-REPROV] [INFO] ✓ 가져오기 버튼 클릭 완료 (증설 시작)
+[2026-08-11T11:38:55.417Z] [LSM-REPROV] [INFO] 증설 진행바 대기 중... (30초)
+[2026-08-11T11:39:25.512Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06e-imported.png
+[2026-08-11T11:39:25.516Z] [LSM-REPROV] [INFO] ✓ eNB 증설 완료: eNB_150201_26B
+[2026-08-11T11:39:25.519Z] [LSM-REPROV] [INFO] 닫기 버튼 클릭...
+[2026-08-11T11:39:25.529Z] [LSM-REPROV] [INFO] ✓ 닫기 버튼 클릭 완료
+[2026-08-11T11:39:28.627Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06f-closed.png
+[2026-08-11T11:39:28.632Z] [LSM-REPROV] [INFO] 리포트 저장: d:\Data\AI\VSCode\usm-automation\output\reports\lsm-reprovision_eNB_150201_26B_2026-08-11T11-39-28-630Z.json
+[2026-08-11T11:39:28.635Z] [LSM-REPROV] [INFO] 브라우저 종료...
+[2026-08-11T11:47:59.300Z] [LSM-REPROV] [INFO] === LSM eNB 감설→재증설 시작 ===
+[2026-08-11T11:47:59.304Z] [LSM-REPROV] [INFO] CSV: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv, NE: eNB_150201_26B, LSM: 10.251.175.31, Dry-run: false
+[2026-08-11T11:47:59.307Z] [LSM-REPROV] [INFO] Chrome 브라우저 시작...
+[2026-08-11T11:48:02.068Z] [LSM-REPROV] [INFO] LSM 로그인: https://10.251.175.31:7443/aceman/
+[2026-08-11T11:48:07.363Z] [LSM-REPROV] [INFO] 페이지 로드 완료: CognitiV LSM
+[2026-08-11T11:48:07.366Z] [LSM-REPROV] [INFO] SSO 체크박스 해제 시도...
+[2026-08-11T11:48:07.426Z] [LSM-REPROV] [INFO] ✓ 체크박스 해제됨
+[2026-08-11T11:48:07.476Z] [LSM-REPROV] [INFO] ✓ SSO 라벨 클릭
+[2026-08-11T11:48:09.577Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\01-login-sso-off.png
+[2026-08-11T11:48:09.590Z] [LSM-REPROV] [INFO] ✓ ID 필드: input[placeholder*="ID"]
+[2026-08-11T11:48:09.606Z] [LSM-REPROV] [INFO] ✓ PW 필드: input[type="password"]:visible
+[2026-08-11T11:48:09.628Z] [LSM-REPROV] [INFO] ✓ ID/PW 입력 완료
+[2026-08-11T11:48:09.642Z] [LSM-REPROV] [INFO] ✓ 로그인 버튼: #loginBtn
+[2026-08-11T11:48:12.782Z] [LSM-REPROV] [INFO] 중복 세션 다이얼로그 확인...
+[2026-08-11T11:48:12.806Z] [LSM-REPROV] [INFO] ✓ 중복 세션 "예" 클릭
+[2026-08-11T11:48:17.823Z] [LSM-REPROV] [INFO] 메뉴 구성 완료 대기...
+[2026-08-11T11:48:17.827Z] [LSM-REPROV] [INFO] ✓ 메뉴 구성 완료
+[2026-08-11T11:48:17.830Z] [LSM-REPROV] [INFO] "준비중" 페이지 대기 중...
+[2026-08-11T11:48:17.835Z] [LSM-REPROV] [INFO] 대기 중... (1/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:48:19.845Z] [LSM-REPROV] [INFO] 대기 중... (2/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:48:21.861Z] [LSM-REPROV] [INFO] 대기 중... (3/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:48:23.868Z] [LSM-REPROV] [INFO] 대기 중... (4/30) 텍스트: 준비중입니다..
+[2026-08-11T11:48:25.886Z] [LSM-REPROV] [INFO] 대기 중... (5/30) 텍스트: 준비중입니다..
+[2026-08-11T11:48:27.901Z] [LSM-REPROV] [INFO] 대기 중... (6/30) 텍스트: 메뉴를 구성중입니다..
+[2026-08-11T11:48:29.910Z] [LSM-REPROV] [INFO] ✓ 메인 페이지 로드 완료
+[2026-08-11T11:48:33.085Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\01-login-complete.png
+[2026-08-11T11:48:33.089Z] [LSM-REPROV] [INFO] 로그인 완료, URL: https://10.251.175.31:7443/aceman/main.do?srcId=qwerty&loginTime=1786448941745
+[2026-08-11T11:48:33.092Z] [LSM-REPROV] [INFO] DOM 구조 분석...
+[2026-08-11T11:48:33.101Z] [LSM-REPROV] [INFO] iframe 수: 0
+[2026-08-11T11:48:33.103Z] [LSM-REPROV] [INFO] 메뉴 항목: 도움말CognitiV 정보새 창으로 열기라이선스새 창으로 열기매뉴얼새 창으로 열기, 대시보드, Locked
+						0, Shutting Down
+						0, Initializing
+						0, Not Initialized
+						6, Disconnected
+						2, Connected, CRITICAL, STATUS, 8100, Etc, /LSM_1, 2026-08-11 17:19:06
+[2026-08-11T11:48:33.106Z] [LSM-REPROV] [INFO] 트리 항목 (0개): 
+[2026-08-11T11:48:33.109Z] [LSM-REPROV] [INFO] 버튼: Submit, Option, + Add
+[2026-08-11T11:48:33.111Z] [LSM-REPROV] [INFO] 입력 필드: []
+[2026-08-11T11:48:33.114Z] [LSM-REPROV] [INFO] 페이지 텍스트 (첫 500자): 구성관리
+장애관리
+성능관리
+일반관리
+보안관리
+SON관리
+도움말
+ 
+대시보드
+Submit
+ NE Search
+NE
+Current
+8
+Max
+4,500
+CELL
+Current
+13
+Locked
+7
+Max
+3,000
+NB-IoT CELL
+Current
+0
+Max
+300
+RRH
+Current
+7
+Performance Statistics
+0.00%
+Click for Detail
+Option
+ALARM
+27
+13
+0
+CRITICAL
+27
+MAJOR
+13
+MINOR
+0
+UNACK
+27
+UNACK
+13
+UNACK
+0
+STATUS
+0(0%)
+Normal
+ Locked
+0
+ Shutting Down
+0
+ Initializing
+0
+ Not Initialized
+6
+ Disconnected
+2
+Abnormal
+8(100
+%)
+VALIDATION
+Deleted Cell
+	
+Mismatched Cell
+	
+Mismatched eNB
+	
+Remote Flag
+0
+	
+0
+	
+0
+	
+0
+ Connected
+ C
+[2026-08-11T11:48:33.118Z] [LSM-REPROV] [INFO] 프로파일 업로드: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv
+[2026-08-11T11:48:33.120Z] [LSM-REPROV] [INFO] 구성관리 → eNB 생성 메뉴로 이동...
+[2026-08-11T11:48:35.218Z] [LSM-REPROV] [INFO] eNB 생성 하위 메뉴 클릭...
+[2026-08-11T11:48:35.232Z] [LSM-REPROV] [INFO] ✓ eNB 생성 메뉴: a:has-text("eNB 생성")
+[2026-08-11T11:48:43.621Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06-create-enb-page.png
+[2026-08-11T11:48:43.625Z] [LSM-REPROV] [INFO] ✓ eNB 생성 페이지 로드
+[2026-08-11T11:48:43.629Z] [LSM-REPROV] [INFO] 1. 점세개(⋮) 아이콘 클릭...
+[2026-08-11T11:48:43.760Z] [LSM-REPROV] [INFO] ✓ 점세개 아이콘: [class*="option"]
+[2026-08-11T11:48:46.913Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06a-option-clicked.png
+[2026-08-11T11:48:46.916Z] [LSM-REPROV] [INFO] ✓ 점세개 메뉴 열림
+[2026-08-11T11:48:46.919Z] [LSM-REPROV] [INFO] 드롭다운 메뉴 항목 분석...
+[2026-08-11T11:48:46.936Z] [LSM-REPROV] [INFO] 드롭다운 메뉴 항목 11개 발견:
+[2026-08-11T11:48:46.939Z] [LSM-REPROV] [INFO]   - "장애관리이벤트 이력새 창으로 열기현재 알람새 창으로 열기장애 통계새 창으로 열기알람 설정새 창으로 열기" (LI.)
+[2026-08-11T11:48:46.942Z] [LSM-REPROV] [INFO]   - "일반관리상태 감시새 창으로 열기자원 관리새 창으로 열기자원 통계새 창으로 열기DB 로그 관리새 창으로 열기자가 진단새 창으로 열기로그 뷰어새 창으로 열기" (LI.)
+[2026-08-11T11:48:46.945Z] [LSM-REPROV] [INFO]   - "보안관리사용자 관리새 창으로 열기Role 관리새 창으로 열기IP 관리새 창으로 열기로그인 이력새 창으로 열기세션 관리새 창으로 열기운용 이력새 창으로 열기" (LI.)
+[2026-08-11T11:48:46.948Z] [LSM-REPROV] [INFO]   - "도움말CognitiV 정보새 창으로 열기라이선스새 창으로 열기매뉴얼새 창으로 열기" (LI.)
+[2026-08-11T11:48:46.951Z] [LSM-REPROV] [INFO]   - "STEP1" (LI.current)
+[2026-08-11T11:48:46.954Z] [LSM-REPROV] [INFO]   - "STEP2" (LI.)
+[2026-08-11T11:48:46.958Z] [LSM-REPROV] [INFO]   - "Profile 저장" (DIV.ui-state-disabled ui-grow-context-item ui-menu-item)
+[2026-08-11T11:48:46.961Z] [LSM-REPROV] [INFO]   - "Profile 가져오기" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:48:46.964Z] [LSM-REPROV] [INFO]   - "Profile" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:48:46.967Z] [LSM-REPROV] [INFO]   - "NE image 내보내기" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:48:46.971Z] [LSM-REPROV] [INFO]   - "Frequency Profile" (DIV.ui-grow-context-item ui-menu-item)
+[2026-08-11T11:48:46.974Z] [LSM-REPROV] [INFO] 2. Profile 가져오기 메뉴 클릭...
+[2026-08-11T11:48:47.081Z] [LSM-REPROV] [INFO] ✓ Profile 가져오기 메뉴: text="Profile 가져오기"
+[2026-08-11T11:48:50.266Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06b-profile-import.png
+[2026-08-11T11:48:50.269Z] [LSM-REPROV] [INFO] ✓ Profile 가져오기 다이얼로그 열림
+[2026-08-11T11:48:50.273Z] [LSM-REPROV] [INFO] 3. 조회 버튼 클릭...
+[2026-08-11T11:48:50.431Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06c-search-result.png
+[2026-08-11T11:48:50.435Z] [LSM-REPROV] [INFO] 4. 파일 선택...
+[2026-08-11T11:48:50.448Z] [LSM-REPROV] [INFO] ✓ 파일 입력 필드: #cm_profile_import_csvfileselector
+[2026-08-11T11:48:52.469Z] [LSM-REPROV] [INFO] ✓ 파일 선택 완료: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv
+[2026-08-11T11:48:52.473Z] [LSM-REPROV] [INFO] 5. 적용 버튼 클릭 (CSV 에러 체크)...
+[2026-08-11T11:48:52.495Z] [LSM-REPROV] [INFO] ✓ 적용 버튼 클릭 완료 (JavaScript)
+[2026-08-11T11:48:57.602Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06d-applied.png
+[2026-08-11T11:48:57.605Z] [LSM-REPROV] [INFO] 6. 가져오기 버튼 클릭...
+[2026-08-11T11:49:02.638Z] [LSM-REPROV] [INFO] ✓ 가져오기 버튼 클릭 완료 (증설 시작)
+[2026-08-11T11:49:02.642Z] [LSM-REPROV] [INFO] 증설 진행바 대기 중... (30초)
+[2026-08-11T11:49:32.788Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06e-imported.png
+[2026-08-11T11:49:32.792Z] [LSM-REPROV] [INFO] ✓ eNB 증설 완료: eNB_150201_26B
+[2026-08-11T11:49:32.793Z] [LSM-REPROV] [INFO] 닫기 버튼 클릭...
+[2026-08-11T11:49:32.803Z] [LSM-REPROV] [INFO] ✓ 닫기 버튼 클릭 완료
+[2026-08-11T11:49:35.934Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06f-closed.png
+[2026-08-11T11:49:35.939Z] [LSM-REPROV] [INFO] 리포트 저장: d:\Data\AI\VSCode\usm-automation\output\reports\lsm-reprovision_eNB_150201_26B_2026-08-11T11-49-35-937Z.json
+[2026-08-11T11:49:35.941Z] [LSM-REPROV] [INFO] 브라우저 종료...
+[2026-08-11T11:55:04.550Z] [LSM-REPROV] [INFO] === LSM eNB 감설→재증설 시작 ===
+[2026-08-11T11:55:04.552Z] [LSM-REPROV] [INFO] CSV: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv, NE: eNB_150201_26B, LSM: 10.251.175.31, Dry-run: false
+[2026-08-11T11:55:04.555Z] [LSM-REPROV] [INFO] Chrome 브라우저 시작...
+[2026-08-11T11:55:07.243Z] [LSM-REPROV] [INFO] LSM 로그인: https://10.251.175.31:7443/aceman/
+[2026-08-11T11:55:12.431Z] [LSM-REPROV] [INFO] 페이지 로드 완료: CognitiV LSM
+[2026-08-11T11:55:12.435Z] [LSM-REPROV] [INFO] SSO 체크박스 해제 시도...
+[2026-08-11T11:55:12.537Z] [LSM-REPROV] [INFO] ✓ 체크박스 해제됨
+[2026-08-11T11:55:12.592Z] [LSM-REPROV] [INFO] ✓ SSO 라벨 클릭
+[2026-08-11T11:55:14.714Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\01-login-sso-off.png
+[2026-08-11T11:55:14.734Z] [LSM-REPROV] [INFO] ✓ ID 필드: input[placeholder*="ID"]
+[2026-08-11T11:55:14.753Z] [LSM-REPROV] [INFO] ✓ PW 필드: input[type="password"]:visible
+[2026-08-11T11:55:14.781Z] [LSM-REPROV] [INFO] ✓ ID/PW 입력 완료
+[2026-08-11T11:55:14.802Z] [LSM-REPROV] [INFO] ✓ 로그인 버튼: #loginBtn
+[2026-08-11T11:55:17.860Z] [LSM-REPROV] [INFO] 중복 세션 다이얼로그 확인...
+[2026-08-11T11:55:17.913Z] [LSM-REPROV] [INFO] ✓ 중복 세션 "예" 클릭
+[2026-08-11T11:55:22.921Z] [LSM-REPROV] [INFO] 메뉴 구성 완료 대기...
+[2026-08-11T11:55:22.928Z] [LSM-REPROV] [INFO] ✓ 메뉴 구성 완료
+[2026-08-11T11:55:22.932Z] [LSM-REPROV] [INFO] "준비중" 페이지 대기 중...
+[2026-08-11T11:55:22.938Z] [LSM-REPROV] [INFO] 대기 중... (1/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:55:24.944Z] [LSM-REPROV] [INFO] 대기 중... (2/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:55:26.960Z] [LSM-REPROV] [INFO] 대기 중... (3/30) 텍스트: AceMan LSM
+ ID 저장
+한국어
+ SSO
+[2026-08-11T11:55:28.968Z] [LSM-REPROV] [INFO] 대기 중... (4/30) 텍스트: 준비중입니다..
+[2026-08-11T11:55:30.981Z] [LSM-REPROV] [INFO] 대기 중... (5/30) 텍스트: 준비중입니다..
+[2026-08-11T11:55:32.999Z] [LSM-REPROV] [INFO] 대기 중... (6/30) 텍스트: 메뉴를 구성중입니다..
+[2026-08-11T11:55:35.015Z] [LSM-REPROV] [INFO] ✓ 메인 페이지 로드 완료
+[2026-08-11T11:55:38.081Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\01-login-complete.png
+[2026-08-11T11:55:38.085Z] [LSM-REPROV] [INFO] 로그인 완료, URL: https://10.251.175.31:7443/aceman/main.do?srcId=qwerty&loginTime=1786449366920
+[2026-08-11T11:55:38.089Z] [LSM-REPROV] [INFO] DOM 구조 분석...
+[2026-08-11T11:55:38.100Z] [LSM-REPROV] [INFO] iframe 수: 0
+[2026-08-11T11:55:38.103Z] [LSM-REPROV] [INFO] 메뉴 항목: 도움말CognitiV 정보새 창으로 열기라이선스새 창으로 열기매뉴얼새 창으로 열기, 대시보드, Locked
+						0, Shutting Down
+						0, Initializing
+						0, Not Initialized
+						6, Disconnected
+						2, Connected, CRITICAL, Severity, Code, Group, Location, ProbableCause, Alarm Time
+[2026-08-11T11:55:38.106Z] [LSM-REPROV] [INFO] 트리 항목 (0개): 
+[2026-08-11T11:55:38.109Z] [LSM-REPROV] [INFO] 버튼: Submit, Option, + Add
+[2026-08-11T11:55:38.113Z] [LSM-REPROV] [INFO] 입력 필드: []
+[2026-08-11T11:55:38.116Z] [LSM-REPROV] [INFO] 페이지 텍스트 (첫 500자): 구성관리
+장애관리
+성능관리
+일반관리
+보안관리
+SON관리
+도움말
+ 
+대시보드
+Submit
+ NE Search
+NE
+Current
+8
+Max
+4,500
+CELL
+Current
+13
+Locked
+7
+Max
+3,000
+NB-IoT CELL
+Current
+0
+Max
+300
+RRH
+Current
+7
+Performance Statistics
+0.00%
+Click for Detail
+Option
+ALARM
+27
+13
+0
+CRITICAL
+27
+MAJOR
+13
+MINOR
+0
+UNACK
+27
+UNACK
+13
+UNACK
+0
+STATUS
+0(0%)
+Normal
+ Locked
+0
+ Shutting Down
+0
+ Initializing
+0
+ Not Initialized
+6
+ Disconnected
+2
+Abnormal
+8(100
+%)
+VALIDATION
+Deleted Cell
+	
+Mismatched Cell
+	
+Mismatched eNB
+	
+Remote Flag
+0
+	
+0
+	
+0
+	
+0
+ Connected
+ C
+[2026-08-11T11:55:38.120Z] [LSM-REPROV] [INFO] 프로파일 업로드: d:\Data\AI\VSCode\usm-automation\eNB_150201_26B.csv
+[2026-08-11T11:55:38.123Z] [LSM-REPROV] [INFO] 구성관리 → eNB 생성 메뉴로 이동...
+[2026-08-11T11:55:40.205Z] [LSM-REPROV] [INFO] eNB 생성 하위 메뉴 클릭...
+[2026-08-11T11:55:40.216Z] [LSM-REPROV] [INFO] ✓ eNB 생성 메뉴: a:has-text("eNB 생성")
+[2026-08-11T11:55:48.453Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovision\06-create-enb-page.png
+[2026-08-11T11:55:48.457Z] [LSM-REPROV] [INFO] ✓ eNB 생성 페이지 로드
+[2026-08-11T11:55:48.459Z] [LSM-REPROV] [INFO] 1. 점세개(⋮) 아이콘 클릭...
+[2026-08-11T11:55:48.524Z] [LSM-REPROV] [INFO] ✓ 점세개 아이콘: [class*="option"]
+[2026-08-11T11:55:51.620Z] [LSM-REPROV] [INFO] 스크린샷: d:\Data\AI\VSCode\usm-automation\output\screenshots\reprovisio

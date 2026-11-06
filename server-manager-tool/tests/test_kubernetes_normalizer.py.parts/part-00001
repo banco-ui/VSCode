@@ -1,0 +1,548 @@
+"""Kubernetes Provider Normalizer Tests — Phase 13G-4.
+
+Tests for KubernetesProviderNormalizer:
+    - Platform/Cluster normalization (K8s → canonical)
+    - Node normalization (K8s Node → canonical Node)
+    - Pod → ExecutionEnvironment(POD)
+    - Container → ExecutionEnvironment(CONTAINER)
+    - Service → Network(VIRTUAL)
+    - PV → Storage(PV), PVC → Storage(PVC)
+    - Relationship evidence (Pod→Node node_ref resolution)
+    - Identity separation (canonical_id != provider_id)
+    - Provenance preserved from snapshot
+    - No Physical/OS/Workload/Accelerator created (conservative)
+    - Negative tests (malformed, missing fields, no inference)
+
+NO live Kubernetes connection. All fixtures are synthetic/in-memory.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.models.canonical import (
+    ClusterType,
+    ExecutionEnvironmentType,
+    NetworkType,
+    PlatformType,
+    ProviderType,
+    RelationshipEvidenceType,
+    StorageType,
+)
+from server_manager.normalizers.kubernetes_normalizer import (
+    KubernetesProviderNormalizer,
+)
+from server_manager.normalizers.provider_normalizer import (
+    GenericProviderNormalizer,
+    NormalizationResult,
+    ProviderNormalizer,
+)
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import (
+    KubernetesProviderAdapter,
+    RawProviderSnapshot,
+)
+
+
+def make_node(name, uid=None):
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or f"uid-node-{name}"},
+            "spec": {}, "status": {}}
+
+
+def make_container(name, image="nginx:1.21"):
+    return {"name": name, "image": image, "resources": {}}
+
+
+def make_pod(name, uid=None, namespace="default", node_name=None, containers=None):
+    spec = {}
+    if node_name:
+        spec["nodeName"] = node_name
+    spec["containers"] = containers or [make_container("main")]
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or f"uid-pod-{name}",
+                         "namespace": namespace},
+            "spec": spec, "status": {"phase": "Running"}}
+
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or f"uid-svc-{name}",
+                         "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+
+def make_pv(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+            "spec": {"capacity": {"storage": "10Gi"}}}
+
+
+def make_pvc(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}",
+                         "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}}}
+
+
+def make_deployment(name):
+    return {"apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": name, "uid": f"uid-deploy-{name}"}}
+
+
+def collect_and_normalize(fixture: dict[str, Any]) -> NormalizationResult:
+    """Helper: collect from fixture then normalize."""
+    adapter = KubernetesProviderAdapter(fixture=fixture)
+    snap = adapter.collect()
+    normalizer = KubernetesProviderNormalizer()
+    return normalizer.normalize(snap)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURES
+# ════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def fx_cluster_only():
+    return {"cluster": {"name": "prod", "version": "1.28.0", "uid": "uid-c"}}
+
+@pytest.fixture
+def fx_node():
+    return {"cluster": {"name": "prod", "version": "1.28.0"},
+            "nodes": [make_node("worker-1")]}
+
+@pytest.fixture
+def fx_pod():
+    return {"cluster": {"name": "prod", "version": "1.28.0"},
+            "nodes": [make_node("worker-1")],
+            "pods": [make_pod("nginx", node_name="worker-1",
+                              containers=[make_container("nginx")])]}
+
+@pytest.fixture
+def fx_pod_multi_container():
+    return {"cluster": {"name": "prod", "version": "1.28.0"},
+            "nodes": [make_node("worker-1")],
+            "pods": [make_pod("web", node_name="worker-1",
+                              containers=[make_container("web"), make_container("side")])]}
+
+@pytest.fixture
+def fx_service():
+    return {"cluster": {"name": "prod", "version": "1.28.0"},
+            "services": [make_service("frontend")]}
+
+@pytest.fixture
+def fx_pv_pvc():
+    return {"cluster": {"name": "prod", "version": "1.28.0"},
+            "persistent_volumes": [make_pv("pv-1")],
+            "persistent_volume_claims": [make_pvc("pvc-1")]}
+
+@pytest.fixture
+def fx_deployment():
+    return {"cluster": {"name": "prod", "version": "1.28.0"},
+            "deployments": [make_deployment("frontend")]}
+
+@pytest.fixture
+def fx_combined():
+    return {"cluster": {"name": "prod", "version": "1.28.0", "uid": "uid-c"},
+            "nodes": [make_node("master"), make_node("worker-1"), make_node("worker-2")],
+            "pods": [
+                make_pod("web-1", node_name="worker-1",
+                         containers=[make_container("nginx"), make_container("metrics")]),
+                make_pod("db-1", node_name="worker-2",
+                         containers=[make_container("postgres")]),
+            ],
+            "deployments": [make_deployment("frontend")],
+            "services": [make_service("web-svc"), make_service("db-svc")],
+            "persistent_volumes": [make_pv("data-pv")],
+            "persistent_volume_claims": [make_pvc("data-pvc")]}
+
+@pytest.fixture
+def fx_empty():
+    return {"cluster": {"name": "empty", "version": "1.29.0"}}
+
+@pytest.fixture
+def fx_pod_no_node():
+    return {"cluster": {"name": "prod", "version": "1.28.0"},
+            "pods": [make_pod("pending", node_name=None,
+                              containers=[make_container("main")])]}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  NORMALIZER STRUCTURE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestNormalizerStructure:
+    """G4-03: Existing abstractions reused. G4-04: No duplicate framework."""
+
+    def test_inherits_generic_provider_normalizer(self):
+        assert issubclass(KubernetesProviderNormalizer, GenericProviderNormalizer)
+
+    def test_inherits_provider_normalizer(self):
+        assert issubclass(KubernetesProviderNormalizer, ProviderNormalizer)
+
+    def test_provider_type_kubernetes(self):
+        n = KubernetesProviderNormalizer()
+        assert n.provider_type == ProviderType.KUBERNETES
+
+    def test_normalize_returns_normalization_result(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        assert isinstance(result, NormalizationResult)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PLATFORM MAPPING TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestPlatformMapping:
+    """G4-11: Platform mapping. K8s → PlatformType.KUBERNETES."""
+
+    def test_platform_created(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        assert len(result.platforms) == 1
+
+    def test_platform_type_kubernetes(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        assert result.platforms[0].platform_type == PlatformType.KUBERNETES
+
+    def test_platform_version_preserved(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        assert result.platforms[0].version == "1.28.0"
+
+    def test_platform_has_canonical_id(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        assert result.platforms[0].canonical_id.startswith("canon-")
+
+    def test_platform_identity_separation(self, fx_cluster_only):
+        """canonical_id != provider_id."""
+        result = collect_and_normalize(fx_cluster_only)
+        p = result.platforms[0]
+        assert p.canonical_id != p.provider_id
+
+    def test_platform_metadata_kubernetes(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        p = result.platforms[0]
+        assert "kubernetes" in p.metadata
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CLUSTER MAPPING TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestClusterMapping:
+    """G4-07: Cluster mapping. K8s → ClusterType.KUBERNETES."""
+
+    def test_cluster_created(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        assert len(result.clusters) == 1
+
+    def test_cluster_type_kubernetes(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        assert result.clusters[0].cluster_type == ClusterType.KUBERNETES
+
+    def test_cluster_platform_ref_resolved(self, fx_cluster_only):
+        """Cluster.platform_ref resolved to Platform's canonical_id."""
+        result = collect_and_normalize(fx_cluster_only)
+        c = result.clusters[0]
+        p = result.platforms[0]
+        assert c.platform_ref == p.canonical_id
+
+    def test_cluster_identity_separation(self, fx_cluster_only):
+        result = collect_and_normalize(fx_cluster_only)
+        c = result.clusters[0]
+        assert c.canonical_id != c.provider_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  NODE MAPPING TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestNodeMapping:
+    """G4-08: Node mapping. K8s Node → canonical Node."""
+
+    def test_node_created(self, fx_node):
+        result = collect_and_normalize(fx_node)
+        assert len(result.nodes) == 1
+
+    def test_node_name_preserved(self, fx_node):
+        result = collect_and_normalize(fx_node)
+        assert result.nodes[0].name == "worker-1"
+
+    def test_node_cluster_ref_resolved(self, fx_node):
+        """Node.cluster_ref resolved to Cluster's canonical_id."""
+        result = collect_and_normalize(fx_node)
+        n = result.nodes[0]
+        c = result.clusters[0]
+        assert n.cluster_ref == c.canonical_id
+
+    def test_node_identity_separation(self, fx_node):
+        result = collect_and_normalize(fx_node)
+        n = result.nodes[0]
+        assert n.canonical_id != n.provider_id
+
+    def test_node_provider_id_is_name(self, fx_node):
+        """Node provider_id = K8s node name (referenced by Pod.spec.nodeName)."""
+        result = collect_and_normalize(fx_node)
+        assert result.nodes[0].provider_id == "worker-1"
+
+    def test_node_no_physical_ref(self, fx_node):
+        """Node != Physical — no physical_ref auto-created."""
+        result = collect_and_normalize(fx_node)
+        assert result.nodes[0].physical_ref is None
+
+    def test_multiple_nodes(self, fx_combined):
+        result = collect_and_normalize(fx_combined)
+        assert len(result.nodes) == 3
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  POD → EE(POD) MAPPING TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestPodToExecutionEnvironment:
+    """G4-09: Pod → ExecutionEnvironment(POD)."""
+
+    def test_pod_creates_ee(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert len(pods) == 1
+
+    def test_pod_ee_type_pod(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert pods[0].ee_type == ExecutionEnvironmentType.POD
+
+    def test_pod_ee_name_preserved(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert pods[0].name == "nginx"
+
+    def test_pod_ee_node_ref_resolved(self, fx_pod):
+        """Pod's node_ref resolved to Node's canonical_id."""
+        result = collect_and_normalize(fx_pod)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        nodes = result.nodes
+        assert pods[0].node_ref == nodes[0].canonical_id
+
+    def test_pod_ee_identity_separation(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert pods[0].canonical_id != pods[0].provider_id
+
+    def test_pod_without_node_no_node_ref(self, fx_pod_no_node):
+        """Pod without nodeName has node_ref=None."""
+        result = collect_and_normalize(fx_pod_no_node)
+        pods = [ee for ee in result.execution_environments
+                if ee.ee_type == ExecutionEnvironmentType.POD]
+        assert len(pods) == 1
+        assert pods[0].node_ref is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CONTAINER → EE(CONTAINER) MAPPING TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestContainerToExecutionEnvironment:
+    """G4-10: Container → ExecutionEnvironment(CONTAINER)."""
+
+    def test_container_creates_ee(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        containers = [ee for ee in result.execution_environments
+                      if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert len(containers) == 1
+
+    def test_container_ee_type_container(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        containers = [ee for ee in result.execution_environments
+                      if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert containers[0].ee_type == ExecutionEnvironmentType.CONTAINER
+
+    def test_container_name_preserved(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        containers = [ee for ee in result.execution_environments
+                      if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert containers[0].name == "nginx"
+
+    def test_multi_container_pod(self, fx_pod_multi_container):
+        result = collect_and_normalize(fx_pod_multi_container)
+        containers = [ee for ee in result.execution_environments
+                      if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert len(containers) == 2
+        names = {c.name for c in containers}
+        assert names == {"web", "side"}
+
+    def test_container_identity_separation(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        containers = [ee for ee in result.execution_environments
+                      if ee.ee_type == ExecutionEnvironmentType.CONTAINER]
+        assert containers[0].canonical_id != containers[0].provider_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  SERVICE → NETWORK MAPPING TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestServiceToNetwork:
+    """G4-16: Network policy. K8s Service → Network(VIRTUAL)."""
+
+    def test_service_creates_network(self, fx_service):
+        result = collect_and_normalize(fx_service)
+        assert len(result.networks) == 1
+
+    def test_network_type_virtual(self, fx_service):
+        result = collect_and_normalize(fx_service)
+        assert result.networks[0].network_type == NetworkType.VIRTUAL
+
+    def test_network_name_preserved(self, fx_service):
+        result = collect_and_normalize(fx_service)
+        assert result.networks[0].name == "frontend"
+
+    def test_network_identity_separation(self, fx_service):
+        result = collect_and_normalize(fx_service)
+        n = result.networks[0]
+        assert n.canonical_id != n.provider_id
+
+    def test_network_metadata_kubernetes(self, fx_service):
+        """Raw K8s Service preserved in metadata.kubernetes."""
+        result = collect_and_normalize(fx_service)
+        assert "kubernetes" in result.networks[0].metadata
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  STORAGE MAPPING TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestStorageMapping:
+    """G4-15: Storage policy. PV → Storage(PV), PVC → Storage(PVC)."""
+
+    def test_pv_creates_storage(self, fx_pv_pvc):
+        result = collect_and_normalize(fx_pv_pvc)
+        pvs = [s for s in result.storages if s.storage_type == StorageType.PV]
+        assert len(pvs) == 1
+
+    def test_pv_storage_type(self, fx_pv_pvc):
+        result = collect_and_normalize(fx_pv_pvc)
+        pvs = [s for s in result.storages if s.storage_type == StorageType.PV]
+        assert pvs[0].storage_type == StorageType.PV
+
+    def test_pvc_creates_storage(self, fx_pv_pvc):
+        result = collect_and_normalize(fx_pv_pvc)
+        pvcs = [s for s in result.storages if s.storage_type == StorageType.PVC]
+        assert len(pvcs) == 1
+
+    def test_pvc_storage_type(self, fx_pv_pvc):
+        result = collect_and_normalize(fx_pv_pvc)
+        pvcs = [s for s in result.storages if s.storage_type == StorageType.PVC]
+        assert pvcs[0].storage_type == StorageType.PVC
+
+    def test_storage_identity_separation(self, fx_pv_pvc):
+        result = collect_and_normalize(fx_pv_pvc)
+        for s in result.storages:
+            assert s.canonical_id != s.provider_id
+
+    def test_storage_metadata_kubernetes(self, fx_pv_pvc):
+        result = collect_and_normalize(fx_pv_pvc)
+        for s in result.storages:
+            assert "kubernetes" in s.metadata
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  RELATIONSHIP EVIDENCE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestRelationshipEvidence:
+    """G4-18: Relationship evidence preserved from snapshot."""
+
+    def test_evidence_preserved(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        assert len(result.relationship_evidence) > 0
+
+    def test_evidence_types_direct_or_derived(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        for e in result.relationship_evidence:
+            assert e.evidence_type in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            )
+
+    def test_runs_on_evidence_present(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        runs_on = [e for e in result.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        assert len(runs_on) == 1
+
+    def test_contains_evidence_present(self, fx_pod):
+        result = collect_and_normalize(fx_pod)
+        contains = [e for e in result.relationship_evidence
+                    if e.relationship_type == "contains"]
+        assert len(contains) == 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVENANCE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestProvenance:
+    """G4-19: Provenance preserved from snapshot to entities."""
+
+    def test_entity_has_source_evidence(self, fx_node):
+        result = collect_and_normalize(fx_node)
+        for n in result.nodes:
+            assert n.source_evidence is not None
+
+    def test_source_evidence_provider_type(self, fx_node):
+        result = collect_and_normalize(fx_node)
+        for n in result.nodes:
+            assert n.source_evidence.provider_type == ProviderType.KUBERNETES
+
+    def test_source_evidence_collected_at(self, fx_node):
+        result = collect_and_normalize(fx_node)
+        for n in result.nodes:
+            assert n.source_evidence.collected_at is not None
+
+    def test_source_evidence_raw_data_ref(self, fx_node):
+        """raw_data_ref points to snapshot_id."""
+        adapter = KubernetesProviderAdapter(fixture=fx_node)
+        snap = adapter.collect()
+        normalizer = KubernetesProviderNormalizer()
+        result = normalizer.normalize(snap)
+        for n in result.nodes:
+            assert n.source_evidence.raw_data_ref == snap.snapshot_id
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  CONSERVATIVE MAPPING TESTS — no auto-creation
+# ════════════════════════════════════════════════════════════════════════
+
+class TestConservativeMapping:
+    """Entities NOT auto-created from K8s data."""
+
+    def test_no_physical_created(self, fx_node):
+        """Node → Physical is NOT automatic."""
+        result = collect_and_normalize(fx_node)
+        assert len(result.physicals) == 0
+
+    def test_no_os_created(self, fx_node):
+        """No host OS info from K8s API."""
+        result = collect_and_normalize(fx_node)
+        assert len(result.os_entities) == 0
+
+    def test_no_workload_from_deployment(self, fx_deployment):
+        """Deployment is NOT automatically a canonical Workload."""
+        result = collect_and_normalize(fx_deployment)
+        assert len(result.workloads) == 0
+
+    def test_no_workload_from_pod(self, fx_pod):
+        """Pod is NOT a canonical Workload — it's an EE."""
+        result = collect_and_normalize(fx_pod)
+        assert len(result.workloads) == 0
+
+    def test_no_accelerator_created(self, fx_combined):
+        """No accelerator evidence from K8s API."""
+        result = collect_and_normalize(fx_combined)
+        assert len(result.

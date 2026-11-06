@@ -1,0 +1,21 @@
+rNormalizer().normalize(snap1)
+
+        mock2 = make_full_mock_topology()
+        snap2 = KubernetesProviderAdapter(client=mock2).collect()
+        result2 = KubernetesProviderNormalizer().normalize(snap2)
+
+        ids1 = sorted(n.canonical_id for n in result1.nodes)
+        ids2 = sorted(n.canonical_id for n in result2.nodes)
+        assert ids1 == ids2
+
+        ee_ids1 = sorted(ee.canonical_id for ee in result1.execution_environments)
+        ee_ids2 = sorted(ee.canonical_id for ee in result2.execution_environments)
+        assert ee_ids1 == ee_ids2
+
+    def test_canonical_id_differs_from_provider_id(self):
+        mock = make_full_mock_topology()
+        adapter = KubernetesProviderAdapter(client=mock)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        for node in result.nodes:
+            assert node.canonical_id != node.provider_id

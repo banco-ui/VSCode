@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/tests/test_cross_provider_contract.py",
+  "originalSize": 45164,
+  "sha256": "c49289725650f1c5917c250b70b674ca0f7c8bc63b8fc39bfce6268e5280ed7e",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/tests/test_cross_provider_contract.py\""
+}

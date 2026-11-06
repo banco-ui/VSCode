@@ -1,0 +1,550 @@
+"""Platform Discovery & Inventory Tests — Phase 14.
+
+Tests the discovery pipeline:
+    Fixture / Mock / Live
+        ↓
+    ProviderAdapter
+        ↓
+    RawProviderSnapshot
+        ↓
+    ProviderNormalizer
+        ↓
+    CanonicalInventory + DiscoveryResult
+
+NO live Kubernetes connection. All fixtures are synthetic/in-memory.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.discovery import (
+    CanonicalInventory,
+    DiscoveryResult,
+    PlatformDiscovery,
+)
+from server_manager.models.canonical import (
+    ExecutionEnvironmentType,
+    NetworkType,
+    PlatformType,
+    ProviderType,
+    RelationshipEvidenceType,
+    StorageType,
+)
+from server_manager.normalizers.kubernetes_normalizer import KubernetesProviderNormalizer
+from server_manager.orchestrator.models import OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability,
+    KubernetesProviderAdapter,
+    RawProviderSnapshot,
+)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURE HELPERS (reused from Phase 13G-5 pattern)
+# ════════════════════════════════════════════════════════════════════════
+
+
+def make_node(name, uid=None):
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or f"uid-node-{name}",
+                         "labels": {"kubernetes.io/hostname": name}},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}}}
+
+
+def make_container(name, image="nginx:1.21"):
+    return {"name": name, "image": image, "resources": {}}
+
+
+def make_pod(name, uid=None, namespace="default", node_name=None, containers=None):
+    spec: dict[str, Any] = {}
+    if node_name:
+        spec["nodeName"] = node_name
+    spec["containers"] = containers or [make_container("main")]
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or f"uid-pod-{name}",
+                         "namespace": namespace},
+            "spec": spec, "status": {"phase": "Running"}}
+
+
+def make_service(name, uid=None, svc_type="ClusterIP"):
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or f"uid-svc-{name}",
+                         "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+
+def make_pv(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+            "spec": {"capacity": {"storage": "10Gi"}}}
+
+
+def make_pvc(name, uid=None):
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}",
+                         "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}}}
+
+
+def make_full_fixture():
+    """Full topology: Cluster → Node → Pod(2 containers) + Service + PV + PVC."""
+    return {
+        "cluster": {"name": "cluster-01", "uid": "uid-cluster-01", "version": "1.28.0"},
+        "nodes": [make_node("node-01")],
+        "namespaces": [],
+        "pods": [make_pod(
+            name="uadpf-dmp-xxxxx", uid="uid-pod-uadpf-dmp", namespace="ran",
+            node_name="node-01",
+            containers=[make_container("dmp", "dmp:1.0"),
+                        make_container("sidecar", "busybox:1.35")])],
+        "deployments": [], "statefulsets": [], "daemonsets": [],
+        "services": [make_service("uadpf-service")],
+        "persistent_volumes": [make_pv("uadpf-pv")],
+        "persistent_volume_claims": [make_pvc("uadpf-pvc")],
+    }
+
+
+def make_partial_fixture():
+    """Partial: 403 on services."""
+    f = make_full_fixture()
+    f["errors"] = {"services": "403 Forbidden: permission denied"}
+    f["services"] = []
+    return f
+
+
+def make_empty_fixture():
+    """Cluster only, no resources."""
+    return {"cluster": {"name": "empty-cluster", "uid": "uid-empty", "version": "1.27.0"}}
+
+
+def make_failed_fixture():
+    """All resources failed — connection error."""
+    f = make_empty_fixture()
+    f["errors"] = {
+        "pods": "connection refused: API server unreachable",
+        "nodes": "connection refused: API server unreachable",
+    }
+    f["nodes"] = []
+    return f
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  DISCOVERY STATUS TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestDiscoverySuccess:
+    """Discovery with full fixture → SUCCESS."""
+
+    def test_discovery_success(self):
+        adapter = KubernetesProviderAdapter(
+            provider_id="cluster-01", fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.discovery_status == OrchestrationStatus.SUCCESS
+        assert result.is_success
+        assert result.provider_type == ProviderType.KUBERNETES
+        assert result.inventory is not None
+        assert result.entity_count > 0
+
+    def test_discovery_returns_discovery_result(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert isinstance(result, DiscoveryResult)
+
+    def test_discovery_snapshot_id_matches(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.snapshot_id
+
+
+class TestDiscoveryPartial:
+    """Discovery with partial fixture → PARTIAL."""
+
+    def test_discovery_partial_status(self):
+        adapter = KubernetesProviderAdapter(fixture=make_partial_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.discovery_status == OrchestrationStatus.PARTIAL
+        assert result.is_partial
+
+    def test_partial_still_produces_inventory(self):
+        adapter = KubernetesProviderAdapter(fixture=make_partial_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.inventory is not None
+        assert len(result.inventory.nodes) == 1
+        assert len(result.inventory.networks) == 0  # service failed
+
+    def test_partial_records_failed_capabilities(self):
+        adapter = KubernetesProviderAdapter(fixture=make_partial_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert AdapterCapability.NETWORK in result.capabilities_failed
+
+    def test_partial_records_errors(self):
+        adapter = KubernetesProviderAdapter(fixture=make_partial_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert len(result.errors) > 0
+
+
+class TestDiscoveryFailed:
+    """Discovery with connection failure → FAILED."""
+
+    def test_discovery_failed_status(self):
+        """All capabilities failed + no entities → FAILED."""
+        # Use a mock snapshot with FAILED status and empty payload
+        snapshot = RawProviderSnapshot(
+            snapshot_id="snap-failed",
+            provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.FAILED,
+            payload={},
+        )
+        adapter = KubernetesProviderAdapter(fixture={})
+        adapter.collect = lambda **kw: snapshot
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.discovery_status == OrchestrationStatus.FAILED
+        assert result.is_failed
+
+    def test_failed_with_empty_inventory(self):
+        """FAILED snapshot with no entities → empty inventory."""
+        snapshot = RawProviderSnapshot(
+            snapshot_id="snap-failed",
+            provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.FAILED,
+            payload={},
+        )
+        adapter = KubernetesProviderAdapter(fixture={})
+        adapter.collect = lambda **kw: snapshot
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        # Inventory may be non-None but empty, or None
+        if result.inventory:
+            assert result.inventory.entity_count == 0 or result.inventory.is_empty
+
+
+class TestDiscoverySkipped:
+    """Discovery when credentials unavailable → SKIPPED."""
+
+    def test_skipped_status(self):
+        """When snapshot status is SKIPPED, discovery returns SKIPPED."""
+        snapshot = RawProviderSnapshot(
+            snapshot_id="snap-skipped",
+            provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.SKIPPED,
+        )
+        adapter = KubernetesProviderAdapter(fixture={})
+        # Override collect to return our skipped snapshot
+        adapter.collect = lambda **kw: snapshot
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.discovery_status == OrchestrationStatus.SKIPPED
+        assert result.is_skipped
+        assert result.inventory is None
+
+    def test_skipped_not_treated_as_success(self):
+        """SKIPPED is never SUCCESS."""
+        snapshot = RawProviderSnapshot(
+            snapshot_id="snap-skipped",
+            provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.SKIPPED,
+        )
+        adapter = KubernetesProviderAdapter(fixture={})
+        adapter.collect = lambda **kw: snapshot
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert not result.is_success
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  IDENTIFICATION TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestKubernetesIdentification:
+    """Platform identification from discovery results."""
+
+    def test_kubernetes_identified(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.identified_platform_type == PlatformType.KUBERNETES
+
+    def test_version_identification(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.inventory.platforms[0].version == "1.28.0"
+
+    def test_unknown_identification_empty_fixture(self):
+        """Empty fixture still produces Platform (KUBERNETES)."""
+        adapter = KubernetesProviderAdapter(fixture={})
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.identified_platform_type == PlatformType.KUBERNETES
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  INVENTORY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestCanonicalInventoryGeneration:
+    """Canonical inventory is generated from discovery."""
+
+    def test_inventory_has_all_entity_types(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        inv = result.inventory
+        assert len(inv.platforms) == 1
+        assert len(inv.clusters) == 1
+        assert len(inv.nodes) == 1
+        assert len(inv.execution_environments) == 3  # 1 pod + 2 containers
+        assert len(inv.networks) == 1
+        assert len(inv.storages) == 2
+
+    def test_inventory_is_canonical_inventory(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert isinstance(result.inventory, CanonicalInventory)
+
+    def test_empty_evidence_does_not_create_entity(self):
+        """No Physical/OS/Accelerator evidence → no entities."""
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        inv = result.inventory
+        assert len(inv.physicals) == 0
+        assert len(inv.os_entities) == 0
+        assert len(inv.accelerators) == 0
+
+
+class TestWorkloadNotInferred:
+    """Workload is never inferred from Kubernetes objects."""
+
+    def test_no_workload_created(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert len(result.inventory.workloads) == 0
+
+    def test_deployment_does_not_become_workload(self):
+        fixture = make_full_fixture()
+        fixture["deployments"] = [
+            {"apiVersion": "apps/v1", "kind": "Deployment",
+             "metadata": {"name": "test-deploy", "uid": "uid-deploy"},
+             "spec": {"replicas": 3}}]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert len(result.inventory.workloads) == 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  IDENTITY STABILITY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestIdentityStability:
+    """Same input → same canonical_id across repeated discovery."""
+
+    def test_inventory_identity_stability(self):
+        """Two discovery runs on identical fixture produce identical IDs."""
+        fixture = make_full_fixture()
+        adapter1 = KubernetesProviderAdapter(fixture=fixture)
+        adapter2 = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        r1 = PlatformDiscovery().discover(adapter1, normalizer)
+        r2 = PlatformDiscovery().discover(adapter2, normalizer)
+        ids1 = {e.canonical_id for e in r1.inventory.nodes}
+        ids2 = {e.canonical_id for e in r2.inventory.nodes}
+        assert ids1 == ids2
+        ee_ids1 = {e.canonical_id for e in r1.inventory.execution_environments}
+        ee_ids2 = {e.canonical_id for e in r2.inventory.execution_environments}
+        assert ee_ids1 == ee_ids2
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVENANCE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProvenance:
+    """Provenance is preserved on all canonical entities."""
+
+    def test_inventory_provenance_preserved(self):
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        inv = result.inventory
+        for node in inv.nodes:
+            assert node.source_evidence is not None
+            assert node.source_evidence.provider_type == ProviderType.KUBERNETES
+        for ee in inv.execution_environments:
+            assert ee.source_evidence is not None
+            assert ee.source_evidence.provider_type == ProviderType.KUBERNETES
+        for svc in inv.networks:
+            assert svc.source_evidence is not None
+        for st in inv.storages:
+            assert st.source_evidence is not None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  RELATIONSHIP TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestRelationships:
+    """Relationship evidence from discovery."""
+
+    def test_pod_node_direct_relationship(self):
+        """Pod.spec.nodeName → Pod→Node = DIRECT."""
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        direct_rels = [
+            r for r in result.relationship_evidence
+            if r.evidence_type == RelationshipEvidenceType.DIRECT
+        ]
+        assert len(direct_rels) > 0
+
+    def test_pod_container_derived_relationship(self):
+        """Pod.spec.containers[] → Pod→Container = DERIVED."""
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        derived_rels = [
+            r for r in result.relationship_evidence
+            if r.evidence_type == RelationshipEvidenceType.DERIVED
+        ]
+        assert len(derived_rels) > 0
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVIDER PATH TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderPath:
+    """Fixture and mock paths produce valid discovery results."""
+
+    def test_fixture_discovery_path(self):
+        """Fixture path: adapter(fixture) → snapshot → normalizer → result."""
+        adapter = KubernetesProviderAdapter(fixture=make_full_fixture())
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.is_success
+        assert result.inventory.entity_count > 0
+
+    def test_mock_discovery_path(self):
+        """Mock path: adapter(client=mock) → snapshot → normalizer → result."""
+        class MockK8sList:
+            def __init__(self, items):
+                self.items = items
+            def to_dict(self):
+                return {"items": [
+                    item.to_dict() if hasattr(item, "to_dict") else item
+                    for item in self.items
+                ]}
+
+        class MockNode:
+            def __init__(self, name):
+                self.name = name
+                self.uid = f"uid-{name}"
+            def to_dict(self):
+                return {
+                    "apiVersion": "v1", "kind": "Node",
+                    "metadata": {"name": self.name, "uid": self.uid,
+                                 "labels": {"kubernetes.io/hostname": self.name}},
+                    "spec": {},
+                    "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}},
+                }
+
+        class MockPod:
+            def __init__(self, name, node_name="node-01"):
+                self.name = name
+                self.uid = f"uid-{name}"
+                self.node_name = node_name
+            def to_dict(self):
+                return {
+                    "apiVersion": "v1", "kind": "Pod",
+                    "metadata": {"name": self.name, "uid": self.uid,
+                                 "namespace": "default"},
+                    "spec": {"nodeName": self.node_name,
+                             "containers": [{"name": "main", "image": "nginx:1.21",
+                                             "resources": {}}]},
+                    "status": {"phase": "Running"},
+                }
+
+        class MockVersion:
+            def to_dict(self):
+                return {"gitVersion": "v1.28.0"}
+
+        class MockClient:
+            """Client with list methods directly on it (adapter calls client.list_*)."""
+            def get_api_version(self, **kw):
+                return MockVersion()
+            def list_node(self, **kw):
+                return MockK8sList([MockNode("node-01")])
+            def list_pod_for_all_namespaces(self, **kw):
+                return MockK8sList([MockPod("test-pod")])
+            def list_namespace(self, **kw):
+                return MockK8sList([])
+            def list_service_for_all_namespaces(self, **kw):
+                return MockK8sList([])
+            def list_persistent_volume(self, **kw):
+                return MockK8sList([])
+            def list_persistent_volume_claim_for_all_namespaces(self, **kw):
+                return MockK8sList([])
+
+        adapter = KubernetesProviderAdapter(
+            fixture={"cluster": {"name": "mock-cluster",
+                                  "uid": "uid-mock", "version": "1.28.0"}},
+            client=MockClient(),
+        )
+        normalizer = KubernetesProviderNormalizer()
+        result = PlatformDiscovery().discover(adapter, normalizer)
+        assert result.discovery_status == OrchestrationStatus.SUCCESS
+        assert len(result.inventory.nodes) == 1
+        assert len(result.inventory.execution_environments) >= 1
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  LIVE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestLiveDiscovery:
+    """Live discovery tests — SKIPPED when credentials unavailable."""
+
+    @pytest.mark.skip(reason="No Kubernetes credentials in test environment")
+    def test_live_without_credentials_is_skipped(self):
+        """Without credentials, live discovery is SKIPPED."""
+        # This test documents that live tests require credentials.
+        # In CI without kubeconfig, it is skipped.
+        pass
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MUTATION SAFETY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestMutationSafety:
+    """No mutation operations in discovery pipeline."""
+
+    def test_no_kubernetes_mutation(self):
+        """Adapter source contains no create/update/delete calls."""
+        import inspect
+        from server_manager.providers import kubernetes as k8s_mod
+        source = inspect.getsource(k8s_mod)
+        forbidden = ["create_", "update_", "delete_", "patch_",
+                     "replace_", "scale", "rollout"]

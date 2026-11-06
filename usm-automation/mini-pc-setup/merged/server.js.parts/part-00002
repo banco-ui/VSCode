@@ -1,0 +1,174 @@
+0).json({ ok: false, error: err.message });
+  });
+});
+
+// 일반 파일 업로드 (multipart/form-data - simple parser, no dependencies)
+app.post('/api/gtc/upload', (req, res) => {
+  const dir = '/home/yaong/GTC_fileserver';
+  const contentType = req.headers['content-type'] || '';
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  
+  if (!boundaryMatch) {
+    return res.status(400).json({ ok: false, error: 'Invalid multipart content-type' });
+  }
+  
+  const boundary = boundaryMatch[1] || boundaryMatch[2];
+  const chunks = [];
+  
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    const body = Buffer.concat(chunks);
+    const boundaryStr = `--${boundary}`;
+    const parts = body.toString('binary').split(boundaryStr).filter(p => p.trim() && p !== '--\r\n');
+    
+    let filename = '';
+    let filepath = '';
+    let fileData = null;
+    
+    parts.forEach(part => {
+      if (part.includes('name="filename"')) {
+        const match = part.match(/name="filename"\r\n\r\n(.+?)\r\n/);
+        if (match) filename = match[1].trim();
+      } else if (part.includes('name="filepath"')) {
+        const match = part.match(/name="filepath"\r\n\r\n(.+?)\r\n/);
+        if (match) filepath = match[1].trim();
+      } else if (part.includes('name="file"')) {
+        const lines = part.split('\r\n');
+        const contentDisp = lines[1] || '';
+        const fileMatch = contentDisp.match(/filename="([^"]+)"/);
+        if (fileMatch && !filename) filename = fileMatch[1];
+        
+        const headerEnd = part.indexOf('\r\n\r\n') + 4;
+        const rawData = part.slice(headerEnd);
+        if (rawData.length > 2) {
+          fileData = Buffer.from(rawData.slice(0, -2), 'binary');
+        }
+      }
+    });
+    
+    if (!fileData || fileData.length === 0) {
+      return res.status(400).json({ ok: false, error: 'No file data' });
+    }
+    
+    // filepath 가 있으면 디렉토리 생성
+    let destPath;
+    if (filepath) {
+      const subDir = path.join(dir, path.dirname(filepath));
+      if (!fs.existsSync(subDir)) {
+        fs.mkdirSync(subDir, { recursive: true });
+      }
+      destPath = path.join(dir, filepath);
+    } else {
+      destPath = path.join(dir, filename || crypto.randomUUID());
+    }
+    
+    fs.writeFile(destPath, fileData, (err) => {
+      if (err) return res.status(500).json({ ok: false, error: err.message });
+      res.json({ ok: true, message: 'uploaded', filename: filepath || filename });
+    });
+  });
+  
+  req.on('error', (err) => {
+    res.status(500).json({ ok: false, error: err.message });
+  });
+});
+
+
+
+
+// GTC 파일 다운로드
+app.get('/api/gtc/download', (req, res) => {
+  const dir = '/home/yaong/GTC_fileserver';
+  const filename = req.query.filename;
+  if (!filename) return res.status(400).json({ error: 'filename query param required' });
+  const filePath = path.join(dir, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'file not found' });
+  res.download(filePath, filename);
+});
+
+// GTC 파일 삭제
+app.delete('/api/gtc/delete', (req, res) => {
+  const dir = '/home/yaong/GTC_fileserver';
+  const filename = req.query.filename;
+  if (!filename) return res.status(400).json({ error: 'filename query param required' });
+  const filePath = path.join(dir, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'file not found' });
+  try {
+    fs.unlinkSync(filePath);
+    res.json({ ok: true, message: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// 저장장치 용량 조회
+app.get('/api/disk-usage', (req, res) => {
+  execFile('df', ['-h', '/home/yaong'], { encoding: 'utf8' }, (err, stdout, stderr) => {
+    if (err) return res.status(500).json({ error: err.message, stderr });
+    const lines = stdout.trim().split('\n');
+    const headers = lines[0].split(/\s+/);
+    const values = lines[1].split(/\s+/);
+    const usage = {};
+    headers.forEach((h, i) => { usage[h] = values[i]; });
+    res.json({ ok: true, usage });
+  });
+});
+
+// 디렉토리 전체 다운로드 (ZIP - tar 사용)
+app.get('/api/gtc/download-dir', (req, res) => {
+  const dir = '/home/yaong/GTC_fileserver';
+  const dirPath = req.query.path || '';
+  const targetPath = dirPath ? path.join(dir, dirPath) : dir;
+  
+  if (!targetPath.startsWith(dir)) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+  
+  const dirName = path.basename(dirPath) || 'GTC_fileserver';
+  const zipPath = `/tmp/${dirName}-${Date.now()}.zip`;
+  
+  // zip 명령으로 압축 생성
+  execFile('zip', ['-r', zipPath, targetPath], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    
+    res.download(zipPath, `${dirName}.zip`, () => {
+      // 다운로드 후 임시 파일 삭제
+      fs.unlinkSync(zipPath);
+    });
+  });
+});
+
+
+// 디렉토리 전체 삭제
+app.delete('/api/gtc/delete-dir', (req, res) => {
+  const dir = '/home/yaong/GTC_fileserver';
+  const dirPath = req.query.path || '';
+  const targetPath = dirPath ? path.join(dir, dirPath) : dir;
+  
+  if (!targetPath.startsWith(dir) || targetPath === dir) {
+    return res.status(400).json({ ok: false, error: 'Cannot delete root directory' });
+  }
+  
+  try {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+    res.json({ ok: true, message: 'deleted' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── 서버 시작 ── */
+
+
+app.listen(port, '0.0.0.0', async () => {
+  console.log(`========================================`);
+  console.log(`  미니 PC 통합 관리: http://0.0.0.0:${port}`);
+  console.log(`========================================`);
+  console.log(`검사 주기: ${intervalMs / 1000}초`);
+  console.log(`장애 기준: ${failuresBeforeOffline}회 연속 실패`);
+  console.log(`OS: ${os.platform()} ${os.arch()}`);
+  console.log(`등록된 장비: ${devices.length}대`);
+  console.log(`========================================`);
+  await checkAll();
+  setInterval(checkAll, intervalMs);
+});

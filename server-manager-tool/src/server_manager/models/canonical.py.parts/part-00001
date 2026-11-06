@@ -1,0 +1,492 @@
+"""Canonical Domain Model — Phase 13G-1.
+
+Platform-neutral canonical entities for multi-provider infrastructure
+representation. This model is SEPARATE from the existing ServerInventory
+(v1.0, FROZEN) and does not modify it.
+
+Key principles:
+- Platform neutral: no provider-specific entity classes (no KubernetesPod, etc.)
+- Identity separation: canonical_id != provider_id
+- Relationship references: typed fields with explicit cardinality
+- Provenance: SourceEvidence per entity
+- Relationship evidence: DIRECT and DERIVED only (no LLM/heuristic)
+
+Phase 13E canonical domains (10):
+    Physical, OS, Platform, Cluster, Node,
+    ExecutionEnvironment, Workload, Network, Storage, Accelerator
+
+Deferred: NetworkFunction (represented via Workload.metadata.nf_type)
+Removed: Service
+
+IMPORTANT — Workload naming:
+    inventory.Workload  = utilization observation (cpu_util, mem_util, ...)
+    canonical.Workload  = deployment unit (CNF, VNF, PNF, APPLICATION)
+    These are DIFFERENT classes in DIFFERENT modules.
+    Import explicitly:
+        from server_manager.models.inventory import Workload  # utilization
+        from server_manager.models.canonical import Workload  # deployment unit
+"""
+from __future__ import annotations
+
+from enum import Enum
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+from .enums import Confidence
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  ENUMS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class ProviderType(str, Enum):
+    """Infrastructure provider type (source of canonical entity data)."""
+    REDFISH = "REDFISH"
+    SSH = "SSH"
+    KUBERNETES = "KUBERNETES"
+    WRCP = "WRCP"
+    VMWARE = "VMWARE"
+    OPENSTACK = "OPENSTACK"
+    SNMP = "SNMP"
+    IPMI = "IPMI"
+    UNKNOWN = "UNKNOWN"
+
+
+class PlatformType(str, Enum):
+    """Infrastructure platform layer type."""
+    KUBERNETES = "KUBERNETES"
+    WRCP = "WRCP"
+    VMWARE = "VMWARE"
+    OPENSTACK = "OPENSTACK"
+    EMBEDDED = "EMBEDDED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ClusterType(str, Enum):
+    """Cluster grouping type within a platform."""
+    KUBERNETES = "KUBERNETES"
+    WRCP_AIO_SX = "WRCP_AIO_SX"
+    VMWARE = "VMWARE"
+    OPENSTACK = "OPENSTACK"
+    UNKNOWN = "UNKNOWN"
+
+
+class OSType(str, Enum):
+    """OS classification: host, guest, or embedded."""
+    HOST = "HOST"
+    GUEST = "GUEST"
+    EMBEDDED = "EMBEDDED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ExecutionEnvironmentType(str, Enum):
+    """Type of execution environment where a workload runs.
+
+    Pod and Container are ExecutionEnvironments, NOT Workloads.
+    """
+    VM = "VM"
+    CONTAINER = "CONTAINER"
+    POD = "POD"
+    PROCESS = "PROCESS"
+    EMBEDDED = "EMBEDDED"
+    UNKNOWN = "UNKNOWN"
+
+
+class WorkloadType(str, Enum):
+    """Deployment unit type.
+
+    A Workload is a deployment unit (CNF, VNF, PNF, application),
+    NOT a utilization metric and NOT a Pod/Container.
+    """
+    CNF = "CNF"
+    VNF = "VNF"
+    PNF = "PNF"
+    APPLICATION = "APPLICATION"
+    CUSTOM = "CUSTOM"
+
+
+class NetworkType(str, Enum):
+    """Platform-neutral network resource type."""
+    PHYSICAL = "PHYSICAL"
+    VIRTUAL = "VIRTUAL"
+    CNI = "CNI"
+    NAD = "NAD"
+    BRIDGE = "BRIDGE"
+    VLAN = "VLAN"
+    UNKNOWN = "UNKNOWN"
+
+
+class StorageType(str, Enum):
+    """Platform-neutral storage resource type.
+
+    PV/PVC is one possible type, not the universal type.
+    """
+    DISK = "DISK"
+    VOLUME = "VOLUME"
+    POOL = "POOL"
+    PV = "PV"
+    PVC = "PVC"
+    CEPH_POOL = "CEPH_POOL"
+    UNKNOWN = "UNKNOWN"
+
+
+class AcceleratorType(str, Enum):
+    """Hardware accelerator type.
+
+    GPU is one type, not the only type.
+    """
+    GPU = "GPU"
+    VRB2 = "VRB2"
+    SMARTNIC = "SMARTNIC"
+    FPGA = "FPGA"
+    SRIOV_VF = "SRIOV_VF"
+    UNKNOWN = "UNKNOWN"
+
+
+class RelationshipEvidenceType(str, Enum):
+    """How a canonical relationship was established.
+
+    DIRECT:   Explicitly stated by the provider (e.g., Pod.spec.nodeName).
+    DERIVED:  Computed from provider data without inference (e.g., label match).
+
+    Prohibited: INFERRED, UNKNOWN, LLM-based, heuristic, similarity-based.
+    """
+    DIRECT = "DIRECT"
+    DERIVED = "DERIVED"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  PROVENANCE
+# ════════════════════════════════════════════════════════════════════════
+
+
+class SourceEvidence(BaseModel):
+    """Provenance information for a canonical entity.
+
+    Records which provider supplied the data, when it was collected,
+    and how the entity was discovered.
+
+    This is a NEW model — it does not duplicate inventory.SourceInfo
+    (which is source-centric: redfish/ssh/snmp/ipmi and embedded in
+    ServerInventory.meta). SourceEvidence is provider-centric and
+    entity-level, designed for multi-provider canonical entities.
+    """
+    provider_type: ProviderType
+    provider_id: Optional[str] = None
+    collected_at: Optional[str] = None
+    raw_data_ref: Optional[str] = None
+    confidence: Confidence = Confidence.NONE
+    discovery_method: RelationshipEvidenceType = RelationshipEvidenceType.DIRECT
+
+    model_config = {"extra": "forbid"}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  BASE ENTITY
+# ════════════════════════════════════════════════════════════════════════
+
+
+class CanonicalEntity(BaseModel):
+    """Base for all canonical entities.
+
+    All canonical entities share:
+    - canonical_id: Server Manager internal UUID (never provider ID)
+    - provider_id: External provider's identifier (preserved as reference)
+    - provider_type: Which provider sourced this entity
+    - source_evidence: Provenance (who, when, how)
+    - metadata: Provider-neutral extension point
+
+    canonical_id != provider_id — always.
+    """
+    canonical_id: str = Field(min_length=1)
+    provider_id: Optional[str] = None
+    provider_type: ProviderType
+    source_evidence: SourceEvidence
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("canonical_id")
+    @classmethod
+    def canonical_id_non_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("canonical_id must not be empty")
+        return v
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  1. Physical
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Physical(CanonicalEntity):
+    """Physical hardware / physical device.
+
+    Examples: bare-metal server, embedded physical platform, device.
+
+    Relationships:
+        Physical → OS:                   0:N  (os_refs)
+        Physical → Node:                 0:N  (node_refs)
+        Physical → ExecutionEnvironment: 0:N  (execution_environment_refs)
+        Physical → Network:              0:N  (network_refs)
+        Physical → Storage:              0:N  (storage_refs)
+        Physical → Accelerator:          0:N  (accelerator_refs)
+
+    Hardware detail is NOT duplicated from ServerInventory here.
+    Use metadata or future typed extension for hardware specifics.
+    """
+    os_refs: list[str] = Field(default_factory=list)
+    node_refs: list[str] = Field(default_factory=list)
+    execution_environment_refs: list[str] = Field(default_factory=list)
+    network_refs: list[str] = Field(default_factory=list)
+    storage_refs: list[str] = Field(default_factory=list)
+    accelerator_refs: list[str] = Field(default_factory=list)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  2. OS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class OS(CanonicalEntity):
+    """Operating system instance.
+
+    Distinguishes Host OS (runs on Physical) from Guest OS (runs on EE).
+
+    Relationships:
+        Physical → OS:  0:N  (reverse: physical_ref)
+        OS → EE:        0:1  (execution_environment_ref)
+    """
+    os_type: OSType = OSType.UNKNOWN
+    name: str = ""
+    version: str = ""
+    kernel: str = ""
+    architecture: str = ""
+
+    # Reverse reference: this OS belongs to this Physical (Host OS → Physical)
+    physical_ref: Optional[str] = None
+
+    # OS → ExecutionEnvironment: 0:1 (Guest OS → EE)
+    execution_environment_ref: Optional[str] = None
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  3. Platform
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Platform(CanonicalEntity):
+    """Infrastructure platform layer.
+
+    Examples: Kubernetes, WRCP, VMware, OpenStack, Embedded.
+
+    Platform != Physical
+    Platform != Cluster
+    Kubernetes != Platform (Kubernetes is a PlatformType)
+    """
+    platform_type: PlatformType = PlatformType.UNKNOWN
+    version: str = ""
+
+    # Platform → Cluster: 0:N
+    cluster_refs: list[str] = Field(default_factory=list)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  4. Cluster
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Cluster(CanonicalEntity):
+    """Platform-specific cluster grouping.
+
+    Examples: Kubernetes cluster, WRCP AIO-SX, VMware cluster.
+
+    Cluster is OPTIONAL — not all platforms have clusters.
+
+    Relationships:
+        Platform → Cluster: 0:N (reverse: platform_ref)
+        Cluster → Node:     0:N  (node_refs)
+    """
+    cluster_type: ClusterType = ClusterType.UNKNOWN
+
+    # Reverse reference: this Cluster belongs to this Platform
+    platform_ref: Optional[str] = None
+
+    # Cluster → Node: 0:N
+    node_refs: list[str] = Field(default_factory=list)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  5. Node
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Node(CanonicalEntity):
+    """Logical / cluster node.
+
+    Node != Physical — a Node may optionally reference a Physical (0:1).
+
+    Relationships:
+        Cluster → Node: 0:N  (reverse: cluster_ref)
+        Node → Physical: 0:1  (physical_ref)
+        Node → ExecutionEnvironment: 0:N  (execution_environment_refs)
+    """
+    name: str = ""
+
+    # Reverse reference: this Node belongs to this Cluster
+    cluster_ref: Optional[str] = None
+
+    # Node → Physical: 0:1
+    physical_ref: Optional[str] = None
+
+    # Node → ExecutionEnvironment: 0:N
+    execution_environment_refs: list[str] = Field(default_factory=list)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  6. ExecutionEnvironment
+# ════════════════════════════════════════════════════════════════════════
+
+
+class ExecutionEnvironment(CanonicalEntity):
+    """Environment where a workload actually runs.
+
+    Pod and Container are ExecutionEnvironments, NOT Workloads.
+
+    Supported types: VM, CONTAINER, POD, PROCESS, EMBEDDED.
+
+    Relationships:
+        Node → EE:              0:N  (reverse: node_ref)
+        Physical → EE:          0:N  (reverse: physical_ref)
+        EE → Workload:          0:1  (workload_ref)
+        OS → EE:                0:1  (reverse: os_ref)
+        Accelerator → EE:       0:1  (reverse: accelerator_refs)
+    """
+    ee_type: ExecutionEnvironmentType = ExecutionEnvironmentType.UNKNOWN
+    name: str = ""
+
+    # Reverse references
+    physical_ref: Optional[str] = None
+    node_ref: Optional[str] = None
+    os_ref: Optional[str] = None
+
+    # EE → Workload: 0:1
+    workload_ref: Optional[str] = None
+
+    # Accelerator → EE: 0:1 (reverse: EE has 0:N accelerator_refs)
+    accelerator_refs: list[str] = Field(default_factory=list)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  7. Workload
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Workload(CanonicalEntity):
+    """Deployment unit — the most critical canonical entity.
+
+    A Workload is a deployment unit (CNF, VNF, PNF, application),
+    NOT a utilization metric and NOT a Pod/Container.
+
+    This is DIFFERENT from inventory.Workload (utilization observation):
+        inventory.Workload:  cpu_utilization, memory_utilization, ...
+        canonical.Workload:  workload_type, execution_environment_refs, ...
+
+    NF type is stored in metadata, not as a separate entity:
+        metadata["nf_type"] = "DU"
+        metadata["technology"] = "5G"
+
+    Relationships:
+        EE → Workload:        0:1  (reverse: workload_ref on EE)
+        Workload → EE:        1:N  (execution_environment_refs)
+        Workload → Network:   0:N  (network_refs)
+        Workload → Storage:   0:N  (storage_refs)
+
+    Cardinality note — Workload → EE = 1:N:
+        Domain semantic: a complete Workload MUST have >= 1 EE.
+        Construction timing: list may be empty during incremental build.
+        Validation of the 1:N constraint is deferred to the
+        verification/persistence layer, not enforced at model level.
+    """
+    workload_type: WorkloadType = WorkloadType.CUSTOM
+    name: str = ""
+
+    # Workload → ExecutionEnvironment: 1:N
+    # (domain: min 1; construction: may be empty; see cardinality note above)
+    execution_environment_refs: list[str] = Field(default_factory=list)
+
+    # Workload → Network: 0:N
+    network_refs: list[str] = Field(default_factory=list)
+
+    # Workload → Storage: 0:N
+    storage_refs: list[str] = Field(default_factory=list)
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  8. Network
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Network(CanonicalEntity):
+    """Platform-neutral network resource.
+
+    Kubernetes-specific concepts (CNI, NAD) are represented via
+    metadata["kubernetes"] = {...}, not as direct fields.
+
+    Relationships:
+        Workload → Network: 0:N (reverse: referenced by Workload.network_refs)
+        Physical → Network: 0:N (reverse: referenced by Physical.network_refs)
+    """
+    network_type: NetworkType = NetworkType.UNKNOWN
+    name: str = ""
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  9. Storage
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Storage(CanonicalEntity):
+    """Platform-neutral storage resource.
+
+    PV/PVC is one possible type, not the universal type.
+    Kubernetes-specific info goes in metadata["kubernetes"] = {...}.
+
+    Relationships:
+        Workload → Storage: 0:N (reverse: referenced by Workload.storage_refs)
+        Physical → Storage: 0:N (reverse: referenced by Physical.storage_refs)
+    """
+    storage_type: StorageType = StorageType.UNKNOWN
+    name: str = ""
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  10. Accelerator
+# ════════════════════════════════════════════════════════════════════════
+
+
+class Accelerator(CanonicalEntity):
+    """Hardware accelerator (GPU, VRB2, SmartNIC, FPGA, SR-IOV VF).
+
+    GPU is one type, not the only type.
+
+    Relationships:
+        Accelerator → EE: 0:1  (execution_environment_ref)
+        Physical → Accelerator: 0:N (reverse: physical_ref)
+
+    Future-proofing:
+        Current requirement: Accelerator → EE = 0:1.
+        This does NOT encode an immutable assumption that an accelerator
+        can only ever belong to one EE. Future shared accelerator,
+        MIG, or partitioning models can extend this structure.
+    """
+    accelerator_type: AcceleratorType = AcceleratorType.UNKNOWN
+    name: str = ""
+
+    # Reverse reference: this Accelerator belongs to this Physical
+    physical_ref: Optional[str] = None
+
+    # Accelerator → ExecutionEnvironment: 0:1
+    execution_environment_ref: Optional[str] = None

@@ -1,0 +1,602 @@
+"""Tests for Normalizers (Phase 3)."""
+import pytest
+from server_manager.normalizers.base import BaseNormalizer
+from server_manager.normalizers.redfish_normalizer import RedfishNormalizer
+from server_manager.normalizers.ssh_normalizer import SSHNormalizer
+from server_manager.normalizers.legacy_adapter import LegacyAdapter
+from server_manager.models.inventory import ServerInventory
+from server_manager.models.enums import Vendor, ControllerType, Protocol, HealthStatus
+
+
+class TestBaseNormalizer:
+    def test_safe_int(self):
+        assert BaseNormalizer.safe_int("42") == 42
+        assert BaseNormalizer.safe_int("abc") == 0
+        assert BaseNormalizer.safe_int(None) == 0
+        assert BaseNormalizer.safe_int("42", default=99) == 42
+
+    def test_safe_float(self):
+        assert BaseNormalizer.safe_float("3.14") == 3.14
+        assert BaseNormalizer.safe_float("abc") == 0.0
+        assert BaseNormalizer.safe_float(None) == 0.0
+
+    def test_safe_str(self):
+        assert BaseNormalizer.safe_str("hello") == "hello"
+        assert BaseNormalizer.safe_str(None) == ""
+        assert BaseNormalizer.safe_str(123) == "123"
+
+    def test_parse_bool(self):
+        assert BaseNormalizer.parse_bool("yes") is True
+        assert BaseNormalizer.parse_bool("true") is True
+        assert BaseNormalizer.parse_bool("1") is True
+        assert BaseNormalizer.parse_bool("no") is False
+        assert BaseNormalizer.parse_bool(True) is True
+        assert BaseNormalizer.parse_bool(0) is False
+
+
+class TestRedfishNormalizer:
+    def test_source_name(self):
+        norm = RedfishNormalizer()
+        assert norm.source_name == "redfish"
+
+    def test_normalize_basic(self):
+        raw = {
+            "source": "redfish",
+            "endpoint": "https://10.0.0.1:443",
+            "redfish_version": "1.14.0",
+            "system": {
+                "Manufacturer": "Dell Inc.",
+                "Model": "PowerEdge R750",
+                "HostName": "server-001",
+                "SerialNumber": "SN12345",
+                "SKU": "STAG123",
+                "BiosVersion": "2.10.0",
+                "UUID": "12345678-1234-1234-1234-123456789012",
+                "Status": {"Health": "OK"},
+            },
+            "processors": [
+                {
+                    "Model": "Intel Xeon Gold 6248R",
+                    "TotalCores": 24,
+                    "TotalThreads": 48,
+                    "Status": {"Health": "OK"},
+                }
+            ],
+            "memory": [
+                {
+                    "DeviceLocator": "A1",
+                    "CapacityMiB": 16384,
+                    "MemoryDeviceType": "DDR4",
+                    "OperatingSpeedMhz": 3200,
+                    "Manufacturer": "Samsung",
+                    "Status": {"Health": "OK"},
+                }
+            ],
+            "manager": {
+                "FirmwareVersion": "7.10.30",
+                "Model": "iDRAC9",
+            },
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        assert inv.identity.vendor == Vendor.Dell
+        assert inv.identity.model == "PowerEdge R750"
+        assert inv.identity.hostname == "server-001"
+        assert inv.identity.service_tag == "STAG123"
+        assert inv.hardware.cpu.count == 1
+        assert inv.hardware.cpu.total_cores == 24
+        assert inv.hardware.cpu.processors[0].model == "Intel Xeon Gold 6248R"
+        assert inv.hardware.memory.dimm_count == 1
+        assert inv.hardware.memory.total_gb == 16.0
+        assert inv.management.vendor == Vendor.Dell
+        assert inv.management.controller == ControllerType.iDRAC
+        assert inv.management.firmware_version == "7.10.30"
+        assert inv.health.system == HealthStatus.OK
+
+    def test_normalize_empty(self):
+        norm = RedfishNormalizer()
+        inv = norm.normalize({})
+        assert isinstance(inv, ServerInventory)
+
+    def test_safe_normalize(self):
+        norm = RedfishNormalizer()
+        inv = norm.safe_normalize({})
+        assert isinstance(inv, ServerInventory)
+
+    def test_normalize_storage(self):
+        """Storage normalization from Redfish storage data."""
+        raw = {
+            "source": "redfish",
+            "endpoint": "https://10.0.0.1:443",
+            "redfish_version": "1.14.0",
+            "system": {
+                "Manufacturer": "Dell Inc.",
+                "Model": "PowerEdge R750",
+                "SerialNumber": "SN12345",
+                "Status": {"Health": "OK"},
+            },
+            "storage": [
+                {
+                    "controllers": [
+                        {
+                            "Name": "PERC H755 Front",
+                            "Model": "PERC H755 Front",
+                            "Status": {"Health": "OK"},
+                            "ControllerCapabilities": {"RAIDSupport": True},
+                        }
+                    ],
+                    "drives": [
+                        {
+                            "Name": "Physical Disk 0:1:0",
+                            "Id": "0:1:0",
+                            "Model": "Dell Ent NVMe PM1730a 1.92TB",
+                            "CapacityBytes": 1920380912640,
+                            "MediaType": "SSD",
+                            "Protocol": "NVMe",
+                            "Status": {"Health": "OK"},
+                        },
+                        {
+                            "Name": "Physical Disk 0:1:1",
+                            "Id": "0:1:1",
+                            "Model": "ST600MP0006",
+                            "CapacityBytes": 600127266816,
+                            "MediaType": "HDD",
+                            "Protocol": "SAS",
+                            "Status": {"Health": "Warning"},
+                        },
+                    ],
+                    "volumes": [
+                        {
+                            "Name": "Virtual Disk 0",
+                            "Id": "VD0",
+                            "RAIDType": "RAID1",
+                            "CapacityBytes": 600127266816,
+                            "Status": {"Health": "OK"},
+                        }
+                    ],
+                }
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        # Controllers
+        assert len(inv.hardware.storage.controllers) == 1
+        ctrl = inv.hardware.storage.controllers[0]
+        assert ctrl.name == "PERC H755 Front"
+        assert ctrl.model == "PERC H755 Front"
+        assert ctrl.health == HealthStatus.OK
+        assert ctrl.raid_support is True
+
+        # Physical disks
+        assert len(inv.hardware.storage.physical_disks) == 2
+        disk0 = inv.hardware.storage.physical_disks[0]
+        assert disk0.name == "Physical Disk 0:1:0"
+        assert disk0.model == "Dell Ent NVMe PM1730a 1.92TB"
+        assert disk0.capacity_gb == round(1920380912640 / (1024**3), 2)
+        assert disk0.media_type.value == "SSD"
+        assert disk0.protocol == "NVMe"
+        assert disk0.health == HealthStatus.OK
+
+        disk1 = inv.hardware.storage.physical_disks[1]
+        assert disk1.name == "Physical Disk 0:1:1"
+        assert disk1.capacity_gb == round(600127266816 / (1024**3), 2)
+        assert disk1.media_type.value == "HDD"
+        assert disk1.protocol == "SAS"
+        assert disk1.health == HealthStatus.WARNING
+
+        # Virtual disks
+        assert len(inv.hardware.storage.virtual_disks) == 1
+        vd = inv.hardware.storage.virtual_disks[0]
+        assert vd.name == "Virtual Disk 0"
+        assert vd.raid_type == "RAID1"
+        assert vd.capacity_gb == round(600127266816 / (1024**3), 2)
+        assert vd.health == HealthStatus.OK
+
+        # No hardware RAID flag
+        assert inv.hardware.storage.no_hardware_raid is False
+
+    def test_normalize_storage_multiple_subsystems(self):
+        """Multiple storage subsystems — all drives/controllers preserved."""
+        raw = {
+            "source": "redfish",
+            "system": {"Manufacturer": "Dell Inc."},
+            "storage": [
+                {
+                    "controllers": [{"Name": "PERC H755", "Status": {"Health": "OK"}}],
+                    "drives": [{"Name": "Disk A", "CapacityBytes": 1000000000, "MediaType": "SSD", "Status": {"Health": "OK"}}],
+                    "volumes": [],
+                },
+                {
+                    "controllers": [{"Name": "BOSS-S1", "Status": {"Health": "OK"}}],
+                    "drives": [{"Name": "Disk B", "CapacityBytes": 2000000000, "MediaType": "HDD", "Status": {"Health": "OK"}}],
+                    "volumes": [],
+                },
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        assert len(inv.hardware.storage.controllers) == 2
+        assert len(inv.hardware.storage.physical_disks) == 2
+        assert inv.hardware.storage.physical_disks[0].name == "Disk A"
+        assert inv.hardware.storage.physical_disks[1].name == "Disk B"
+
+    def test_normalize_storage_nvme_media_type(self):
+        """NVMe media type maps correctly."""
+        raw = {
+            "source": "redfish",
+            "system": {},
+            "storage": [
+                {
+                    "controllers": [],
+                    "drives": [{"Name": "NVMe Drive", "MediaType": "NVMe", "Status": {}}],
+                    "volumes": [],
+                }
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        assert len(inv.hardware.storage.physical_disks) == 1
+        assert inv.hardware.storage.physical_disks[0].media_type.value == "NVMe"
+
+    def test_normalize_storage_unknown_media_type(self):
+        """Unknown media type maps to Unknown."""
+        raw = {
+            "source": "redfish",
+            "system": {},
+            "storage": [
+                {
+                    "controllers": [],
+                    "drives": [{"Name": "Unknown Drive", "MediaType": "SomeFutureTech", "Status": {}}],
+                    "volumes": [],
+                }
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        assert len(inv.hardware.storage.physical_disks) == 1
+        assert inv.hardware.storage.physical_disks[0].media_type.value == "Unknown"
+
+    def test_normalize_storage_missing_fields(self):
+        """Normalization succeeds even with missing fields."""
+        raw = {
+            "source": "redfish",
+            "system": {},
+            "storage": [
+                {
+                    "controllers": [{"Name": "Ctrl"}],  # No Status, no Model
+                    "drives": [{"Name": "Disk"}],  # No CapacityBytes, no MediaType, no Status
+                    "volumes": [{"Name": "VD"}],  # No RAIDType, no CapacityBytes, no Status
+                }
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        assert len(inv.hardware.storage.controllers) == 1
+        assert inv.hardware.storage.controllers[0].health == HealthStatus.UNKNOWN
+        assert inv.hardware.storage.controllers[0].model == ""
+        assert inv.hardware.storage.controllers[0].raid_support is False
+
+        assert len(inv.hardware.storage.physical_disks) == 1
+        # P1-RF.18: missing capacity is None (not reinterpreted as 0.0)
+        assert inv.hardware.storage.physical_disks[0].capacity_gb is None
+        assert inv.hardware.storage.physical_disks[0].media_type.value == "Unknown"
+        assert inv.hardware.storage.physical_disks[0].protocol is None
+        assert inv.hardware.storage.physical_disks[0].health == HealthStatus.UNKNOWN
+
+        assert len(inv.hardware.storage.virtual_disks) == 1
+        assert inv.hardware.storage.virtual_disks[0].raid_type is None
+        assert inv.hardware.storage.virtual_disks[0].capacity_gb is None
+        assert inv.hardware.storage.virtual_disks[0].health == HealthStatus.UNKNOWN
+
+    def test_normalize_storage_empty(self):
+        """Empty storage data produces empty storage model."""
+        raw = {
+            "source": "redfish",
+            "system": {},
+            "storage": [],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        assert len(inv.hardware.storage.controllers) == 0
+        assert len(inv.hardware.storage.physical_disks) == 0
+        assert len(inv.hardware.storage.virtual_disks) == 0
+        assert inv.hardware.storage.no_hardware_raid is False
+
+    def test_normalize_storage_no_hardware_raid_flag(self):
+        """Drives present but no controllers → no_hardware_raid=True."""
+        raw = {
+            "source": "redfish",
+            "system": {},
+            "storage": [
+                {
+                    "controllers": [],
+                    "drives": [{"Name": "Direct Drive", "MediaType": "NVMe", "Status": {"Health": "OK"}}],
+                    "volumes": [],
+                }
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        assert len(inv.hardware.storage.controllers) == 0
+        assert len(inv.hardware.storage.physical_disks) == 1
+        assert inv.hardware.storage.no_hardware_raid is True
+
+    def test_normalize_storage_partial_failure(self):
+        """One malformed drive does not destroy other storage data."""
+        raw = {
+            "source": "redfish",
+            "system": {},
+            "storage": [
+                {
+                    "controllers": [{"Name": "Ctrl", "Status": {"Health": "OK"}}],
+                    "drives": [
+                        {"Name": "Good Disk", "CapacityBytes": 1000000000, "MediaType": "SSD", "Status": {"Health": "OK"}},
+                    ],
+                    "volumes": [],
+                }
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        # Good data preserved
+        assert len(inv.hardware.storage.controllers) == 1
+        assert len(inv.hardware.storage.physical_disks) == 1
+        assert inv.hardware.storage.physical_disks[0].name == "Good Disk"
+
+    def test_normalize_storage_health_aggregation(self):
+        """Storage health is reflected in overall health."""
+        raw = {
+            "source": "redfish",
+            "system": {
+                "Manufacturer": "Dell Inc.",
+                "Status": {"Health": "OK"},
+            },
+            "storage": [
+                {
+                    "controllers": [{"Name": "Ctrl", "Status": {"Health": "Critical"}}],
+                    "drives": [{"Name": "Disk", "MediaType": "SSD", "Status": {"Health": "OK"}}],
+                    "volumes": [],
+                }
+            ],
+        }
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+
+        # Storage health should be CRITICAL (from controller)
+        assert inv.health.storage == HealthStatus.CRITICAL
+
+
+class TestSSHNormalizer:
+
+    def test_source_name(self):
+        norm = SSHNormalizer()
+        assert norm.source_name == "ssh"
+
+    def test_normalize_basic(self):
+        raw = {
+            "source": "ssh",
+            "endpoint": "localhost:22",
+            "os": {
+                "distribution": "Ubuntu 22.04 LTS",
+                "kernel": "5.15.0-91-generic",
+                "hostname": "server-001",
+                "architecture": "x86_64",
+            },
+            "cpu": {
+                "model": "Intel Xeon Gold 6248R",
+                "cores": "48",
+            },
+            "memory": {
+                "total_bytes": "274877906944",
+            },
+            "docker": {
+                "installed": "yes",
+                "version": "24.0.7",
+                "containers": "5",
+            },
+            "dev_tools": {
+                "git": "yes",
+                "python3": "yes",
+                "node": "no",
+                "npm": "no",
+                "gcc": "yes",
+                "gpp": "yes",
+                "pm2": "no",
+            },
+            "workload": {
+                "cpu_utilization": "12.5",
+                "memory_utilization": "45.2",
+                "load_average": "0.52 0.48 0.50",
+                "process_count": "152",
+            },
+        }
+        norm = SSHNormalizer()
+        inv = norm.normalize(raw)
+
+        assert inv.os.distribution == "Ubuntu 22.04 LTS"
+        assert inv.os.kernel == "5.15.0-91-generic"
+        assert inv.os.hostname == "server-001"
+        assert inv.hardware.cpu.total_cores == 48
+        assert inv.hardware.memory.total_gb == 256.0
+        assert inv.containers.docker.installed is True
+        assert inv.containers.docker.running_containers == 5
+        assert inv.development_environment.git_installed is True
+        assert inv.development_environment.node_installed is False
+        assert inv.workload.cpu_utilization == 12.5
+        assert inv.workload.load_average == [0.52, 0.48, 0.50]
+
+
+class TestLegacyAdapter:
+    def test_source_name(self):
+        adapter = LegacyAdapter()
+        assert adapter.source_name == "legacy"
+
+    def test_direct_validation(self):
+        raw = {
+            "identity": {"server_id": "R750-001", "vendor": "Dell"},
+        }
+        adapter = LegacyAdapter()
+        inv = adapter.normalize(raw)
+        assert inv.identity.server_id == "R750-001"
+
+    def test_legacy_field_mapping(self):
+        raw = {
+            "server_name": "R750-001",
+            "ip_address": "10.0.0.1",
+            "vendor": "Dell",
+            "model": "PowerEdge R750",
+            "cpu_model": "Intel Xeon Gold 6248R",
+            "cpu_cores": 48,
+            "ram_gb": 256.0,
+            "os": "Ubuntu 22.04 LTS",
+            "kernel": "5.15.0-91-generic",
+            "arch": "x86_64",
+        }
+        adapter = LegacyAdapter()
+        inv = adapter.normalize(raw)
+        assert inv.identity.server_id == "R750-001"
+        assert inv.identity.hostname == "10.0.0.1"
+        assert inv.identity.vendor == Vendor.Dell
+        assert inv.hardware.cpu.processors[0].model == "Intel Xeon Gold 6248R"
+        assert inv.hardware.cpu.total_cores == 48
+        assert inv.hardware.memory.total_gb == 256.0
+        assert inv.os.distribution == "Ubuntu 22.04 LTS"
+        assert inv.os.architecture == "x86_64"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  Phase 1-RF.7 — Redfish Normalizer Edge-Case Tests
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestRedfishHealthHelpers:
+    """P1-RF.7: Unit tests for Redfish health mapping helpers."""
+
+    def test_health_from_str_none_is_unknown(self):
+        """Missing status must map to UNKNOWN, never OK."""
+        from server_manager.normalizers.redfish_normalizer import _health_from_str
+        assert _health_from_str(None) == HealthStatus.UNKNOWN
+
+    def test_health_from_str_empty_is_unknown(self):
+        from server_manager.normalizers.redfish_normalizer import _health_from_str
+        assert _health_from_str("") == HealthStatus.UNKNOWN
+
+    def test_health_from_str_ok_case_insensitive(self):
+        from server_manager.normalizers.redfish_normalizer import _health_from_str
+        assert _health_from_str("OK") == HealthStatus.OK
+        assert _health_from_str("ok") == HealthStatus.OK
+
+    def test_health_from_str_warning_case_insensitive(self):
+        from server_manager.normalizers.redfish_normalizer import _health_from_str
+        assert _health_from_str("Warning") == HealthStatus.WARNING
+        assert _health_from_str("WARNING") == HealthStatus.WARNING
+
+    def test_health_from_str_critical_and_error(self):
+        from server_manager.normalizers.redfish_normalizer import _health_from_str
+        assert _health_from_str("Critical") == HealthStatus.CRITICAL
+        assert _health_from_str("error") == HealthStatus.CRITICAL
+
+    def test_health_from_str_unrecognized_string_is_unknown(self):
+        """Unrecognized strings must not be promoted to OK."""
+        from server_manager.normalizers.redfish_normalizer import _health_from_str
+        assert _health_from_str("degraded") == HealthStatus.UNKNOWN
+        assert _health_from_str("healthy-ish") == HealthStatus.UNKNOWN
+
+    def test_max_health_worst_wins(self):
+        from server_manager.normalizers.redfish_normalizer import _max_health
+        assert _max_health(HealthStatus.OK, HealthStatus.WARNING) == HealthStatus.WARNING
+        assert _max_health(HealthStatus.WARNING, HealthStatus.CRITICAL) == HealthStatus.CRITICAL
+        assert _max_health(HealthStatus.OK) == HealthStatus.OK
+
+    def test_max_health_unknown_is_lowest_priority(self):
+        """UNKNOWN must never mask a real status, and alone stays UNKNOWN."""
+        from server_manager.normalizers.redfish_normalizer import _max_health
+        assert _max_health(HealthStatus.UNKNOWN) == HealthStatus.UNKNOWN
+        assert _max_health(HealthStatus.UNKNOWN, HealthStatus.OK) == HealthStatus.OK
+        assert _max_health(HealthStatus.UNKNOWN, HealthStatus.CRITICAL) == HealthStatus.CRITICAL
+
+    def test_media_type_from_str(self):
+        from server_manager.models.enums import MediaType
+        from server_manager.normalizers.redfish_normalizer import _media_type_from_str
+        assert _media_type_from_str(None) == MediaType.Unknown
+        assert _media_type_from_str("") == MediaType.Unknown
+        assert _media_type_from_str("SSD") == MediaType.SSD
+        assert _media_type_from_str("HDD") == MediaType.HDD
+        assert _media_type_from_str("NVMe") == MediaType.NVMe
+        assert _media_type_from_str("SATA HDD") == MediaType.HDD
+        assert _media_type_from_str("Tape") == MediaType.Unknown
+
+    def test_controller_supports_raid_bool(self):
+        from server_manager.normalizers.redfish_normalizer import _controller_supports_raid
+        assert _controller_supports_raid({"ControllerCapabilities": {"RAIDSupport": True}}) is True
+        assert _controller_supports_raid({"ControllerCapabilities": {"RAIDSupport": False}}) is False
+
+    def test_controller_supports_raid_string(self):
+        from server_manager.normalizers.redfish_normalizer import _controller_supports_raid
+        assert _controller_supports_raid({"ControllerCapabilities": {"RAIDSupport": "true"}}) is True
+        assert _controller_supports_raid({"ControllerCapabilities": {"RAIDSupport": "false"}}) is False
+
+    def test_controller_supports_raid_name_fallback(self):
+        from server_manager.normalizers.redfish_normalizer import _controller_supports_raid
+        assert _controller_supports_raid({"Name": "RAID Controller"}) is True
+        assert _controller_supports_raid({"Model": "PERC H755 Front"}) is True
+        assert _controller_supports_raid({"Name": "SAS Controller"}) is False
+
+    def test_controller_supports_raid_missing_or_invalid_caps(self):
+        from server_manager.normalizers.redfish_normalizer import _controller_supports_raid
+        assert _controller_supports_raid({}) is False
+        assert _controller_supports_raid({"ControllerCapabilities": "not-a-dict"}) is False
+
+
+class TestRedfishNormalizerHealthPolicy:
+    """P1-RF.7: Missing status must stay UNKNOWN — never promoted to OK."""
+
+    def _minimal_raw(self, system_overrides=None):
+        system = {
+            "Manufacturer": "Dell Inc.",
+            "Model": "PowerEdge R750",
+            "SerialNumber": "SN12345",
+        }
+        if system_overrides is not None:
+            system.update(system_overrides)
+        return {
+            "source": "redfish",
+            "endpoint": "https://10.0.0.1:443",
+            "system": system,
+        }
+
+    def test_missing_system_status_is_unknown(self):
+        norm = RedfishNormalizer()
+        inv = norm.normalize(self._minimal_raw())
+        assert inv.health.system == HealthStatus.UNKNOWN
+
+    def test_explicit_ok_differs_from_missing_status(self):
+        norm = RedfishNormalizer()
+        inv_ok = norm.normalize(self._minimal_raw({"Status": {"Health": "OK"}}))
+        inv_missing = norm.normalize(self._minimal_raw())
+        assert inv_ok.health.system == HealthStatus.OK
+        assert inv_missing.health.system == HealthStatus.UNKNOWN
+        assert inv_ok.health.system != inv_missing.health.system
+
+    def test_missing_processor_status_is_unknown(self):
+        raw = self._minimal_raw()
+        raw["processors"] = [{"Model": "Intel Xeon", "TotalCores": 24}]
+        norm = RedfishNormalizer()
+        inv = norm.normalize(raw)
+        assert inv.hardware.cpu.processors[0].health == HealthStatus.UNKNOWN
+        assert inv.health.cpu == HealthStatus.UNKNOWN
+
+    def test_missing_memory_status_is_unknown(self):
+        raw = self._minimal_raw()
+        raw["memory"] = [{"DeviceLocator": "A1", "CapacityMiB": 16384}]
+        norm = RedfishNormalizer()
+        inv = norm.normal

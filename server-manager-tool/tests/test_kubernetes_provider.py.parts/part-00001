@@ -1,0 +1,460 @@
+"""Kubernetes Provider Adapter Tests — Phase 13G-4.
+
+Tests for KubernetesProviderAdapter:
+    - Provider identity, capability declaration
+    - Raw snapshot creation and payload preservation
+    - Collection status (SUCCESS, PARTIAL, FAILED)
+    - Partial collection, permission error, empty vs error
+    - Relationship evidence (DIRECT/DERIVED)
+    - Provenance, no live connection
+
+NO live Kubernetes connection. All fixtures are synthetic/in-memory.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from server_manager.models.canonical import ProviderType, RelationshipEvidenceType
+from server_manager.orchestrator.models import ErrorCategory, OrchestrationStatus
+from server_manager.providers import (
+    AdapterCapability,
+    CapabilityResult,
+    KubernetesProviderAdapter,
+    RawProviderSnapshot,
+    RawRelationshipEvidence,
+)
+
+
+def make_node(name: str, uid: str | None = None) -> dict:
+    return {"apiVersion": "v1", "kind": "Node",
+            "metadata": {"name": name, "uid": uid or f"uid-node-{name}"},
+            "spec": {}, "status": {"nodeInfo": {"kubeletVersion": "v1.28.0"}}}
+
+
+def make_container(name: str, image: str = "nginx:1.21") -> dict:
+    return {"name": name, "image": image, "resources": {}}
+
+
+def make_pod(name: str, uid: str | None = None, namespace: str = "default",
+             node_name: str | None = None, containers: list[dict] | None = None) -> dict:
+    spec: dict[str, Any] = {}
+    if node_name:
+        spec["nodeName"] = node_name
+    spec["containers"] = containers or [make_container("main")]
+    return {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": name, "uid": uid or f"uid-pod-{name}", "namespace": namespace},
+            "spec": spec, "status": {"phase": "Running"}}
+
+
+def make_service(name: str, uid: str | None = None, svc_type: str = "ClusterIP") -> dict:
+    return {"apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": name, "uid": uid or f"uid-svc-{name}", "namespace": "default"},
+            "spec": {"type": svc_type, "clusterIP": "10.96.0.1"}}
+
+
+def make_pv(name: str, uid: str | None = None) -> dict:
+    return {"apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": {"name": name, "uid": uid or f"uid-pv-{name}"},
+            "spec": {"capacity": {"storage": "10Gi"}}}
+
+
+def make_pvc(name: str, uid: str | None = None) -> dict:
+    return {"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "uid": uid or f"uid-pvc-{name}", "namespace": "default"},
+            "spec": {"resources": {"requests": {"storage": "5Gi"}}}}
+
+
+def make_deployment(name: str) -> dict:
+    return {"apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": name, "uid": f"uid-deploy-{name}"}}
+
+
+def make_namespace(name: str) -> dict:
+    return {"apiVersion": "v1", "kind": "Namespace",
+            "metadata": {"name": name, "uid": f"uid-ns-{name}"}}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  FIXTURES
+# ════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def fixture_k01() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"}}
+
+@pytest.fixture
+def fixture_k02() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "nodes": [make_node("worker-1")]}
+
+@pytest.fixture
+def fixture_k03() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "nodes": [make_node("worker-1")],
+            "pods": [make_pod("nginx-pod", node_name="worker-1",
+                              containers=[make_container("nginx")])]}
+
+@pytest.fixture
+def fixture_k04() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "nodes": [make_node("worker-1")],
+            "pods": [make_pod("web-app", node_name="worker-1",
+                              containers=[make_container("web"), make_container("sidecar")])]}
+
+@pytest.fixture
+def fixture_k08() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "services": [make_service("frontend-svc")]}
+
+@pytest.fixture
+def fixture_k09() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "persistent_volumes": [make_pv("pv-001")],
+            "persistent_volume_claims": [make_pvc("pvc-001")]}
+
+@pytest.fixture
+def fixture_k11() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "nodes": [make_node("worker-1")],
+            "errors": {"services": "403 Forbidden: services.list is forbidden"}}
+
+@pytest.fixture
+def fixture_k12() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "errors": {"pods": "403 Forbidden: pods.list is forbidden for user"}}
+
+@pytest.fixture
+def fixture_k13() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0"},
+            "nodes": ["not-a-dict", 42, None]}
+
+@pytest.fixture
+def fixture_k14() -> dict[str, Any]:
+    return {"cluster": {"name": "empty-cluster", "version": "1.29.0"}}
+
+@pytest.fixture
+def fixture_k15() -> dict[str, Any]:
+    return {"cluster": {"name": "prod-cluster", "version": "1.28.0", "uid": "uid-c-prod"},
+            "nodes": [make_node("master-1"), make_node("worker-1"), make_node("worker-2")],
+            "pods": [
+                make_pod("web-1", node_name="worker-1",
+                         containers=[make_container("nginx"), make_container("metrics")]),
+                make_pod("db-1", node_name="worker-2",
+                         containers=[make_container("postgres")]),
+            ],
+            "deployments": [make_deployment("frontend")],
+            "services": [make_service("web-svc"), make_service("db-svc")],
+            "persistent_volumes": [make_pv("data-pv")],
+            "persistent_volume_claims": [make_pvc("data-pvc")]}
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  ADAPTER IDENTITY & CAPABILITY TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestKubernetesAdapterIdentity:
+    """G4-02: Kubernetes provider identity correct."""
+
+    def test_provider_type_is_kubernetes(self):
+        adapter = KubernetesProviderAdapter()
+        assert adapter.provider_type == ProviderType.KUBERNETES
+
+    def test_provider_id_preserved(self):
+        adapter = KubernetesProviderAdapter(provider_id="my-cluster-123")
+        assert adapter.provider_id == "my-cluster-123"
+
+    def test_default_provider_id(self):
+        adapter = KubernetesProviderAdapter()
+        assert adapter.provider_id == "k8s-cluster"
+
+    def test_adapter_inherits_provider_adapter(self):
+        from server_manager.providers.base import ProviderAdapter
+        adapter = KubernetesProviderAdapter()
+        assert isinstance(adapter, ProviderAdapter)
+
+
+class TestKubernetesAdapterCapabilities:
+    """G4-06: Capability model reused. G4-09: No unimplemented capabilities."""
+
+    def test_capabilities_returns_list(self):
+        adapter = KubernetesProviderAdapter()
+        caps = adapter.capabilities()
+        assert isinstance(caps, list)
+        assert len(caps) > 0
+
+    def test_capabilities_include_platform(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.PLATFORM in adapter.capabilities()
+
+    def test_capabilities_include_cluster(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.CLUSTER in adapter.capabilities()
+
+    def test_capabilities_include_node(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.NODE in adapter.capabilities()
+
+    def test_capabilities_include_execution_environment(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.EXECUTION_ENVIRONMENT in adapter.capabilities()
+
+    def test_capabilities_include_network(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.NETWORK in adapter.capabilities()
+
+    def test_capabilities_include_storage(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.STORAGE in adapter.capabilities()
+
+    def test_capabilities_exclude_physical(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.PHYSICAL not in adapter.capabilities()
+
+    def test_capabilities_exclude_accelerator(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.ACCELERATOR not in adapter.capabilities()
+
+    def test_capabilities_exclude_workload(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.WORKLOAD not in adapter.capabilities()
+
+    def test_capabilities_exclude_relationship_discovery(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.RELATIONSHIP_DISCOVERY not in adapter.capabilities()
+
+    def test_capabilities_exclude_metrics(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.METRICS not in adapter.capabilities()
+
+    def test_capabilities_exclude_events(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.EVENTS not in adapter.capabilities()
+
+    def test_capabilities_exclude_health(self):
+        adapter = KubernetesProviderAdapter()
+        assert AdapterCapability.HEALTH not in adapter.capabilities()
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  RAW SNAPSHOT TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+class TestKubernetesAdapterSnapshot:
+    """G4-05: RawProviderSnapshot reused. Payload preservation."""
+
+    def test_collect_returns_raw_snapshot(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert isinstance(snap, RawProviderSnapshot)
+
+    def test_snapshot_provider_type_kubernetes(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert snap.provider_type == ProviderType.KUBERNETES
+
+    def test_snapshot_has_snapshot_id(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert snap.snapshot_id.startswith("snap-k8s-")
+
+    def test_payload_preserves_cluster_info(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert snap.payload["cluster"]["name"] == "prod-cluster"
+
+    def test_payload_preserves_nodes(self, fixture_k02):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k02)
+        snap = adapter.collect()
+        assert len(snap.payload["nodes"]) == 1
+        assert snap.payload["nodes"][0]["metadata"]["name"] == "worker-1"
+
+    def test_payload_preserves_pods(self, fixture_k03):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k03)
+        snap = adapter.collect()
+        assert len(snap.payload["pods"]) == 1
+
+    def test_payload_preserves_services(self, fixture_k08):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k08)
+        snap = adapter.collect()
+        assert len(snap.payload["services"]) == 1
+
+    def test_payload_preserves_pvs(self, fixture_k09):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k09)
+        snap = adapter.collect()
+        assert len(snap.payload["persistent_volumes"]) == 1
+
+    def test_payload_preserves_pvcs(self, fixture_k09):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k09)
+        snap = adapter.collect()
+        assert len(snap.payload["persistent_volume_claims"]) == 1
+
+    def test_payload_preserves_deployments_raw(self, fixture_k15):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k15)
+        snap = adapter.collect()
+        assert len(snap.payload["deployments"]) == 1
+
+    def test_declared_capabilities_in_snapshot(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert AdapterCapability.PLATFORM in snap.declared_capabilities
+
+    def test_capability_results_present(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert len(snap.capability_results) > 0
+
+    def test_source_evidence_present(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert snap.source_evidence is not None
+        assert snap.source_evidence.provider_type == ProviderType.KUBERNETES
+
+    def test_collect_with_kwargs_fixture_overrides(self, fixture_k01, fixture_k02):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect(fixture=fixture_k02)
+        assert len(snap.payload["nodes"]) == 1
+
+
+class TestKubernetesAdapterCollectionStatus:
+    """G4-21: Partial collection. G4-22: Permission error."""
+
+    def test_success_when_all_resources_succeed(self, fixture_k02):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k02)
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.SUCCESS
+
+    def test_partial_when_some_fail(self, fixture_k11):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k11)
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.PARTIAL
+
+    def test_permission_denied_is_not_empty(self, fixture_k12):
+        """403 Forbidden must NOT be treated as empty list."""
+        adapter = KubernetesProviderAdapter(fixture=fixture_k12)
+        snap = adapter.collect()
+        ee_caps = [cr for cr in snap.capability_results
+                   if cr.capability == AdapterCapability.EXECUTION_ENVIRONMENT]
+        assert len(ee_caps) == 1
+        assert ee_caps[0].status == OrchestrationStatus.FAILED
+        assert ee_caps[0].error_category == ErrorCategory.AUTHENTICATION_ERROR
+        assert len(ee_caps[0].errors) > 0
+
+    def test_permission_error_in_snapshot_errors(self, fixture_k12):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k12)
+        snap = adapter.collect()
+        assert len(snap.errors) > 0
+        assert any("forbidden" in e.lower() for e in snap.errors)
+
+    def test_empty_list_is_success(self, fixture_k14):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k14)
+        snap = adapter.collect()
+        assert snap.collection_status == OrchestrationStatus.SUCCESS
+
+    def test_partial_has_both_success_and_failure(self, fixture_k11):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k11)
+        snap = adapter.collect()
+        statuses = {cr.status for cr in snap.capability_results}
+        assert OrchestrationStatus.SUCCESS in statuses
+        assert OrchestrationStatus.FAILED in statuses
+
+
+class TestKubernetesAdapterRelationshipEvidence:
+    """G4-18: Relationship evidence (DIRECT/DERIVED only)."""
+
+    def test_pod_to_node_direct_evidence(self, fixture_k03):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k03)
+        snap = adapter.collect()
+        runs_on = [e for e in snap.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        assert len(runs_on) == 1
+        assert runs_on[0].evidence_type == RelationshipEvidenceType.DIRECT
+
+    def test_pod_to_container_derived_evidence(self, fixture_k04):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k04)
+        snap = adapter.collect()
+        contains = [e for e in snap.relationship_evidence
+                    if e.relationship_type == "contains"]
+        assert len(contains) == 2
+        for e in contains:
+            assert e.evidence_type == RelationshipEvidenceType.DERIVED
+
+    def test_no_inferred_evidence(self, fixture_k15):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k15)
+        snap = adapter.collect()
+        for e in snap.relationship_evidence:
+            assert e.evidence_type in (
+                RelationshipEvidenceType.DIRECT,
+                RelationshipEvidenceType.DERIVED,
+            )
+
+    def test_pod_without_node_no_runs_on(self):
+        fixture = {"cluster": {"name": "c", "version": "1.0"},
+                   "pods": [make_pod("pending-pod", node_name=None)]}
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        snap = adapter.collect()
+        runs_on = [e for e in snap.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        assert len(runs_on) == 0
+
+    def test_combined_evidence_count(self, fixture_k15):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k15)
+        snap = adapter.collect()
+        runs_on = [e for e in snap.relationship_evidence
+                   if e.relationship_type == "runs_on"]
+        contains = [e for e in snap.relationship_evidence
+                    if e.relationship_type == "contains"]
+        assert len(runs_on) == 2
+        assert len(contains) == 3
+
+
+class TestKubernetesAdapterCollectSafe:
+    """collect_safe() handles exceptions gracefully."""
+
+    def test_collect_safe_on_success(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect_safe()
+        assert snap.collection_status == OrchestrationStatus.SUCCESS
+
+    def test_collect_safe_on_exception(self):
+        class FailingAdapter(KubernetesProviderAdapter):
+            def collect(self, **kwargs):
+                raise ConnectionError("K8s API unavailable")
+        adapter = FailingAdapter()
+        snap = adapter.collect_safe()
+        assert snap.collection_status == OrchestrationStatus.FAILED
+        assert len(snap.errors) > 0
+
+
+class TestNoLiveConnection:
+    """G4-24: No unauthorized live connection."""
+
+    def test_kubernetes_client_is_conditional_import(self):
+        """Phase 13G-8: kubernetes client is conditionally imported.
+
+        The adapter works without the kubernetes client for fixture mode.
+        The import is wrapped in try/except so it's optional.
+        """
+        import server_manager.providers.kubernetes as k8s_mod
+        source = open(k8s_mod.__file__, encoding="utf-8").read()
+        # The import must be conditional (try/except ImportError)
+        assert "try:" in source
+        assert "except ImportError" in source
+        assert "from kubernetes.client import ApiClient" in source
+        # The module must define a fallback when kubernetes is not available
+        assert "_K8S_CLIENT_AVAILABLE" in source
+        # No unconditional kubernetes import
+        lines = source.split("\n")
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("from kubernetes") or stripped.startswith("import kubernetes"):
+                # Must be inside a try block (indented)
+                assert line.startswith(" ") or line.startswith("\t"), (
+                    f"Unconditional kubernetes import: {stripped}"
+                )
+
+    def test_fixture_based_only(self, fixture_k01):
+        adapter = KubernetesProviderAdapter(fixture=fixture_k01)
+        snap = adapter.collect()
+        assert isinstance(snap, RawProviderSnapshot)

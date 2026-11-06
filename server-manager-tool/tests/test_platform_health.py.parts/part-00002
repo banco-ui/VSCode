@@ -1,0 +1,155 @@
+if s.startswith("#"): continue
+            assert ".update_" not in s, f"update_ found: {s}"
+
+    def test_no_patch(self):
+        for line in self._source_lines():
+            s = line.strip()
+            if s.startswith("#"): continue
+            assert ".patch_" not in s, f"patch_ found: {s}"
+
+    def test_no_delete(self):
+        for line in self._source_lines():
+            s = line.strip()
+            if s.startswith("#"): continue
+            assert ".delete_" not in s, f"delete_ found: {s}"
+
+    def test_no_scale(self):
+        for line in self._source_lines():
+            s = line.strip()
+            if s.startswith("#"): continue
+            assert ".scale" not in s, f"scale found: {s}"
+
+    def test_no_restart(self):
+        for line in self._source_lines():
+            s = line.strip()
+            if s.startswith("#"): continue
+            assert "restart" not in s.lower(), f"restart found: {s}"
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  LIVE TESTS
+# ════════════════════════════════════════════════════════════════════════
+
+
+class TestLiveHealth:
+    """Live health tests — SKIPPED when credentials unavailable."""
+
+    @pytest.mark.skip(reason="No Kubernetes credentials in test environment")
+    def test_live_without_credentials_is_skipped(self):
+        """Without credentials, live health assessment is SKIPPED."""
+        pass
+
+
+class TestSkippedDiscovery:
+    """Health assessment when discovery was SKIPPED."""
+
+    def test_skipped_discovery_yields_skipped_health(self):
+        snapshot = RawProviderSnapshot(
+            snapshot_id="snap-skipped",
+            provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.SKIPPED,
+        )
+        adapter = KubernetesProviderAdapter(fixture={})
+        adapter.collect = lambda **kw: snapshot
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        assert report.is_skipped
+        assert report.entity_count == 0
+
+
+class TestFailedDiscovery:
+    """Health assessment when discovery FAILED."""
+
+    def test_failed_discovery_yields_failed_health(self):
+        snapshot = RawProviderSnapshot(
+            snapshot_id="snap-failed",
+            provider_type=ProviderType.KUBERNETES,
+            collection_status=OrchestrationStatus.FAILED,
+            payload={},
+        )
+        adapter = KubernetesProviderAdapter(fixture={})
+        adapter.collect = lambda **kw: snapshot
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        assert report.is_failed
+        assert report.entity_count == 0
+
+
+class TestPartialCollection:
+    """Partial health results are preserved per-entity."""
+
+    def test_partial_health_preserved(self):
+        fixture = make_full_fixture()
+        fixture["nodes"] = [make_node("node-01", ready="False")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        assert report.is_partial
+        node_results = report.results_for_type("NODE")
+        assert node_results[0].status == HealthStatus.UNHEALTHY
+
+
+class TestPodPhaseHealth:
+    """Pod health from status.phase."""
+
+    def test_pod_failed_phase(self):
+        fixture = make_full_fixture()
+        fixture["pods"] = [make_pod("test-pod", phase="Failed", ready="False")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        ee_results = report.results_for_type("EXECUTION_ENVIRONMENT")
+        pod_results = [r for r in ee_results if "pod" in r.entity_id]
+        assert any(r.status == HealthStatus.UNHEALTHY for r in pod_results)
+
+    def test_pod_pending_phase(self):
+        fixture = make_full_fixture()
+        fixture["pods"] = [make_pod("test-pod", phase="Pending", ready="False")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        ee_results = report.results_for_type("EXECUTION_ENVIRONMENT")
+        pod_results = [r for r in ee_results if "pod" in r.entity_id]
+        assert any(r.status == HealthStatus.DEGRADED for r in pod_results)
+
+    def test_pod_succeeded_phase(self):
+        fixture = make_full_fixture()
+        fixture["pods"] = [make_pod("test-pod", phase="Succeeded", ready="False")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        ee_results = report.results_for_type("EXECUTION_ENVIRONMENT")
+        pod_results = [r for r in ee_results if "pod" in r.entity_id]
+        assert any(r.status == HealthStatus.HEALTHY for r in pod_results)
+
+
+class TestStoragePhaseHealth:
+    """PV/PVC health from status.phase."""
+
+    def test_pv_failed_phase(self):
+        fixture = make_full_fixture()
+        fixture["persistent_volumes"] = [make_pv("test-pv", phase="Failed")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        storage_results = report.results_for_type("STORAGE")
+        pv_results = [r for r in storage_results if "pv" in r.entity_id]
+        assert any(r.status == HealthStatus.UNHEALTHY for r in pv_results)
+
+    def test_pv_released_phase(self):
+        fixture = make_full_fixture()
+        fixture["persistent_volumes"] = [make_pv("test-pv", phase="Released")]
+        adapter = KubernetesProviderAdapter(fixture=fixture)
+        normalizer = KubernetesProviderNormalizer()
+        discovery = PlatformDiscovery().discover(adapter, normalizer)
+        report = HealthService().assess(discovery)
+        storage_results = report.results_for_type("STORAGE")
+        pv_results = [r for r in storage_results if "pv" in r.entity_id]
+        assert any(r.status == HealthStatus.DEGRADED for r in pv_results)

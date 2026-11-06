@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/operations/service.py",
+  "originalSize": 25544,
+  "sha256": "58d4e7decd3a50a1092f7a81a961543f2bd56a3e6d0062a3fc8f5df8e74917ed",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/operations/service.py\""
+}

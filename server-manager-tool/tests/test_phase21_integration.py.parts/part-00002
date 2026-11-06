@@ -1,0 +1,492 @@
+ef test_graph_node_has_source_evidence(self, pipeline):
+        for node in pipeline.graph_report.nodes:
+            assert node.source_evidence is not None
+
+    def test_graph_query_traversal(self, pipeline):
+        first_node = pipeline.graph_report.nodes[0]
+        assert isinstance(pipeline.graph_query.get_neighbors(first_node.canonical_id), list)
+
+    def test_graph_no_fake_nodes_for_missing_endpoints(self, pipeline):
+        graph_ids = {n.canonical_id for n in pipeline.graph_report.nodes}
+        for edge in pipeline.graph_report.relationships:
+            assert edge.source_id in graph_ids
+            assert edge.target_id in graph_ids
+
+    def test_graph_cluster_to_platform_edge(self, pipeline):
+        member_edges = [e for e in pipeline.graph_report.relationships
+                        if e.relationship_type == RelationshipType.MEMBER_OF]
+        assert len(member_edges) > 0
+
+    def test_graph_pod_to_node_runs_on_edge(self, pipeline):
+        runs_on_edges = [e for e in pipeline.graph_report.relationships
+                         if e.relationship_type == RelationshipType.RUNS_ON]
+        assert len(runs_on_edges) > 0
+
+    def test_graph_validation_no_errors(self, pipeline):
+        assert len(pipeline.graph_report.validation_errors) == 0
+
+class TestMonitoringIntegration:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_monitoring_produces_observations(self, pipeline):
+        assert len(pipeline.monitoring_report.observations) > 0
+
+    def test_observation_count_matches_health_results(self, pipeline):
+        assert len(pipeline.monitoring_report.observations) == len(pipeline.health_report.results)
+
+    def test_observations_have_entity_ids(self, pipeline):
+        for obs in pipeline.monitoring_report.observations:
+            assert obs.entity_id
+
+    def test_observation_has_health_status(self, pipeline):
+        for obs in pipeline.monitoring_report.observations:
+            assert obs.health_status is not None
+
+    def test_state_change_detection_on_first_run(self, pipeline):
+        assert len(pipeline.monitoring_report.state_changes) == 0
+
+    def test_state_change_on_second_run_with_health_change(self):
+        pipeline_healthy = PipelineResult(make_healthy_cluster_topology())
+        unhealthy_topology = make_unhealthy_cluster_topology()
+        adapter = KubernetesProviderAdapter(provider_id="uc", client=MockCoreV1Api(unhealthy_topology))
+        discovery = PlatformDiscovery()
+        dr = discovery.discover(adapter, KubernetesProviderNormalizer())
+        hr = HealthService().assess(dr)
+        report2 = pipeline_healthy.monitoring_service.monitor(hr)
+        assert isinstance(report2.state_changes, list)
+
+
+# TEST: FAULT DETECTION INTEGRATION
+
+class TestFaultDetectionIntegration:
+    @pytest.fixture
+    def healthy_pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_healthy_cluster_no_faults(self, healthy_pipeline):
+        assert len(healthy_pipeline.fault_result.faults) == 0
+
+    def test_unhealthy_cluster_has_faults(self):
+        pipeline = PipelineResult(make_unhealthy_cluster_topology())
+        assert len(pipeline.fault_result.faults) > 0
+
+    def test_faults_have_evidence(self):
+        pipeline = PipelineResult(make_unhealthy_cluster_topology())
+        for fault in pipeline.fault_result.faults:
+            assert fault.evidence is not None
+            assert len(fault.evidence) > 0
+
+    def test_faults_have_entity_ids(self):
+        pipeline = PipelineResult(make_unhealthy_cluster_topology())
+        for fault in pipeline.fault_result.faults:
+            assert fault.entity_id
+
+    def test_faults_have_deterministic_ids(self):
+        p1 = PipelineResult(make_unhealthy_cluster_topology())
+        p2 = PipelineResult(make_unhealthy_cluster_topology())
+
+# TEST: OPERATIONAL VISIBILITY
+
+class TestOperationalVisibility:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    @pytest.fixture
+    def unhealthy_pipeline(self):
+        return PipelineResult(make_unhealthy_cluster_topology())
+
+    def test_summary_produced(self, pipeline):
+        assert pipeline.summary is not None
+        assert isinstance(pipeline.summary, OperationalSummary)
+
+    def test_infrastructure_counts_match_inventory(self, pipeline):
+        infra = pipeline.summary.infrastructure
+        assert infra.nodes == len(pipeline.inventory.nodes)
+        assert infra.platforms == len(pipeline.inventory.platforms)
+        assert infra.clusters == len(pipeline.inventory.clusters)
+        assert infra.execution_environments == len(pipeline.inventory.execution_environments)
+        assert infra.networks == len(pipeline.inventory.networks)
+        assert infra.storages == len(pipeline.inventory.storages)
+
+    def test_health_summary_matches_health_report(self, pipeline):
+        assert pipeline.summary.health.total_assessed == pipeline.health_report.entity_count
+
+    def test_fault_summary_matches_fault_result(self, unhealthy_pipeline):
+        assert unhealthy_pipeline.summary.faults.total_faults > 0
+
+    def test_alert_summary_matches_alert_service(self, unhealthy_pipeline):
+        alerts = unhealthy_pipeline.alert_service.get_alerts()
+        assert unhealthy_pipeline.summary.alerts.total_alerts == len(alerts)
+        assert unhealthy_pipeline.summary.alerts.open > 0
+
+    def test_healthy_cluster_zero_faults_zero_alerts(self, pipeline):
+        assert pipeline.summary.faults.total_faults == 0
+        assert pipeline.summary.alerts.total_alerts == 0
+
+    def test_visibility_is_read_only(self):
+        source = _strip_docstrings(inspect.getsource(OperationalVisibilityService))
+        assert "subprocess" not in source.lower()
+        assert "kubectl" not in source.lower()
+
+    def test_visibility_does_not_mutate_inventory(self, pipeline):
+        original_count = pipeline.inventory.entity_count
+        _ = pipeline.summary
+        assert pipeline.inventory.entity_count == original_count
+
+
+# TEST: OPERATION TARGET RESOLUTION
+
+class TestOperationTargetResolution:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+
+# TEST: OPERATION PREVIEW
+
+class TestOperationPreview:
+    @pytest.fixture
+    def setup(self):
+        pipeline = PipelineResult(make_healthy_cluster_topology())
+        node = pipeline.inventory.nodes[0]
+        resolver = TargetResolver()
+        resolver.register_target(canonical_id=node.canonical_id, provider_type=ProviderType.KUBERNETES,
+                                  provider_id="test-cluster", entity_type="Node")
+        cr = CapabilityResolver()
+        cr.register(ProviderType.KUBERNETES, {OperationType.RESTART, OperationType.QUERY_STATUS})
+
+        class NoOpExecutor(OperationExecutor):
+            def preview(self, request, target, capability):
+                return OperationPreview(request=request, resolved_target=target,
+                    capability_decision=capability, expected_effect="Query",
+                    safety_result=SafetyResult.BLOCKED, execution_allowed=False)
+            def execute(self, request, target):
+                raise AssertionError("execute() should not be called")
+            def verify(self, request, target, execution_result):
+                raise AssertionError("verify() should not be called")
+
+        service = OperationService(target_resolver=resolver, capability_resolver=cr,
+                                   executor=NoOpExecutor(),
+                                   graph_context=OperationGraphContext(pipeline.graph_query))
+        return service, node
+
+    def test_preview_produces_result(self, setup):
+        service, node = setup
+        req = OperationRequest(operation_id="op-001", operation_type=OperationType.QUERY_STATUS,
+                               target_canonical_id=node.canonical_id, provider_type=ProviderType.KUBERNETES)
+        assert service.preview(req) is not None
+
+    def test_preview_resolves_target(self, setup):
+        service, node = setup
+        req = OperationRequest(operation_id="op-002", operation_type=OperationType.QUERY_STATUS,
+                               target_canonical_id=node.canonical_id, provider_type=ProviderType.KUBERNETES)
+        assert service.preview(req).resolved_target is not None
+
+    def test_preview_does_not_execute(self, setup):
+        service, node = setup
+        req = OperationRequest(operation_id="op-003", operation_type=OperationType.QUERY_STATUS,
+                               target_canonical_id=node.canonical_id, provider_type=ProviderType.KUBERNETES)
+
+# TEST: MUTATION SAFETY
+
+class TestMutationSafety:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_unhealthy_cluster_topology())
+
+    def test_no_mutation_methods_on_adapter(self):
+        source = _strip_docstrings(inspect.getsource(KubernetesProviderAdapter))
+        assert "def create_" not in source
+        assert "def update_" not in source
+        assert "def delete_" not in source
+        assert "def patch_" not in source
+
+    def test_adapter_collect_is_read_only(self):
+        source = _strip_docstrings(inspect.getsource(KubernetesProviderAdapter))
+        calls = re.findall(r'getattr\(client,\s*"(\w+)"\)', source)
+        for call in calls:
+            assert call.startswith("list_") or call == "get_api_version", f"Unexpected: {call}"
+
+    def test_no_mutation_in_health_service(self):
+        assert "subprocess" not in inspect.getsource(HealthService).lower()
+        assert "kubectl" not in inspect.getsource(HealthService).lower()
+
+    def test_no_mutation_in_fault_service(self):
+        assert "subprocess" not in inspect.getsource(FaultDetectionService).lower()
+        assert "kubectl" not in inspect.getsource(FaultDetectionService).lower()
+
+    def test_no_mutation_in_monitoring_service(self):
+        assert "subprocess" not in inspect.getsource(MonitoringService).lower()
+        assert "kubectl" not in inspect.getsource(MonitoringService).lower()
+
+    def test_no_mutation_in_visibility_service(self):
+        source = _strip_docstrings(inspect.getsource(OperationalVisibilityService))
+        assert "subprocess" not in source.lower()
+        assert "kubectl" not in source.lower()
+
+    def test_no_mutation_in_alert_service(self):
+        assert "subprocess" not in inspect.getsource(AlertService).lower()
+        assert "kubectl" not in inspect.getsource(AlertService).lower()
+
+    def test_pipeline_does_not_mutate_inventory(self, pipeline):
+        original_count = pipeline.inventory.entity_count
+        assert pipeline.inventory.entity_count == original_count
+
+    def test_pipeline_does_not_call_mutating_k8s_apis(self):
+        topology = make_healthy_cluster_topology()
+        client = MockCoreV1Api(topology)
+        KubernetesProviderAdapter(provider_id="tc", client=client).collect()
+        for attr in dir(client):
+            if attr.startswith("_"):
+                continue
+            assert not attr.startswith("create_")
+            assert not attr.startswith("update_")
+            assert not attr.startswith("delete_")
+            assert not attr.startswith("patch_")
+
+    def test_operation_execute_blocked_by_default(self):
+        resolver = TargetResolver()
+        resolver.register_target(canonical_id="t1", provider_type=ProviderType.KUBERNETES, entity_type="Node")
+        cr = CapabilityResolver()
+        cr.register(ProviderType.KUBERNETES, {OperationType.RESTART})
+
+        class FailingExecutor(OperationExecutor):
+            def preview(self, request, target, capability):
+                return OperationPreview(request=request)
+            def execute(self, request, target):
+                raise AssertionError("execute() should not be called")
+            def verify(self, request, target, execution_result):
+                raise AssertionError("verify() should not be called")
+
+
+# TEST: RECOVERY CONTRACT
+
+class TestRecoveryContract:
+    def _make_service(self, execution_enabled=False, auth=AuthorizationLevel.READ_ONLY):
+        from server_manager.recovery.models import RecoveryExecutionResult, RecoveryExecutionStatus
+        from server_manager.recovery.service import RecoveryExecutor
+
+        class MockExecutor(RecoveryExecutor):
+            def preview(self, action):
+                from server_manager.recovery.models import RecoveryPreview
+                return RecoveryPreview(action=action, expected_effect="test")
+            def execute(self, action):
+                return RecoveryExecutionResult(action_id=action.action_id,
+                    status=RecoveryExecutionStatus.EXECUTED, provider=action.provider_type,
+                    target=action.target_entity_id)
+            def verify(self, action, post_health=None):
+                return RecoveryExecutionResult(action_id=action.action_id,
+                    status=RecoveryExecutionStatus.VERIFIED, provider=action.provider_type,
+                    target=action.target_entity_id)
+
+        return RecoveryService(executor=MockExecutor(), execution_enabled=execution_enabled,
+                                authorization=auth)
+
+    def test_recovery_service_blocks_by_default(self):
+        fault = Fault(fault_id="tf01", entity_id="te01", fault_type=FaultType.HEALTH_FAILURE,
+                      severity=Severity.CRITICAL, detected_at=datetime.now(timezone.utc).isoformat(),
+                      evidence={"health": "UNHEALTHY"})
+        service = self._make_service()
+        candidate = service.propose_candidate(fault)
+        assert service.preview(candidate).safety_result == SafetyResult.BLOCKED
+
+    def test_recovery_execute_blocked_without_auth(self):
+        fault = Fault(fault_id="tf02", entity_id="te02", fault_type=FaultType.HEALTH_FAILURE,
+                      severity=Severity.CRITICAL, detected_at=datetime.now(timezone.utc).isoformat(),
+                      evidence={"health": "UNHEALTHY"})
+        service = self._make_service()
+        candidate = service.propose_candidate(fault)
+        assert service.execute(candidate).status.value == "BLOCKED"
+
+    def test_recovery_service_does_not_mutate_kubernetes(self):
+        assert "subprocess" not in inspect.getsource(RecoveryService).lower()
+        assert "kubectl" not in inspect.getsource(RecoveryService).lower()
+
+# TEST: FULL E2E - UNHEALTHY CLUSTER
+
+class TestFullE2EUnhealthyCluster:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_unhealthy_cluster_topology())
+
+    def test_discovery_succeeds_with_unhealthy_entities(self, pipeline):
+        assert pipeline.discovery_result.is_success
+
+    def test_inventory_has_unhealthy_nodes(self, pipeline):
+        assert len(pipeline.inventory.nodes) == 2
+
+    def test_health_report_is_partial(self, pipeline):
+        assert pipeline.health_report.is_partial
+
+    def test_faults_detected(self, pipeline):
+        assert len(pipeline.fault_result.faults) > 0
+
+    def test_alerts_created_from_faults(self, pipeline):
+        alerts = pipeline.alert_service.get_alerts()
+        assert len(alerts) > 0
+        assert all(a.status == AlertStatus.OPEN for a in alerts)
+
+    def test_graph_built_with_unhealthy_entities(self, pipeline):
+        assert pipeline.graph_report.node_count > 0
+
+    def test_visibility_summary_reflects_unhealthy_state(self, pipeline):
+        assert pipeline.summary.faults.total_faults > 0
+        assert pipeline.summary.alerts.total_alerts > 0
+        assert pipeline.summary.alerts.open > 0
+
+    def test_no_mutation_occurred(self, pipeline):
+        assert pipeline.snapshot.collection_status == OrchestrationStatus.SUCCESS
+
+
+# TEST: FULL E2E - HEALTHY CLUSTER
+
+class TestFullE2EHealthyCluster:
+    @pytest.fixture
+    def pipeline(self):
+        return PipelineResult(make_healthy_cluster_topology())
+
+    def test_discovery_succeeds(self, pipeline):
+        assert pipeline.discovery_result.is_success
+
+    def test_health_is_success(self, pipeline):
+        assert pipeline.health_report.is_success
+
+# LIVE TESTS (SKIPPED when credentials unavailable)
+
+@LIVE
+class TestLiveKubernetesAccess:
+    def _get_live_client(self):
+        from kubernetes.client import CoreV1Api
+        from kubernetes.config import load_kube_config
+        load_kube_config()
+        return CoreV1Api()
+
+    def test_live_api_version(self):
+        assert self._get_live_client().get_api_version() is not None
+
+    def test_live_namespaces_listable(self):
+        assert self._get_live_client().list_namespace() is not None
+
+    def test_live_nodes_listable(self):
+        assert len(self._get_live_client().list_node().items) > 0
+
+    def test_live_pods_listable(self):
+        assert self._get_live_client().list_pod_for_all_namespaces() is not None
+
+
+@LIVE
+class TestLiveAdapterPath:
+    def _collect_and_normalize(self):
+        from kubernetes.client import CoreV1Api, ApiClient
+        from kubernetes.config import load_kube_config
+        load_kube_config()
+        api = CoreV1Api()
+        ac = ApiClient()
+        fixture = {
+            "cluster": {"name": "live-cluster", "version": ""},
+            "nodes": [ac.sanitize_for_serialization(n) for n in api.list_node().items],
+            "namespaces": [ac.sanitize_for_serialization(ns) for ns in api.list_namespace().items],
+            "pods": [ac.sanitize_for_serialization(p) for p in api.list_pod_for_all_namespaces().items],
+            "services": [], "persistent_volumes": [], "persistent_volume_claims": [],
+        }
+        adapter = KubernetesProviderAdapter(provider_id="live-cluster", fixture=fixture)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        return snapshot, result
+
+    def test_live_normalization_produces_entities(self):
+        _, result = self._collect_and_normalize()
+        assert result.entity_count > 0
+
+    def test_live_platform_is_kubernetes(self):
+        _, result = self._collect_and_normalize()
+        assert result.platforms[0].platform_type == PlatformType.KUBERNETES
+
+    def test_live_identity_stability(self):
+        _, r1 = self._collect_and_normalize()
+        _, r2 = self._collect_and_normalize()
+        assert sorted(n.canonical_id for n in r1.nodes) == sorted(n.canonical_id for n in r2.nodes)
+
+    def test_live_no_workload_inference(self):
+        _, result = self._collect_and_normalize()
+        assert len(result.workloads) == 0
+
+
+    def test_zero_faults(self, pipeline):
+        assert len(pipeline.fault_result.faults) == 0
+
+    def test_zero_alerts(self, pipeline):
+        assert len(pipeline.alert_service.get_alerts()) == 0
+
+    def test_visibility_summary_zero_faults_zero_alerts(self, pipeline):
+        assert pipeline.summary.faults.total_faults == 0
+        assert pipeline.summary.alerts.total_alerts == 0
+
+    def test_graph_built(self, pipeline):
+        assert pipeline.graph_report.node_count > 0
+
+    def test_monitoring_observations_created(self, pipeline):
+        assert len(pipeline.monitoring_report.observations) > 0
+
+# LIVE TESTS (SKIPPED when credentials unavailable)
+
+@LIVE
+class TestLiveKubernetesAccess:
+    def _get_live_client(self):
+        from kubernetes.client import CoreV1Api
+        from kubernetes.config import load_kube_config
+        load_kube_config()
+        return CoreV1Api()
+
+    def test_live_api_version(self):
+        assert self._get_live_client().get_api_version() is not None
+
+    def test_live_namespaces_listable(self):
+        assert self._get_live_client().list_namespace() is not None
+
+    def test_live_nodes_listable(self):
+        assert len(self._get_live_client().list_node().items) > 0
+
+    def test_live_pods_listable(self):
+        assert self._get_live_client().list_pod_for_all_namespaces() is not None
+
+
+@LIVE
+class TestLiveAdapterPath:
+    def _collect_and_normalize(self):
+        from kubernetes.client import CoreV1Api, ApiClient
+        from kubernetes.config import load_kube_config
+        load_kube_config()
+        api = CoreV1Api()
+        ac = ApiClient()
+        fixture = {
+            "cluster": {"name": "live-cluster", "version": ""},
+            "nodes": [ac.sanitize_for_serialization(n) for n in api.list_node().items],
+            "namespaces": [ac.sanitize_for_serialization(ns) for ns in api.list_namespace().items],
+            "pods": [ac.sanitize_for_serialization(p) for p in api.list_pod_for_all_namespaces().items],
+            "services": [], "persistent_volumes": [], "persistent_volume_claims": [],
+        }
+        adapter = KubernetesProviderAdapter(provider_id="live-cluster", fixture=fixture)
+        snapshot = adapter.collect()
+        result = KubernetesProviderNormalizer().normalize(snapshot)
+        return snapshot, result
+
+    def test_live_normalization_produces_entities(self):
+        _, result = self._collect_and_normalize()
+        assert result.entity_count > 0
+
+    def test_live_platform_is_kubernetes(self):
+        _, result = self._collect_and_normalize()
+        assert result.platforms[0].platform_type == PlatformType.KUBERNETES
+
+    def test_live_identity_stability(self):
+        _, r1 = self._collect_and_normalize()
+        _, r2 = self._collect_and_normalize()
+        assert sorted(n.canonical_id for n in r1.nodes) == sorted(n.canonical_id for n in r2.nodes)
+
+    def test_live_no_workload_inference(self):
+        _, result = self._collect_and_normalize()
+        assert len(result.workloads) == 0
