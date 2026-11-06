@@ -83,6 +83,7 @@ function createBlob(blobSha) {
   return res.sha;
 }
 
+async function main() {
 try {
   log('START api-push v3');
   const shas = git(['rev-list', '--reverse', 'upstream/main..main']).toString().trim().split('\n').filter(Boolean);
@@ -180,3 +181,5 @@ try {
   log('ERROR ' + (e.message || e));
   process.exit(1);
 }
+}
+main().catch(e => { log('FATAL ' + (e.message || e)); process.exit(1); });
