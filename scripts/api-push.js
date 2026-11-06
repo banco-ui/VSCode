@@ -17,8 +17,8 @@ const CONCURRENCY = 4;
 function log(msg) {
   fs.appendFileSync(LOG, new Date().toISOString().slice(11, 19) + ' ' + msg + '\n');
 }
-function git(args) {
-  return execFileSync('git', args, { maxBuffer: 256 * 1024 * 1024 });
+function git(args, input) {
+  return execFileSync('git', args, { maxBuffer: 256 * 1024 * 1024, input });
 }
 // HTTP/2 PROTOCOL_ERROR 회피: gh(Go)에 대해 HTTP/1.1 강제
 const ghEnv = Object.assign({}, process.env, { GODEBUG: 'http2client=0' });
