@@ -41,11 +41,7 @@ function ghExists(endpoint) {
   catch (e) { return false; }
 }
 function createBlob(blobSha) {
-  // 이미 원격에 존재하면 업로드 생략 (Content 주소가 동일하므로 안전)
-  if (ghExists(REPO + '/git/blobs/' + blobSha)) {
-    log('  blob exists ' + blobSha.slice(0, 7));
-    return blobSha;
-  }
+  // blob POST 는 멱등(동일 content 주소) → 존재 확인 GET 생략 (호출 수 절반 절감)
   const content = git(['cat-file', 'blob', blobSha]);
   const b64 = content.toString('base64');
   const kb = Math.round(content.length / 1024);
