@@ -1,0 +1,674 @@
+[접속] vsm@10.251.209.131:22
+[접속] 성공
+[HOST] MCM0
+-rw-rw---- 1 vsm aceman 1.9M Aug  6 14:43 /home/vsm/ILM_5.6.0_76_20260326.tar
+-rw-rw---- 1 vsm aceman 2.2G Aug  6 14:21 /home/vsm/ems_pkg/USM_TOTAL_27.A_00_25_20260730.jar
+[DISK]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        99G   67G   28G  71% /
+
+[1/4] USM Diagnosis 실행
+#######################################################################
+		        USM Diagnosis V.1.13
+#######################################################################
+Input vsm's password : 
+[자동 입력] 프롬프트 응답 전송
+
+Input root's password : 
+[자동 입력] 프롬프트 응답 전송
+
+Input mariadb root's password : 
+[자동 입력] 프롬프트 응답 전송
+
+1. CPU                                                         [OK]
+2. Memory                                                      [OK]
+3. Disk                                                        [OK]
+4. SSH connectivity                                            [OK]
+5. Volume mount                                                [OK]
+6. SSL Certificate                                             [OK]
+7. VNFM connectivity                                           [OK]
+8. USM PKG version : USM_TOTAL_26.B_00_112_20260715            [OK]
+
+[2/4] ILM 디렉터리 준비
+Password: [자동 입력] 프롬프트 응답 전송
+
+ILM/
+ILM/bin/
+ILM/bin/ilm_install.sh
+ILM/bin/ilm_main.sh
+ILM/bin/ilm_make_bundle.sh
+ILM/bin/ilm_rename_bundle.sh
+ILM/bin/ilm_uninstall.sh
+ILM/conf/
+ILM/conf/.version.info.un~
+ILM/conf/exclude.list
+ILM/conf/exclude_for_md5.list
+ILM/conf/filelist/
+ILM/conf/filelist/nms_base.list
+ILM/conf/filelist/nms_etc.list
+ILM/conf/filelist/nms_raid.list
+ILM/conf/filelist/nms_var.list
+ILM/conf/ilm.conf
+ILM/conf/installer.id
+ILM/conf/prevlist/
+ILM/conf/prevlist/ASM.list
+ILM/conf/prevlist/LSM.list
+ILM/conf/version.info
+ILM/conf/blacklist_for_script.list
+ILM/data/
+ILM/data/env/
+ILM/data/env/alias.env
+ILM/data/env/ant.env
+ILM/data/env/apache.env
+ILM/data/env/bashrc
+ILM/data/env/informix.env
+ILM/data/env/ireasoning.env
+ILM/data/env/java.env
+ILM/data/env/jdom.env
+ILM/data/env/jloox.env
+ILM/data/env/junit.env
+ILM/data/env/libsmi.env
+ILM/data/env/mariadb.env
+ILM/data/env/my.cnf
+ILM/data/env/mysql.env
+ILM/data/env/mysql.server
+ILM/data/env/nms.env
+ILM/data/env/ntp.env
+ILM/data/env/openssl.env
+ILM/data/env/opera.env
+ILM/data/env/oracle.env
+ILM/data/env/profile
+ILM/data/env/pyang.env
+ILM/data/env/struts.env
+ILM/data/env/tomcat.env
+ILM/data/env/usermodule.env
+ILM/data/pre_config.tcl
+ILM/data/tools/
+ILM/data/tools/ilm_tools.jar
+ILM/data/tools/ilm_tools.sh
+ILM/data/tools/lib/
+ILM/data/tools/lib/commons-codec-1.10.jar
+ILM/data/tools/lib/commons-codec.jar
+ILM/data/tools/lib/db_common.jar
+ILM/data/tools/lib/myEncrypt.jar
+ILM/data/tools/lib/myUtil.jar
+ILM/data/tools/lib/prjUtil_pc.jar
+ILM/lib/
+ILM/lib/call_switchover.sh
+ILM/lib/check_active_ip.sh
+ILM/lib/check_env.sh
+ILM/lib/check_ha_stat.sh
+ILM/lib/check_ip_format.sh
+ILM/lib/check_mysql_engine.sh
+ILM/lib/check_oracle_engine.sh
+ILM/lib/check_password.sh
+ILM/lib/check_patchver_format.sh
+ILM/lib/check_pkg_naming_rule.sh
+ILM/lib/check_pkgver_format.sh
+ILM/lib/check_space_passibility.sh
+ILM/lib/check_subject.sh
+ILM/lib/check_tmp.sh
+ILM/lib/check_user.sh
+ILM/lib/check_vendor.sh
+ILM/lib/chkMD5.sh
+ILM/lib/chkSHA256.sh
+ILM/lib/collect_server_info.sh
+ILM/lib/copy_ilm.sh
+ILM/lib/copy_pkg.sh
+ILM/lib/crte_group.sh
+ILM/lib/crte_user.sh
+ILM/lib/display_ipaddr.sh
+ILM/lib/display_pkg.sh
+ILM/lib/getMD5.sh
+ILM/lib/getMD5_backup.sh
+ILM/lib/getMD5_bundle.sh
+ILM/lib/getMD5_sitefiles.sh
+ILM/lib/getSHA256_backup.sh
+ILM/lib/get_HA_server.sh
+ILM/lib/get_free_space.sh
+ILM/lib/get_group.sh
+ILM/lib/get_home_path.sh
+ILM/lib/get_ipaddr.sh
+ILM/lib/get_ism_patchver.sh
+ILM/lib/get_ism_pkgver.sh
+ILM/lib/get_ism_version.sh
+ILM/lib/get_mysql_property.sh
+ILM/lib/get_ora_sid.sh
+ILM/lib/get_patch_filename.sh
+ILM/lib/get_pkgfile.sh
+ILM/lib/get_req_space.sh
+ILM/lib/get_server_info.sh
+ILM/lib/get_sw_versions.sh
+ILM/lib/get_version_info.sh
+ILM/lib/pkg_logger.sh
+ILM/lib/pkg_logger_init.sh
+ILM/lib/pkg_logger_stdout.sh
+ILM/lib/pkg_tar.sh
+ILM/lib/progress.sh
+ILM/lib/regist_ip.sh
+ILM/lib/restore_rm_files.sh
+ILM/lib/rm_log.sh
+ILM/lib/run_db_ready.sh
+ILM/lib/script_man.sh
+ILM/lib/start_progress.sh
+ILM/lib/verify_db_schema.sh
+ILM/nms_bin/
+ILM/nms_bin/ems_start.sh
+ILM/nms_bin/ems_stat.sh
+ILM/nms_bin/ems_stop.sh
+ILM/nms_bin/oracle_shutdown.sh
+ILM/nms_bin/oracle_startup.sh
+ILM/nms_bin/remake_db_space.sh
+ILM/nms_bin/remake_db_user.sh
+ILM/nms_bin/remake_db_user_func.sh
+ILM/nms_bin/tomcat_start.sh
+ILM/nms_bin/tomcat_stat.sh
+ILM/nms_bin/tomcat_stop.sh
+ILM/sbin/
+ILM/sbin/apply_patch.sh
+ILM/sbin/backup_for_restoring.sh
+ILM/sbin/call_ilm_install.sh
+ILM/sbin/call_ilm_uninstall.sh
+ILM/sbin/check_hdd_space.sh
+ILM/sbin/check_to_rollback_sw.sh
+ILM/sbin/check_to_update_sw.sh
+ILM/sbin/extract_patch_files.sh
+ILM/sbin/make_links.sh
+ILM/sbin/pre_extract_patch.sh
+ILM/sbin/regist_cron.sh
+ILM/sbin/remove_file.sh
+ILM/sbin/restore_rm_files.sh
+ILM/sbin/run_install_rpm.sh
+ILM/sbin/run_install_script.sh
+ILM/sbin/run_raid_script.sh
+ILM/sbin/run_uninstall_script.sh
+ILM/sbin/set_env_for_install.sh
+ILM/sbin/set_env_for_ism.sh
+ILM/sbin/run_install_python.sh
+
+[3/4] ilm_main.sh 실행 (최대 2시간)
+Password: [자동 입력] 프롬프트 응답 전송
+
+
+
+       ** ILM Manager version : ILM_5.6.0_76_20260326 **
+
+
+CHECK_SOFTWARE_VERSION :
+=================================================
+VERSION INFO FOR TOMCAT, OS, JAVA
+-------------------------------------------------
+Server version: Apache Tomcat/11.0.22
+Server built:   May 1 2026 18:29:05 UTC
+Server number:  11.0.22.0
+OS Name:        Linux
+OS Version:     4.18.0-553.89.1.el8_10.x86_64
+Architecture:   amd64
+JVM Version:    21.0.11+9-LTS-211
+JVM Vendor:     Oracle Corporation
+APR loaded:     false
+
+Third-party libraries:
+  jakartaee-migration-1.0.10-shaded.jar: 1.0.10
+  ecj-4.39.jar:                          3.45.0.v20260224-0835
+=================================================
+VERSION INFO FOR DB
+-------------------------------------------------
+mysql  Ver 15.1 Distrib 10.6.22-MariaDB, for linux-systemd (x86_64) using readline 5.1
+=================================================
+VERSION INFO FOR HA SOFTWARE
+-------------------------------------------------
+EXPRESSCLUSTERX v4.2-03_2025
+Packaging Date : 2025.10.13
+=================================================
+Do you want to continue ? (y/n) [자동 입력] 프롬프트 응답 전송
+y
+CHECK_NETWORK_STATUS: RMIHOST [\]|]|]|]|]/]/]DONE]
+CHECK_NETWORK_STATUS: MCM0 [\]|]|]|]|]/]/]DONE]
+
+############################################################
+		CHECK ACEMAN GROUP
+############################################################
+
+CHECK_GROUP(aceman): OK
+
+############################################################
+		CHECK MYSQL GROUP
+############################################################
+
+CHECK_GROUP(mysql): OK
+
+############################################################
+		CHECK EMS USER
+############################################################
+
+EMS user: vsm
+CHECK_USER(vsm): OK
+
+############################################################
+		CHECK NMS_HOME VARIABLE
+############################################################
+
+NMS_HOME: /home/vsm/aceman
+change a owner to /home/vsm/ems_pkg as vsm:aceman.
+
+############################################################
+		CHECK ENV VARIABLE
+############################################################
+
+Check jdk installation: [OK]
+
+change owner and group for ILM: vsm:aceman
+ARCHIVE_ILM [\]DONE]
+
+
+What do you want to do (1: Install, 2: Uninstall): [자동 입력] 프롬프트 응답 전송
+1
+
+################################################
+	SELECTING PACKAGE FILE
+################################################
+
+Current Package Files
+-----------------------------------------------------------------------------------
+1. USM_TOTAL_26.A_00_104_20260113.jar
+2. USM_TOTAL_26.B_00_112_20260715.jar
+3. USM_TOTAL_27.A_00_25_20260730.jar
+-----------------------------------------------------------------------------------
+Select Package File Name(1-3): [자동 입력] 프롬프트 응답 전송
+3
+
+ANALYZING PACKAGE FILE [\]DONE]
+
+Install Bundle ISM 27.A from 00th to 25th
+
+[OK] Vendor Name: skt
+[OK]Subject name default is valid
+
+-----------------------------------------
+*. Patch File        : USM_TOTAL_27.A_00_25_20260730.jar
+1. Vendor            : skt
+2. Subject           : default
+3. Server Type       : mcm
+4. Validation check  : off
+-----------------------------------------
+
+Do you want to continue?(y:default/n): [자동 입력] 프롬프트 응답 전송
+y
+
+* Input vsm account's password: [자동 입력] 프롬프트 응답 전송
+
+* Input root account's password: [자동 입력] 프롬프트 응답 전송
+
+
+CHECK_PASSWORD: vsm [\]|]/]-]DONE]
+
+
+REGIST IP [\]\]DONE]
+CHECK_NETWORK_STATUS: 192.168.78.44 [\]|]|]|]|]/]/]DONE]
+CHECK_NETWORK_STATUS: 192.168.78.45 [\]|]|]|]|]/]/]DONE]
+CHECK_NETWORK_STATUS: 192.168.78.41 [\]|]|]|]|]/]/]DONE]
+CHECK_NETWORK_STATUS: 192.168.78.46 [\]|]|]|]|]/]/]DONE]
+CHECK_NETWORK_STATUS: 192.168.78.42 [\]|]|]|]|]/]/]DONE]
+CHECK_NETWORK_STATUS: 192.168.78.43 [\]|]|]|]|]/]/]DONE]
+COPY ILM: 192.168.78.44 [\]|]/]DONE]
+GET SERVER INFO: 192.168.78.44 [\]|]/]-]-]\]|]|]DONE]
+COPY ILM: 192.168.78.45 [\]|]/]DONE]
+GET SERVER INFO: 192.168.78.45 [\]|]/]-]-]\]|]|]|]DONE]
+COPY ILM: 192.168.78.41 [\]|]/]DONE]
+GET SERVER INFO: 192.168.78.41 [\]|]/]-]-]\]|]|]|]DONE]
+COPY ILM: 192.168.78.46 [\]|]/]DONE]
+GET SERVER INFO: 192.168.78.46 [\]|]/]-]-]\]|]|]DONE]
+COPY ILM: 192.168.78.42 [\]|]/]-]DONE]
+GET SERVER INFO: 192.168.78.42 [\]|]/]-]-]\]|]|]DONE]
+COPY ILM: 192.168.78.43 [\]|]/]DONE]
+GET SERVER INFO: 192.168.78.43 [\]|]/]-]-]\]|]|]DONE]
+
+
+
+
+
+
+[H[J                                                                                                                                                                                                                     
+Patch Name: USM_TOTAL_27.A_00_25_20260730.jar
+
+ Target server list to install
+=========================================
+ * 1) 192.168.78.44 MCD (MCD0: 26.B_112)
+ * 2) 192.168.78.40 MCM (MCM0: 26.B_112)
+ * 3) 192.168.78.45 CFD (CFD0: 26.B_112)
+ * 4) 192.168.78.41 CFM (CFM0: 26.B_112)
+ * 5) 192.168.78.46 PSD (PSD0: 26.B_112)
+ * 6) 192.168.78.42 PSM (PSM0: 26.B_112)
+ * 7) 192.168.78.43 SFM (SFM0: 26.B_112) 
+=========================================
+
+Which server you want to install? ( '*' attatched : target server to install)
+Input enter(Start to install) or between 1 and 7 number(Edit install list) : [자동 입력] 프롬프트 응답 전송
+
+
+COPY PKG(USM_TOTAL_27.A_00_25_20260730.jar): 192.168.78.44 [\]|]/]-]-]\]\]\]|]|]|]|]/]/]/]-]-]-]\]\]\]|]|]|]/]/]/]-]-]-]\]\]\]|]|]|]/]/]/]/]-]-]-]\]\]\]|]|]|]/]/]/]-]-]-]\]\]\]|]|]|]|]/]/]/]-]-]-]\]\]\]|]DONE]
+spawn ssh vsm@192.168.78.44
+#*####################################################################*#
+
+WARNING:  Unauthorized access to this system is forbidden and will be
+prosecuted by law. By accessing this system, you agree that your actions
+may be monitored if unauthorized usage is suspected.
+
+#*####################################################################*#
+vsm@192.168.78.44's password: 
+Register this system with Red Hat Insights: insights-client --register
+Create an account or view all your systems at https://red.ht/insights-dashboard
+Last login: Thu Aug  6 16:07:13 2026 from 192.168.78.40
+[MCD0:/home/vsm] export LANG=C
+[MCD0:/home/vsm] ls -l /mnt/conf/sudo.properties 
+-rw-r--r-- 1 root root 43 Jan 13  2026 /mnt/conf/sudo.properties
+[MCD0:/home/vsm] cat /mnt/conf/sudo.properties 
+use_sudo=FALSE
+use_nopw=FALSE
+use_su=FALSE
+SUDO_FLAG=[FALSE]
+NOPW_FLAG=[FALSE]
+SU_FLAG=[FALSE]
+SUDO_CMD=[]
+[MCD0:/home/vsm] su - 
+Password: 
+[MCD0:/root] cd /home/vsm
+[MCD0:/home/vsm] . .profile 
+[MCD0:/home/vsm]  /home/vsm/ILM/bin/ilm_install.sh -file USM_TOTAL_27.A_00_25_202260730.jar -valid off -vendor skt -subject default -mc_ip 192.168.78.40 -mc_ext_iip 10.251.209.131 -server mcd
+
+################################################
+	CHECK ACEMAN GROUP
+################################################
+
+CHECK_GROUP(aceman): OK
+
+################################################
+	CHECK MYSQL GROUP
+################################################
+
+CHECK_GROUP(mysql): OK
+
+################################################
+	CHECK EMS USER
+################################################
+
+EMS user: vsm
+CHECK_USER(vsm): OK
+
+################################################
+	CHECK NMS_HOME VARIABLE
+################################################
+
+NMS_HOME: /home/vsm/aceman
+change a owner to /home/vsm/ems_pkg as vsm:aceman.
+
+################################################
+	CHECK ENV VARIABLE
+################################################
+
+Check jdk installation: [OK]
+
+
+
+	** ILM Install version : ILM_5.6.0_76_20260326 **
+
+
+
+RMIHOST_IP=192.168.78.44
+
+ANALYZING PACKAGE FILE [\]DONE]
+
+Install Bundle ISM 27.A from 00th to 25th
+
+
+
+################################################
+	CHECKING DISK SPACE FOR INSTALL
+################################################
+
+CHECK_HDD_SPACE [\]DONE]
+
+
+-----------------------------------------
+*. Patch File        : USM_TOTAL_27.A_00_25_20260730.jar
+1. Vendor            : skt
+2. Subject           : default
+3. Initialize DB     : N
+4. Validation check  : N
+-----------------------------------------
+
+
+################################################
+	INSTALL PATCH
+################################################
+
+EXTRACT_TO_PATCH [\]\]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]|]/]-]DONE]
+BACKUP_PREVIOUS_VERSION [\]\]\]\]\]\]DONE]
+Backup files which are related with NE...
+Finding old backup directories...
+Old backup directory does not exist.
+REMOVE UNNECESSARY FILES [\]DONE]
+INSTALL_PATCH_FILES [\]\]|]/]/]-]-]\]\]\]|]|]|]|]/]/]-]\]|]|]|]|]|]|]|]/]-]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]/]/]/]-]-]-]-]\]|]|]/]/]-]\]|]/]-]\]|]/]-]\]\]|]/]-]\]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]DONE]
+
+
+################################################
+	EMS STOP
+################################################
+
+EMS system stopped.
+
+
+################################################
+	CHECK DB PASSWORD
+################################################
+
+
+################################################
+	SWITCHING NEW_EMS AND OLD_EMS
+################################################
+
+Switching....Complete
+Restore files which are related with NE.
+
+The owner of /home/vsm/aceman is being changed as vsm:aceman.
+The mode of files which are belong to /home/vsm/aceman is being changed as 660.
+The mode of directories which are belong to /home/vsm/aceman is being changed as 770.
+
+The owner of script files which has to be executed as root account is being changed as root:root.
+
+
+################################################
+	UPGRADE SOFTWARE
+################################################
+
+UPGRADE SOFTWARE [\]\]\]\]|]/]-]\]|]/]/]/]/]/]DONE]
+
+
+################################################
+	SET ENVIRONMENT FOR ISM
+################################################
+
+SET_ENV_FOR_ISM [\]\]\]\]|]/]-]\]|]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]|]/]-]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]|]|]|]/]-]\]|]/]DONE]
+cat: /mnt/conf/subject.properties: No such file or directory
+OS VERSION : 8
+chmod: cannot access '/bin/rpcgen': No such file or directory
+chmod: cannot access '/bin/perl': No such file or directory
+userdel: 'cloud-user' 사용자가 없습니다
+chmod: cannot access '/bin/gdb': No such file or directory
+서브스크립션 관리 저장소를 최신화하기.
+소비자 ID를 읽을 수 없습니다
+
+이 시스템은 Red Hat 관리서버에 등록되어 있지 않습니다. subscription-manager를 사용하여 등록 할 수 있습니다.
+
+모든 일치 항목이 인수의 제외 필터로 필터링되었습니다: samba*
+일치하는 인수가 없습니다: mesa*
+일치하는 인수가 없습니다: libvirt*
+일치하는 인수가 없습니다: libX11*
+일치하는 인수가 없습니다: polkit*
+일치하는 인수가 없습니다: rhn*
+일치하는 인수가 없습니다: perl-*
+일치하는 인수가 없습니다: MariaDB-*
+일치하는 인수가 없습니다: glibc-langpack-*
+일치하는 인수가 없습니다: postfix
+일치하는 인수가 없습니다: samsung-ems-selinux-policy
+일치하는 인수가 없습니다: sqlite
+일치하는 인수가 없습니다: mysql-connector-python
+일치하는 인수가 없습니다: mysql-connector-python3
+제거 대상 꾸러미가 없습니다.
+종속성이 해결되었습니다.
+처리가 필요하지 않습니다.
+완료되었습니다!
+
+################################################
+	UPDATE DB PASSWORD(ROOT)
+################################################
+
+
+################################################
+	UPDATE ROOT USER PASSWORD
+################################################
+
+
+################################################
+	UPDATE EMS USER PASSWORD
+################################################
+
+
+################################################
+	UPDATE TOMCAT USER PASSWORD
+################################################
+
+
+
+################################################
+	INSTALL RPM
+################################################
+
+INSTALL RPM [\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]DONE]
+RABBITMQ_CONF_SSL_PLUGIN [\]|]|]|]|]|]|]|]|]|]|]/]/]/]-]-]\]\]|]|]|]|]|]|]|]|]|]|]|]|]DONE]
+
+
+################################################
+	INSTALL PYTHON
+################################################
+
+INSTALL PYTHON [\]\]|]/]/]-]\]|]|]|]|]/]-]DONE]
+
+
+################################################
+	INSTALL HELP FILES
+################################################
+
+INSTALL_HELP_FILES [\]\]\]|]/]-]\]DONE]
+
+################################################
+	SET LICENSE FOR ISM
+################################################
+
+
+################################################
+	REGIST CRON JOB
+################################################
+
+REGIST_CRON [\]|]/]/]/]DONE]
+
+################################################
+	RUN DB_SCHEMA
+################################################
+
+DB_READY [\]DONE]
+DB_SCHEMA [\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]\]DONE]
+
+################################################
+	MAKE RAID TAR
+################################################
+
+Archive raid files...
+
+################################################
+	MAKE LINKS
+################################################
+
+MAKE_LINKS [\]\]|]/]/]-]DONE]
+
+
+################################################
+	RUN SCRIPT FOR PATCH
+################################################
+
+Extract site files...
+
+
+
+################################################
+	EMS START
+################################################
+
+EMS system stopped.
+Valid License .... EMS system started.
+
+EMS Down Time: 4 minutes 33 seconds
+
+------------------------------------------------------------
+vsm      2594067       1 40 16:12 ?        00:00:08 java -Dproc.name=launcher 
+------------------------------------------------------------
+
+------------------------------------------------------------
+
+------------------------------------------------------------
+
+------------------------------------------------------------
+
+------------------------------------------------------------
+
+    --------------------------------------------------
+    $ Version      : USM_TOTAL_27.A_00_25_20260730
+    $ Vendor       : SKT
+    --------------------------------------------------
+    /
+
+
+Total Elapsed Time: 5 minutes 30 seconds
+
+[MCD0:/home/vsm] spawn ssh vsm@192.168.78.40
+#*####################################################################*#
+
+WARNING:  Unauthorized access to this system is forbidden and will be
+prosecuted by law. By accessing this system, you agree that your actions
+may be monitored if unauthorized usage is suspected.
+
+#*####################################################################*#
+vsm@192.168.78.40's password: 
+Register this system with Red Hat Insights: insights-client --register
+Create an account or view all your systems at https://red.ht/insights-dashboard
+Last login: Thu Aug  6 16:10:18 2026 from 10.251.166.60
+[MCM0:/home/vsm] export LANG=C
+[MCM0:/home/vsm] ls -l /mnt/conf/sudo.properties 
+-rw-r--r-- 1 root root 43 Jan 13  2026 /mnt/conf/sudo.properties
+[MCM0:/home/vsm] cat /mnt/conf/sudo.properties 
+use_sudo=FALSE
+use_nopw=FALSE
+use_su=FALSE
+[MCM0:/home/vsm] SUDO_FLAG=[FALSE]
+NOPW_FLAG=[FALSE]
+SU_FLAG=[FALSE]
+SUDO_CMD=[]
+su - 
+Password: 
+[MCM0:/root] cd /home/vsm
+[MCM0:/home/vsm] . .profile 
+[MCM0:/home/vsm]  /home/vsm/ILM/bin/ilm_install.sh -file USM_TOTAL_27.A_00_25_202260730.jar -valid off -vendor skt -subject default -large -server mcm
+
+############################################################
+		CHECK ACEMAN GROUP
+############################################################
+
+CHECK_GROUP(aceman): OK
+
+############################################################
+		CHECK MYSQL GROUP
+############################################################
+
+CHECK_GROUP(mysql): OK
+

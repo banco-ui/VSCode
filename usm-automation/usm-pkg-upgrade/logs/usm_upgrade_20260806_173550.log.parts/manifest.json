@@ -1,0 +1,15 @@
+{
+  "originalPath": "usm-automation/usm-pkg-upgrade/logs/usm_upgrade_20260806_173550.log",
+  "originalSize": 101315,
+  "sha256": "57c895ab4c262110bf3835957b7fe2f7bc4fe33251dda52aa47511c5f7b9a628",
+  "partSize": 25000,
+  "partCount": 5,
+  "parts": [
+    "part-00001",
+    "part-00002",
+    "part-00003",
+    "part-00004",
+    "part-00005"
+  ],
+  "restore": "node scripts/restore-split.js \"usm-automation/usm-pkg-upgrade/logs/usm_upgrade_20260806_173550.log\""
+}
