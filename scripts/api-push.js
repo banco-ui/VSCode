@@ -35,6 +35,17 @@ function ghExists(endpoint) {
   try { gh(['api', endpoint, '--jq', '.sha']); return true; }
   catch (e) { return false; }
 }
+// 본문은 임시 파일로 전달 (stdin 금지 - 프록시 chunked 차단)
+function ghApi(endpoint, body, method) {
+  const tmp = path.join(os.tmpdir(), 'api-push-call-' + Date.now() + '.json');
+  fs.writeFileSync(tmp, JSON.stringify(body));
+  const args = ['api', endpoint, '-X', method, '--input', tmp];
+  try {
+    return JSON.parse(gh(args));
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (e) {}
+  }
+}
 
 // 병렬 사전 업로드 상태 (재실행 안전: 완료 blob은 파일에 기록)
 const uploaded = new Set(
