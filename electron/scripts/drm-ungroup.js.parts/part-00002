@@ -1,0 +1,10 @@
+ROR');
+    process.exit(1);
+  }
+}
+
+// 실행
+main().catch((error) => {
+  log(`치명적 오류: ${error.message}`, 'ERROR');
+  process.exit(1);
+});

@@ -1,0 +1,868 @@
+# TBMS Integration API Contract (Phase 7.7)
+
+## 1. Purpose
+
+Server Manager와 TBMS 간의 HTTP API integration 계약을 정의한다.
+
+이 문서는 **contract-only**이며, 실제 REST API 구현은 Phase 8에서 수행한다.
+
+Server Manager는 server hardware inventory 수집/검증/저장을 담당하며, TBMS는 이를 HTTP API를 통해 호출한다.
+
+---
+
+## 2. Scope
+
+### Phase 7.7 (본 문서)
+
+- API endpoint 정의 (path, method, request, response)
+- Error contract 정의
+- Authentication/security boundary 정의
+- Idempotency / partial failure / verification semantics 정의
+- Data exposure boundary 정의
+- TBMS mapping 문서화
+
+### Phase 7.7에서 하지 않는 것
+
+- REST API server 실제 구현
+- FastAPI / Flask routing
+- Authentication mechanism 구현
+- TBMS adapter 구현
+- Scheduler / CLI 구현
+- Production code 변경
+- Schema v1.0 변경
+
+---
+
+## 3. Service Boundary
+
+```
+                 HTTP API (JSON)
+TBMS ─────────────────────────> Server Manager
+                                 │
+                                 ├─ Orchestrator (Collect → Normalize → Verify → Canonical)
+                                 ├─ InventoryStore (SQLite, append-only snapshots)
+                                 └─ DashboardQueryService (read-only queries)
+```
+
+### 원칙
+
+- Server Manager가 TBMS source code에 의존하지 않는다.
+- TBMS가 Server Manager SQLite를 직접 접근하지 않는다.
+- Server Manager가 TBMS DB를 직접 접근하지 않는다.
+- Integration은 HTTP Service Boundary만 사용한다.
+- Server Manager의 canonical inventory가 TBMS domain model을 흡수하지 않는다.
+
+---
+
+## 4. Versioning
+
+### API Version
+
+```
+/api/v1/...
+```
+
+- `v1`은 HTTP integration contract의 첫 번째 버전이다.
+- **Schema v1.0 ≠ API v1** — Schema v1.0은 canonical inventory data contract, API v1은 HTTP integration contract.
+
+### Breaking Change 처리
+
+- Breaking change 시 `/api/v2/...` 도입.
+- v1은 최소 2개 마이너 릴리스까지 유지 (deprecation period).
+- Non-breaking change (필드 추가 등)는 v1 내에서 수행.
+- Response에 새 필드가 추가되어도 client는 이를 무시할 수 있어야 함 (forward compatibility).
+
+### Backward Compatibility
+
+- Response에서 기존 필드의 의미를 변경하지 않는다.
+- 기존 필드를 제거하지 않는다.
+- 새 필드는 optional이어야 한다.
+
+---
+
+## 5. Authentication / Security Boundary
+
+### Credential Handling 원칙
+
+API request/response에 다음을 **절대 포함하지 않는다**:
+
+- password
+- API key
+- SSH private key
+- Redfish credential
+- `.env` secret
+- raw authentication token
+- secret-bearing connection string
+
+### Server Registration
+
+서버의 credential은 Server Manager의 환경 설정(환경 변수 또는 secure config)에서 관리한다.
+
+TBMS는 credential 값을 전달하지 않고, `server_id`만으로 collection을 요청한다.
+
+```
+POST /api/v1/collect
+{
+  "server_id": "r750-001"
+}
+```
+
+Server Manager가 내부적으로 해당 server_id에 대한 credential을 환경에서 조회한다.
+
+### OPEN DECISION
+
+- Authentication mechanism (API key, JWT, OAuth2) — Phase 8에서 결정
+- TLS termination (reverse proxy vs built-in) — Phase 8에서 결정
+
+---
+
+## 6. Common Request/Response Rules
+
+### Request
+
+- Content-Type: `application/json`
+- Accept: `application/json`
+- All timestamps: ISO 8601 UTC (e.g., `2026-09-15T09:24:13.000Z`)
+
+### Response
+
+- Content-Type: `application/json`
+- 모든 응답은 JSON object
+- `server_id`: string, Server Manager에 등록된 server 식별자
+- `run_id`: string, orchestration run 식별자 (형식: `run-{hex}`)
+- `snapshot_id`: string, inventory snapshot 식별자 (형식: `snap-{run_id}`)
+- `collected_at`: ISO 8601 timestamp
+
+### Naming Convention
+
+- snake_case for JSON field names (Schema v1.0과 일치)
+- Enum values: uppercase (Schema v1.0과 일치)
+
+---
+
+## 7. Error Contract
+
+### Error Response Format
+
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Server 'r750-001' not found",
+    "details": {}
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `error.code` | string | YES | Machine-readable error code |
+| `error.message` | string | YES | Human-readable error message |
+| `error.details` | object | NO | Additional context (never contains credentials) |
+
+### HTTP Status Codes
+
+| Status | Code | 사용 시나리오 |
+|--------|------|--------------|
+| 400 | `BAD_REQUEST` | 잘못된 request body 또는 parameter |
+| 404 | `NOT_FOUND` | server_id, snapshot_id가 존재하지 않음 |
+| 409 | `CONFLICT` | (reserved) 동일 run_id가 이미 존재 |
+| 422 | `VALIDATION_ERROR` | Pydantic validation 실패 |
+| 500 | `INTERNAL_ERROR` | 예상치 못한 내부 오류 |
+| 503 | `SERVICE_UNAVAILABLE` | Server Manager가 일시적으로 사용 불가 |
+
+### Security
+
+- Error response에 **절대** 포함하지 않음:
+  - Stack trace
+  - Internal file path
+  - Credential 정보
+  - Raw SSH command output
+  - Redfish raw response
+  - Database query
+
+---
+
+## 8. POST /api/v1/collect
+
+### Purpose
+
+특정 서버에 대해 collection/orchestration을 요청한다.
+
+### Request
+
+```json
+{
+  "server_id": "r750-001",
+  "sources": ["redfish", "ssh"]
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `server_id` | string | YES | — | 등록된 server 식별자 |
+| `sources` | string[] | NO | all available | 사용할 source 목록 (`"redfish"`, `"ssh"`) |
+
+### Design Decisions
+
+| 질문 | 답변 | 근거 |
+|------|------|------|
+| 단일 서버만 지원? | YES | 현재 Orchestrator는 단일 server per run |
+| Batch collection? | NO | Phase 8+에서 검토 |
+| Source selection? | YES | `sources` 필드 (optional) |
+| Force 옵션? | NO | 항상 새 collection 수행 (새 run_id) |
+| Collection policy 외부 지정? | NO | Server Manager 내부 정책 사용 |
+
+### Response — 200 OK
+
+```json
+{
+  "run_id": "run-a1b2c3d4e5f6",
+  "server_id": "r750-001",
+  "status": "SUCCESS",
+  "canonical_source": "redfish",
+  "started_at": "2026-09-15T09:24:13.000Z",
+  "completed_at": "2026-09-15T09:24:18.000Z",
+  "total_duration_ms": 5000,
+  "source_results": [
+    {
+      "source": "redfish",
+      "collection_success": true,
+      "normalization_success": true,
+      "duration_ms": 3500
+    },
+    {
+      "source": "ssh",
+      "collection_success": true,
+      "normalization_success": true,
+      "duration_ms": 1500
+    }
+  ],
+  "verification": {
+    "performed": true,
+    "success": true,
+    "discrepancy_count": 0,
+    "summary": {
+      "total_fields": 15,
+      "verified": 13,
+      "single_source": 2,
+      "discrepancy": 0
+    }
+  },
+  "snapshot_id": "snap-run-a1b2c3d4e5f6",
+  "errors": [],
+  "warnings": []
+}
+```
+
+### Response Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `run_id` | string | YES | Orchestration run 식별자 |
+| `server_id` | string | YES | 요청된 server 식별자 |
+| `status` | enum | YES | `SUCCESS`, `PARTIAL`, `FAILED` |
+| `canonical_source` | string\|null | NO | Canonical으로 선택된 source |
+| `started_at` | string | YES | 시작 시간 (ISO 8601 UTC) |
+| `completed_at` | string | YES | 완료 시간 (ISO 8601 UTC) |
+| `total_duration_ms` | integer | YES | 총 소요 시간 (ms) |
+| `source_results` | array | YES | Source별 결과 |
+| `verification.performed` | boolean | YES | Verification 수행 여부 |
+| `verification.success` | boolean | YES | Verification 성공 여부 |
+| `verification.discrepancy_count` | integer | YES | Discrepancy 수 |
+| `verification.summary` | object | NO | Verification 요약 |
+| `snapshot_id` | string\|null | NO | 저장된 snapshot 식별자 |
+| `errors` | string[] | YES | 오류 메시지 목록 |
+| `warnings` | string[] | YES | 경고 메시지 목록 |
+
+### Status Values (from OrchestrationStatus enum)
+
+| Status | 의미 |
+|--------|------|
+| `SUCCESS` | 모든 source의 collection + normalization 성공 |
+| `PARTIAL` | 일부 source 실패, canonical inventory 존재 |
+| `FAILED` | 모든 source 실패, canonical inventory 없음 |
+
+### Partial Failure Example
+
+```json
+{
+  "run_id": "run-x1y2z3w4v5u6",
+  "server_id": "r750-001",
+  "status": "PARTIAL",
+  "canonical_source": "redfish",
+  "source_results": [
+    {
+      "source": "redfish",
+      "collection_success": true,
+      "normalization_success": true,
+      "duration_ms": 3500
+    },
+    {
+      "source": "ssh",
+      "collection_success": false,
+      "normalization_success": false,
+      "duration_ms": 30
+    }
+  ],
+  "verification": {
+    "performed": false,
+    "success": false,
+    "discrepancy_count": 0,
+    "summary": null
+  },
+  "snapshot_id": "snap-run-x1y2z3w4v5u6",
+  "errors": ["[ssh] Collection failed (CONNECTION_ERROR): ..."],
+  "warnings": ["Single source only — verification skipped"]
+}
+```
+
+### Error Responses
+
+| HTTP Status | When |
+|-------------|------|
+| 400 | `server_id` missing 또는 `sources`에 invalid value |
+| 404 | `server_id`가 등록되지 않음 |
+| 503 | Server Manager 내부 오류 |
+
+### Idempotency
+
+- 각 POST는 새 `run_id`를 생성한다.
+- **Idempotency-Key**: OPEN DECISION — Phase 8에서 검토
+- 동일 `server_id`에 대한 중복 요청은 각각 새 run을 생성한다.
+- `InventoryStore.save_snapshot()`은 `INSERT OR IGNORE`를 사용하여 동일 snapshot_id의 중복 저장을 방지한다.
+
+### Timeout
+
+- 권장 client timeout: 60초
+- Server Manager 내부 collector timeout: 30초 (기본값)
+- Collection이 timeout을 초과하면 PARTIAL 또는 FAILED 상태 반환
+
+---
+
+## 9. GET /api/v1/inventory/{server_id}
+
+### Purpose
+
+현재 canonical inventory를 조회한다.
+
+### Request
+
+```
+GET /api/v1/inventory/r750-001
+```
+
+### Response — 200 OK
+
+```json
+{
+  "server_id": "r750-001",
+  "snapshot_id": "snap-run-a1b2c3d4e5f6",
+  "collected_at": "2026-09-15T09:24:18.000Z",
+  "canonical_source": "redfish",
+  "schema_version": "1.0",
+  "inventory": {
+    "schema_version": "1.0",
+    "identity": {
+      "server_id": "r750-001",
+      "vendor": "Dell",
+      "model": "PowerEdge R750",
+      "hostname": "server-001",
+      "serial_number": "SN12345",
+      "service_tag": "STAG123",
+      "bios_version": "2.10.0",
+      "uuid_present": true,
+      "asset_tag": null
+    },
+    "topology": {
+      "physical_servers": 1,
+      "computer_systems": 1,
+      "chassis": 1,
+      "multi_node": false
+    },
+    "hardware": {
+      "cpu": { "count": 2, "total_cores": 48, "total_threads": 96, "processors": [...] },
+      "memory": { "total_gb": 256.0, "dimm_count": 8, "populated_slots": 8, "empty_slots": 0, "modules": [...] },
+      "gpu": { "dedicated_compute_gpu": false, "count": 0, "devices": [], "integrated_gpu": false },
+      "storage": {
+        "controllers": [...],
+        "physical_disks": [...],
+        "virtual_disks": [...],
+        "no_hardware_raid": false
+      },
+      "network": { "adapter_count": 4, "adapters": [...], "highest_link_speed": "GbE_25", "active_interfaces": 4 }
+    },
+    "management": { ... },
+    "os": { ... },
+    "virtualization": { ... },
+    "containers": { ... },
+    "development_environment": { ... },
+    "compute": { ... },
+    "health": { ... },
+    "workload": { ... },
+    "power_thermal": { ... },
+    "vendor_ext": { ... },
+    "_meta": {
+      "schema_version": "1.0",
+      "collected_at": "2026-09-15T09:24:18.000Z",
+      "data_class": "HARDWARE",
+      "sources": { ... },
+      "verification": { ... },
+      "raw_path": null
+    }
+  },
+  "verification": {
+    "performed": true,
+    "success": true,
+    "discrepancy_count": 0,
+    "summary": { ... }
+  }
+}
+```
+
+### Response Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `server_id` | string | YES | Server 식별자 |
+| `snapshot_id` | string | YES | Snapshot 식별자 |
+| `collected_at` | string | YES | 수집 시간 (ISO 8601 UTC) |
+| `canonical_source` | string\|null | NO | Canonical source |
+| `schema_version` | string | YES | Schema 버전 ("1.0") |
+| `inventory` | object | YES | `ServerInventory` (Schema v1.0, `_meta` alias 포함) |
+| `verification` | object | NO | Verification 결과 |
+
+### Data Exposure
+
+- `inventory`는 `ServerInventory.model_dump_json(by_alias=True)`의 결과이다.
+- `_meta` alias가 포함된다 (Schema v1.0 규칙).
+- Credential 정보는 어떤 필드에도 포함되지 않는다 (`extra: forbid` 보장).
+- `raw_path`는 `null`이거나 내부 파일 경로를 노출하지 않는다.
+
+### Error Responses
+
+| HTTP Status | When |
+|-------------|------|
+| 404 | server_id가 존재하지 않거나 snapshot이 없음 |
+| 503 | 내부 오류 |
+
+---
+
+## 10. GET /api/v1/inventory/{server_id}/history
+
+### Purpose
+
+Inventory snapshot history를 조회한다.
+
+### Request
+
+```
+GET /api/v1/inventory/r750-001/history?limit=10
+```
+
+### Query Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | 10 | 반환할 snapshot 수 (최대 100) |
+
+### Design Decisions
+
+| 질문 | 답변 | 근거 |
+|------|------|------|
+| 시간순 / 역시간순 | 역시간순 (최신 우선) | `InventoryStore.list_snapshots()`가 DESC 정렬 |
+| Full payload vs summary | Summary | 대용량 response 방지 |
+| Pagination | offset-based (OPEN DECISION) | Cursor-based는 Phase 8+ 검토 |
+| limit 최대값 | 100 | 과도한 response 방지 |
+
+### Response — 200 OK
+
+```json
+{
+  "server_id": "r750-001",
+  "total": 15,
+  "limit": 10,
+  "snapshots": [
+    {
+      "snapshot_id": "snap-run-a1b2c3d4e5f6",
+      "collected_at": "2026-09-15T09:24:18.000Z",
+      "schema_version": "1.0",
+      "canonical_source": "redfish",
+      "health": "OK",
+      "verification_discrepancy_count": 0
+    },
+    {
+      "snapshot_id": "snap-run-previous1",
+      "collected_at": "2026-09-14T10:00:00.000Z",
+      "schema_version": "1.0",
+      "canonical_source": "redfish",
+      "health": "WARNING",
+      "verification_discrepancy_count": 1
+    }
+  ]
+}
+```
+
+### Snapshot Summary Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `snapshot_id` | string | YES | Snapshot 식별자 |
+| `collected_at` | string | YES | 수집 시간 (ISO 8601 UTC) |
+| `schema_version` | string | YES | Schema 버전 |
+| `canonical_source` | string\|null | NO | Canonical source |
+| `health` | enum | YES | `OK`, `WARNING`, `CRITICAL`, `UNKNOWN` |
+| `verification_discrepancy_count` | integer | YES | Verification discrepancy 수 |
+
+### Error Responses
+
+| HTTP Status | When |
+|-------------|------|
+| 404 | server_id가 존재하지 않음 |
+| 503 | 내부 오류 |
+
+---
+
+## 11. GET /api/v1/inventory/{server_id}/diff
+
+### Purpose
+
+두 snapshot 간의 diff를 조회한다.
+
+### Request
+
+```
+GET /api/v1/inventory/r750-001/diff?from=snap-old&to=snap-new
+```
+
+### Query Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `from` | string | YES | 이전 snapshot_id |
+| `to` | string | YES | 이후 snapshot_id |
+
+### Design Decisions
+
+| 질문 | 답변 | 근거 |
+|------|------|------|
+| 비교 대상 지정 | snapshot_id | `DashboardQueryService.get_snapshot_diff()` 사용 |
+| `from` / `to` naming | `from` = older, `to` = newer | 직관적 |
+| Diff algorithm | 기존 `compute_snapshot_diff()` 재사용 | 새 algorithm 생성하지 않음 |
+| None vs missing | 기존 semantics 유지 | `compute_snapshot_diff()`의 동작 |
+
+### Response — 200 OK
+
+```json
+{
+  "server_id": "r750-001",
+  "from_snapshot_id": "snap-old",
+  "to_snapshot_id": "snap-new",
+  "diffs": [
+    {
+      "field_path": "hardware.storage.physical_disks[0].capacity_gb",
+      "from_value": 0.0,
+      "to_value": 1788.75,
+      "change_type": "MODIFIED"
+    },
+    {
+      "field_path": "health.storage",
+      "from_value": "UNKNOWN",
+      "to_value": "OK",
+      "change_type": "MODIFIED"
+    },
+    {
+      "field_path": "hardware.cpu.count",
+      "from_value": 1,
+      "to_value": 2,
+      "change_type": "MODIFIED"
+    }
+  ],
+  "total_changes": 3
+}
+```
+
+### Diff Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `field_path` | string | YES | 변경된 필드 경로 (dot notation) |
+| `from_value` | any | YES | 이전 값 |
+| `to_value` | any | YES | 이후 값 |
+| `change_type` | enum | YES | `ADDED`, `REMOVED`, `MODIFIED` |
+
+### Error Responses
+
+| HTTP Status | When |
+|-------------|------|
+| 400 | `from` 또는 `to` parameter missing |
+| 404 | server_id, `from` snapshot, 또는 `to` snapshot이 존재하지 않음 |
+| 503 | 내부 오류 |
+
+---
+
+## 12. GET /api/v1/compute/candidates
+
+### Purpose
+
+Weekend compute 대상 서버 목록을 조회한다.
+
+### Request
+
+```
+GET /api/v1/compute/candidates
+```
+
+### Design Decisions
+
+| 질문 | 답변 | 근거 |
+|------|------|------|
+| Candidate 선정 위치 | `DashboardQueryService.get_weekend_compute_candidates()` | API layer에서 재구현하지 않음 |
+| Filter | 없음 | 현재 query service가 filter를 지원하지 않음 |
+| `limit` parameter | NO | 현재 query service가 limit을 지원하지 않음 |
+| `min_potential` filter | NO | 현재 query service가 이를 지원하지 않음 |
+
+### Response — 200 OK
+
+```json
+{
+  "candidates": [
+    {
+      "server_id": "r750-001",
+      "display_name": "Server 001",
+      "vendor": "Dell",
+      "model": "PowerEdge R750",
+      "lifecycle_state": "ACTIVE",
+      "health": "OK",
+      "compute_eligibility": "COMPUTE_ELIGIBLE",
+      "cpu_count": 2,
+      "cpu_cores": 48,
+      "memory_gb": 256.0,
+      "gpu_count": 0,
+      "last_collected_at": "2026-09-15T09:24:18.000Z",
+      "current_snapshot_id": "snap-run-a1b2c3d4e5f6"
+    }
+  ],
+  "total": 1
+}
+```
+
+### Candidate Fields (from `ServerSummary` model)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `server_id` | string | YES | Server 식별자 |
+| `display_name` | string | YES | 표시 이름 |
+| `vendor` | enum | YES | `Dell`, `HPE`, `Unknown` |
+| `model` | string | YES | 서버 모델 |
+| `lifecycle_state` | enum | YES | `ACTIVE`, `UNREACHABLE`, `MAINTENANCE`, `RETIRED` |
+| `health` | enum | YES | `OK`, `WARNING`, `CRITICAL`, `UNKNOWN` |
+| `compute_eligibility` | enum | YES | `UNKNOWN`, `CANDIDATE`, `COMPUTE_ELIGIBLE`, `EXCLUDED_USER_WORKLOAD`, `IDLE` |
+| `cpu_count` | integer | YES | CPU 수 |
+| `cpu_cores` | integer | YES | 총 코어 수 |
+| `memory_gb` | float | YES | 총 메모리 (GB) |
+| `gpu_count` | integer | YES | GPU 수 |
+| `last_collected_at` | string\|null | NO | 마지막 수집 시간 |
+| `current_snapshot_id` | string\|null | NO | 현재 snapshot ID |
+
+### Eligibility Semantics
+
+Candidate는 다음 조건을 만족하는 서버:
+
+- `lifecycle_state == ACTIVE`
+- `compute_eligibility` in `{CANDIDATE, COMPUTE_ELIGIBLE, IDLE}`
+
+`EXCLUDED_USER_WORKLOAD`는 candidate에서 제외된다.
+
+### Error Responses
+
+| HTTP Status | When |
+|-------------|------|
+| 503 | 내부 오류 |
+
+---
+
+## 13. Idempotency
+
+### POST /api/v1/collect
+
+- 각 요청은 새 `run_id`를 생성한다 (`run-{uuid_hex[:12]}`).
+- 동일 `server_id`에 대한 중복 요청은 각각 새 run을 생성한다.
+- `InventoryStore.save_snapshot()`은 `INSERT OR IGNORE`를 사용하여 동일 `snapshot_id` (형식: `snap-{run_id}`)의 중복 저장을 방지한다.
+- `cursor.rowcount == 0`이면 중복으로 간주하고 `False` 반환 (P1 fix).
+
+### Idempotency-Key
+
+**OPEN DECISION** — Phase 8에서 검토:
+
+- `Idempotency-Key` header를 사용하여 동일 요청의 중복 실행 방지
+- Server Manager가 key를 기반으로 동일 run_id 반환
+
+### GET endpoints
+
+- 모든 GET endpoint는 자연스럽게 idempotent하다.
+
+---
+
+## 14. Partial Failure Semantics
+
+### HTTP Status와 Collection Status의 관계
+
+| Collection Status | HTTP Status | 의미 |
+|-------------------|------------|------|
+| `SUCCESS` | 200 | 모든 source 성공 |
+| `PARTIAL` | 200 | 일부 source 실패, canonical inventory 존재 |
+| `FAILED` | 200 or 503 | 모든 source 실패. canonical inventory 없음. 503 if Server Manager error. |
+
+**중요**: `PARTIAL` 상태도 HTTP 200을 반환한다. 이는 collection이 부분적으로 성공했고 canonical inventory가 존재하기 때문이다.
+
+### Source Result 표현
+
+```json
+"source_results": [
+  {
+    "source": "redfish",
+    "collection_success": true,
+    "normalization_success": true,
+    "duration_ms": 3500
+  },
+  {
+    "source": "ssh",
+    "collection_success": false,
+    "normalization_success": false,
+    "duration_ms": 30
+  }
+]
+```
+
+- `collection_success: false`이면 `normalization_success`는 항상 `false`.
+- Error는 `errors` 배열에 `[source]` prefix와 함께 포함.
+
+### Verification 표현
+
+| 상황 | `verification.performed` | `verification.success` |
+|------|--------------------------|------------------------|
+| 2+ sources, all agree | `true` | `true` |
+| 2+ sources, discrepancy | `true` | `false` |
+| 1 source only | `false` | `false` |
+| 0 sources (all failed) | `false` | `false` |
+
+---
+
+## 15. Verification Semantics
+
+### 현재 Architecture
+
+- Verification은 2개 이상 source가 정상적으로 normalize되었을 때만 수행된다.
+- Single source인 경우 verification이 SKIPPED되고 warning이 추가된다.
+- `OrchestrationResult.verification`이 `None`이면 verification이 수행되지 않은 것.
+
+### API Contract에서의 표현
+
+```json
+"verification": {
+  "performed": true,
+  "success": true,
+  "discrepancy_count": 0,
+  "summary": {
+    "total_fields": 15,
+    "verified": 13,
+    "single_source": 2,
+    "discrepancy": 0
+  }
+}
+```
+
+- `performed`: verification이 수행되었는지 (2+ sources required)
+- `success`: discrepancy가 없는지
+- `discrepancy_count`: discrepancy가 발견된 필드 수
+- `summary`: verification 결과 요약
+
+### `verification_performed` 필드
+
+Phase 7.5에서 권장한 `verification_performed: bool` 필드는 **OPEN DECISION**.
+
+현재는 `verification != null`로 판별 가능하므로 Phase 8에서 추가 여부를 결정한다.
+
+---
+
+## 16. Data Exposure Policy
+
+### Public Integration Data (API response에 포함)
+
+- Server identity (server_id, vendor, model, hostname, serial_number, service_tag)
+- Hardware inventory (CPU, Memory, GPU, Storage, Network)
+- Management info (controller type, firmware version, protocols)
+- OS info (distribution, version, kernel, architecture)
+- Virtualization info (KVM, virsh, VM count)
+- Container info (Docker, Kubernetes)
+- Development environment (git, python, node, npm, gcc, pm2)
+- Compute info (potential, eligibility, capabilities)
+- Health (per-component health status)
+- Workload (CPU/memory utilization, load average)
+- Power/Thermal (PSU, temperatures, fans)
+- Verification summary (performed, success, discrepancy count)
+- Snapshot history (summary)
+- Diff results (field changes)
+
+### Internal-Only Data (API response에 **절대** 포함하지 않음)
+
+- Credentials (password, API key, SSH key, Redfish credential)
+- Raw SSH command output
+- Raw Redfish HTTP response
+- Internal subprocess details
+- Stack traces
+- Internal file paths
+- Database query strings
+- SQLite implementation details
+- Collector internal state
+- Normalizer internal state
+
+---
+
+## 17. TBMS Mapping
+
+| TBMS Function | Server Manager API | Method |
+|---|---|---|
+| Hardware detect | `POST /api/v1/collect` | Trigger collection |
+| Server hardware view | `GET /api/v1/inventory/{server_id}` | Read current inventory |
+| History/audit | `GET /api/v1/inventory/{server_id}/history` | Read snapshot history |
+| Comparison | `GET /api/v1/inventory/{server_id}/diff` | Compare two snapshots |
+| Weekend compute dashboard | `GET /api/v1/compute/candidates` | List compute candidates |
+| Monitoring | `POST /api/v1/collect` (scheduled) | Periodic collection |
+| Validation | `GET /api/v1/inventory/{server_id}` → `verification` field | Read verification result |
+
+### TBMS에서 제외되는 도메인
+
+- Switch management — TBMS domain
+- Topology (LLDP) — TBMS domain (ArangoDB)
+- WRCP — TBMS domain
+- CaaS — TBMS domain
+- Recovery — TBMS domain
+- Alert — TBMS domain
+- Configuration management — TBMS domain
+
+---
+
+## 18. Phase 8 Implementation Boundary
+
+### Phase 7.7 (본 문서) — COMPLETE
+
+- API contract 정의
+- Error contract 정의
+- Security boundary 정의
+- Idempotency / partial failure / verification semantics 정의
+- Data exposure boundary 정의
+- TBMS mapping 문서화
+
+### Phase 8 — Implementation
+
+- FastAPI (또는 Flask) REST API server 구현
+- Routing: 위 5개 endpoint
+- Request validation (Pydantic)
+- Response serialization (`ServerInventory.model_dump_json(by_alias=True)`)
+- Service dependency wiring (Orchestrator, InventoryStore, DashboardQueryService)
+- Error handling middleware
+- Authentication mechanism 구현
+- API tests (integration + contract)
+- OpenAP

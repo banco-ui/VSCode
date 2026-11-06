@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/output/Phase11B_Design_Report.md",
+  "originalSize": 18730,
+  "sha256": "043eb697cb835e072953d78a65bac3b2c4cd75f08a55d68767539aea27985155",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/output/Phase11B_Design_Report.md\""
+}

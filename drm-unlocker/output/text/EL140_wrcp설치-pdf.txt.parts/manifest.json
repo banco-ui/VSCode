@@ -1,0 +1,12 @@
+{
+  "originalPath": "drm-unlocker/output/text/EL140_wrcp설치-pdf.txt",
+  "originalSize": 34396,
+  "sha256": "7e6c4e200fc03b5ec59905b54ec85531dcc1c0f4638ca75e8fce40df1da8f0e8",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"drm-unlocker/output/text/EL140_wrcp설치-pdf.txt\""
+}

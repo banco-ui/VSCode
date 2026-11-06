@@ -1,0 +1,145 @@
+   | fluxcd-manifests | uploaded | completed |
+| deployment-manager       | 25.09-33 | deployment-manager-fluxcd-manifests       | fluxcd-manifests | applied  | completed |
+| ipsec-policy-operator    | 25.09-44 | ipsec-policy-operator-fluxcd-manifests    | fluxcd-manifests | uploaded | completed |
+| nginx-ingress-controller | 25.09-78 | nginx-ingress-controller-fluxcd-manifests | fluxcd-manifests | applied  | completed |
+| oidc-auth-apps           | 25.09-78 | oidc-auth-apps-fluxcd-manifests           | fluxcd-manifests | uploaded | completed |
+| platform-integ-apps      | 25.09-7  | platform-integ-apps-fluxcd-manifests      | fluxcd-manifests | uploaded | completed |
+| rook-ceph                | 25.09-39 | rook-ceph-fluxcd-manifests                | fluxcd-manifests | applied  | completed |
++--------------------------+----------+-------------------------------------------+------------------+----------+-----------+
+8. Configuring additional Interfaces - network-provisioner
+  가이드 따라서 진행
+[sysadmin@controller-0 ~(keystone_admin)]$ scp wrcp@10.251.125.17:/home/wrcp/WRCP/network-provisioner-26a.sh .
+wrcp@10.251.125.17's password:
+network-provisioner-26a.sh
+[sysadmin@controller-0 ~(keystone_admin)]$ ./network-provisioner-26a.sh
+...
+- Select the node to apply ( id or hostname )? 1        1. controller-0
+...
+- Select NE type ( 1~4 or full name )? 2                2. du
+...
+- Select the flavor ( 1~79 or full name )? 60           60. medium-uni-regular-gnr-xcc
+  'medium-uni-regular-gnr-xcc' need to set fh0~21, and ca sriov interface.
+  Assign the appropriate PORT among the available NIC ports.
+  Site port configuration (FMS)
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------
+---------
+  
+port0  port1  port2  port3  port4  port5  port6  port7    port0  port1  port2  port3  port4  port5  port6  port7    port0  port1  port2  port3  port4 
+port5  port6  port7 
+  fh0    fh1    fh2    fh3    fh4    fh5    fh6    fh7      fh8    fh9    fh10   fh11   fh12   fh13   fh14   fh15     oam    fh16   fh17   fh18   ca     fh19   
+fh20   fh21  
+  -------------------------------------------------------------------------------------------------------------------------------------------------------------------
+---------
+  *** You can't use the oam port for data network
+Checking NIC ports. Wait...
+  Available Port for data network
+
+  Note : If there is ssh port in the available port list below, you should not select ssh port.
+  +--------------------------------+
+  | port            | processor    |
+  +--------------------------------+
+  | eno2            | 0            |
+  | ens7f0          | 0            |
+  | ens7f1          | 0            |
+  | ens7f2          | 0            |
+  | ens7f3          | 0            |
+  | ens7f4          | 0            |
+  | ens7f5          | 0            |
+  | ens7f6          | 0            |
+  | ens7f7          | 0            |
+  | ens8f0          | 0            |
+  | ens8f1          | 0            |
+  | ens8f2          | 0            |
+  | ens8f3          | 0            |
+  | ens8f4          | 0            |
+  | ens8f5          | 0            |
+  | ens8f6          | 0            |
+  | ens8f7          | 0            |
+  | eth1001         | 0            |
+  | eth1002         | 0            |
+  | eth1003         | 0            |
+  | eth1005         | 0            |
+  | eth1006         | 0            |
+  | eth1007         | 0            |
+  +--------------------------------+
+  - Choose a port for 'ca' ? eno2      ---------------------------> 서버 NIC interfae에 맞게 설정. 서버마다 I/F name 다를 수 있음
+  - Choose a port for 'fh0' ? ens7f0
+  - Choose a port for 'fh1' ? ens7f1
+  - Choose a port for 'fh2' ? ens7f2
+  - Choose a port for 'fh3' ? ens7f3
+  - Choose a port for 'fh4' ? ens7f4
+  - Choose a port for 'fh5' ? ens7f5
+  - Choose a port for 'fh6' ? ens7f6
+  - Choose a port for 'fh7' ? ens7f7
+  - Choose a port for 'fh8' ? ens8f0
+  - Choose a port for 'fh9' ? ens8f1
+
+  - Choose a port for 'fh10' ? ens8f2
+  - Choose a port for 'fh11' ? ens8f3
+  - Choose a port for 'fh12' ? ens8f4
+  - Choose a port for 'fh13' ? ens8f5
+  - Choose a port for 'fh14' ? ens8f6
+  - Choose a port for 'fh15' ? ens8f7
+  - Choose a port for 'fh16' ? eth1001
+  - Choose a port for 'fh17' ? eth1002
+  - Choose a port for 'fh18' ? eth1003
+  - Choose a port for 'fh19' ? eth1005
+  - Choose a port for 'fh20' ? eth1006
+  - Choose a port for 'fh21' ? eth1007
+  Please check your settings again. Can I start setting? (y/n): y                       // 10분정도 소요됨
+Setup start!!
+[ STEP#1 ] Host Locking...
+...
+[ STEP#10 ] Host unlocking...
+Data network has been changed. Press 'y' to host-unlock. (y/n): y                  // 재부팅됨. 5~10분
+-.설정후 확인
+NIC 모든 interface가 확인되어야 함
+system host-if-list controller-0 host interface list 확인
+ fh0 ~ fh21 모두 확인되어야 함  host-if-list 조회 - GTC_STP - Confluence
+참고) EL140 interface port 정보
+9. Check Controller-0
+9.1. Check application for storage provision
+
+[sysadmin@controller-0 ~(keystone_admin)]$ system application-list
++--------------------------+----------+-------------------------------------------+------------------+----------+-----------+
+| application              | version  | manifest name                             | manifest file    | status   | progress  |
++--------------------------+----------+-------------------------------------------+------------------+----------+-----------+
+| cert-manager             | 25.09-83 | cert-manager-fluxcd-manifests             | fluxcd-manifests | applied  | completed |
+| dell-storage             | 25.09-19 | dell-storage-fluxcd-manifests             | fluxcd-manifests | uploaded | completed |
+| deployment-manager       | 25.09-33 | deployment-manager-fluxcd-manifests       | fluxcd-manifests | applied  | completed |
+| ipsec-policy-operator    | 25.09-44 | ipsec-policy-operator-fluxcd-manifests    | fluxcd-manifests | uploaded | completed |
+| nginx-ingress-controller | 25.09-78 | nginx-ingress-controller-fluxcd-manifests | fluxcd-manifests | applied  | completed |
+| oidc-auth-apps           | 25.09-78 | oidc-auth-apps-fluxcd-manifests           | fluxcd-manifests | uploaded | completed |
+| platform-integ-apps      | 25.09-7  | platform-integ-apps-fluxcd-manifests      | fluxcd-manifests | uploaded | completed |
+| rook-ceph                | 25.09-39 | rook-ceph-fluxcd-manifests                | fluxcd-manifests | applied  | completed |
++--------------------------+----------+-------------------------------------------+------------------+----------+-----------+
+9.2. Check the platform normality
+[sysadmin@controller-0 ~(keystone_admin)]$ fm alarm-list
+[sysadmin@controller-0
+  
+10. Install Metric Server
+[sysadmin@controller-0 ~(keystone_admin)]$ system application-upload /usr/local/share/applications/helm/metrics-server-25.09-*.tgz
+[sysadmin@controller-0 ~(keystone_admin)]$ system application-show metrics-server
+[sysadmin@controller-0 ~(keystone_admin)]$ system application-apply metrics-server
+ 10분 경과후 applied 확인
+[sysadmin@controller-0 ~(keystone_admin)]$ system application-show metrics-server
++---------------+----------------------------------+
+| Property      | Value                            |
++---------------+----------------------------------+
+| active        | True                             |
+| app_version   | 25.09-60                         |
+| created_at    | 2026-04-10T10:39:03.044460+00:00 |
+| manifest_file | fluxcd-manifests                 |
+| manifest_name | metrics-server-fluxcd-manifests  |
+| name          | metrics-server                   |
+| progress      | completed                        |
+| status        | applied                          |
+| updated_at    | 2026-04-10T10:40:38.725482+00:00 |
++---------------+----------------------------------+
+
+11.Additional configurations
+11.1. Extension of syadmin password change period
+11.2. NTP Server Configuration ----> SKIP
+11.3. Add the CA Certificate for Registry ----> SKIP
+ End Of WRCP 25.09 Installation ============================================================
+

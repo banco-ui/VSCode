@@ -1,0 +1,330 @@
+3) wrcp 설치 - 25.09
+절차서  가이드 - 6.WRCP Installation부터 진행
+    가이드 따라서 진행하면 무리 없음
+참고 wrcp platform 명령어
+vzw e930t wrcp 22.12 셋업
+소요시간 ansible-playbook 설치 26분
+network-provionser 설치 10분
+설치log D:\_logs\_보관\260409_EL140 wrcp 2509 설치 log
+VzW vDU_170302_EL140_2026-04-09_21-17-41.log
+VzW vDU_170302_EL140_2026-04-10_10-46-35.log
+VzW vDU_170302_EL140_2026-04-10_11-45-29.log
+VzW vDU_170302_EL140_2026-04-10_19-26-43.log
+SSH 설정  system host-if-add -c data --ipv4-mode static -V 254 controller-0 ssh vlan common0
+system host-addr-add controller-0 ssh  2410.254.170.125
+  system host-route-add controller-0 ssh 0.0.0.0 0 10.254.170.1
+system host-route-add controller-0 ssh 10.251.0.0 16 10.254.170.1
+system host-route-add controller-0 ssh 10.251.186.0 24 10.254.170.1
+6.1. Get installation files from 10.251.125.17
+6.2. Modify wrcp-install.conf
+6.3. Run the ansible-pre.sh script
+6.4. Run the ansible bootstrap playbook
+7.1. Check WRCP license
+7.3. Check ceph storage
+7.4. SSH interface
+7.5. Unlock controller-0
+7.6. Verify that rook-ceph is installed correctly
+8. Configuring additional Interfaces - network-provisioner
+9. Check Controller-0
+9.1. Check application for storage provision
+9.2. Check the platform normality
+10. Install Metric Server
+11.Additional configurations
+ 6.1. Get installation files from 10.251.125.17
+sysadmin@localhost:~$ pwd
+/home/sysadmin
+sysadmin@localhost:~$ scp wrcp@10.251.125.17:/home/wrcp/WRCP/2509/WRCP2509_AIO-SX.tar.gz ~/.
+The authenticity of host '10.251.125.17 (10.251.125.17)' can't be established.
+ECDSA key fingerprint is SHA256:GP7k7mqQ9InriixZ6LKIILIqVqJ3vm1hFvIZeRnYX74.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added '10.251.125.17' (ECDSA) to the list of known hosts.
+wrcp@10.251.125.17's password:
+WRCP2509_AIO-SX.tar.gz                                                              100%  101KB  32.7MB/s   00:00
+
+sysadmin@localhost:~$ tar zxvf WRCP2509_AIO-SX.tar.gz
+ 6.2. Modify wrcp-install.conf
+sysadmin@localhost:~$ cat wrcp-install.conf
+# ---------------------------------------------------
+# system configuration
+# ---------------------------------------------------
+name                aio-sx
+# target : basic, cu, du, core, nis
+target_system       du
+# ---------------------------------------------------
+# common network information
+# ---------------------------------------------------
+# OAM network
+oam_ip_addr                fd03:172:16:170::302     --------> vDU별 설정
+oam_gateway                fd03:172:16:170::1
+oam_subnet                fd03:172:16:170::/64
+oam_interface                eno1
+oam_vlan_id                170
+# ---------------------------------------------------
+# optional configuration
+# ---------------------------------------------------
+# "enable" when using insecure registry without certificate
+registry_insecure   disable
+registry_crt        /home/sysadmin/samsung.crt
+# main registry
+registry_url        nwharbor.sec.samsung.net
+registry_ip         10.251.186.33
+# 2nd registry
+registry2_url       none
+registry2_ip        none
+# platform cores
+platform_cores      2
+
+# platform memory (MiB)
+platform_memory     20000
+# hugepage for core
+page_count_2m       35000
+# max pods for core
+max_pods            110
+ceph                ceph_rook
+ 6.3. Run the ansible-pre.sh script
+sysadmin@localhost:~$ sudo /home/sysadmin/ansible-pre.sh wrcp-install.conf
+Check Columbiaville network interface...
+Check the OAM interface...
+Checking the SR-IOV availability of the OAM interface...
+Check the boot and storage device...
+  - boot disk name: [nvme0n1]
+  - storage disk name: [nvme1n1]
+  - boot disk path: [/dev/disk/by-path/pci-0000:b6:00.0-nvme-1]
+  - storage disk path: [/dev/disk/by-path/pci-0000:b7:00.0-nvme-1]
+Check the hyper-threading status...
+Create localhost.yml...
+Configure oam interface...
+Check WRCP license...
+Create cloud-deployment.yaml...
+If you have any problems in the installation process, please contact below:
+  http://mosaic.sec.samsung.net/kms/net_ace.club
+You can now install the WRCP by running the following as sysadmin:
+  ansible-playbook /usr/local/share/applications/playbooks/master-bootstrap-and-deploy-playbook.yaml -e "@/home/sysadmin/dm-playbook-
+overrides.yaml"
+sysadmin@localhost:~$
+
+ 6.4. Run the ansible bootstrap playbook
+sysadmin@localhost:~$ ansible-playbook /usr/local/share/applications/playbooks/master-bootstrap-and-deploy-playbook.yaml -e "@/home/sysadmin
+/dm-playbook-overrides.yaml"
+PLAY [all] 
+*****************************************************************************************************************************************************************
+***************
+...
+PLAY RECAP 
+*****************************************************************************************************************************************************************
+************
+localhost                  : ok=772  changed=374  unreachable=0    failed=0    skipped=666  rescued=0    ignored=0  
+Thursday 09 April 2026  13:05:15 +0000 (0:00:00.022)       0:16:23.868 ********
+===============================================================================
+common/push-docker-images : Download images and push to local registry - multiprocessing disabled 
+----------------------------------------------------------------------------- 234.95s
+bootstrap/bringup-bootstrap-applications : Wait until application is in the applied state 
+-------------------------------------------------------------------------------------- 49.75s
+Wait deployment-manager app to become applied 
+---------------------------------------------------------------------------------------------------------------------------------- 43.97s
+bootstrap/persist-config : Wait for sysinv inventory 
+--------------------------------------------------------------------------------------------------------------------------- 37.53s
+common/fluxcd-controllers : Check if secret exists 
+----------------------------------------------------------------------------------------------------------------------------- 32.23s
+bootstrap/apply-manifest : Applying puppet bootstrap manifest 
+------------------------------------------------------------------------------------------------------------------ 32.04s
+bootstrap/bringup-bootstrap-applications : pause 
+------------------------------------------------------------------------------------------------------------------------------- 30.01s
+bootstrap/persist-config : Saving config in sysinv database 
+-------------------------------------------------------------------------------------------------------------------- 29.12s
+bootstrap/bringup-bootstrap-applications : Wait until application is in the applied state 
+-------------------------------------------------------------------------------------- 26.97s
+bootstrap/persist-config : Wait for certificate install 
+------------------------------------------------------------------------------------------------------------------------ 24.47s
+bootstrap/bringup-essential-services : Check controller-0 is in online state 
+--------------------------------------------------------------------------------------------------- 16.69s
+bootstrap/bringup-essential-services : Add loopback interface via system 
+------------------------------------------------------------------------------------------------------- 12.18s
+wait_for 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+10.37s
+common/bringup-kubemaster : Activate Calico Networking 
+-------------------------------------------------------------------------------------------------------------------------- 8.83s
+common/bringup-kubemaster : Initializing Kubernetes master 
+---------------------------------------------------------------------------------------------------------------------- 8.20s
+bootstrap/apply-manifest : Execute sysinv-dbsync 
+-------------------------------------------------------------------------------------------------------------------------------- 7.57s
+bootstrap/apply-manifest : Create sysinv endpoints 
+------------------------------------------------------------------------------------------------------------------------------ 6.48s
+bootstrap/apply-manifest : Configure keystone services, roles and users 
+--------------------------------------------------------------------------------------------------------- 5.97s
+
+bootstrap/apply-manifest : Exec keystone-manage db_sync 
+------------------------------------------------------------------------------------------------------------------------- 5.85s
+wait_for 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+- 5.38s
+ 7.1. Check WRCP license
+[sysadmin@controller-0 ~(keystone_admin)]$ system license-show
+# Wind River Product Activation File (install.txt)
+# Issued for host: <Samsung> <Samsung> <Any>
+# License number(s): 683817
+# Issued on: 28-oct-2025 09:50:50
+#
+# Note: this license is generated cumulatively for all
+# Wind River software managed by this host.
+# 1. FlexLM license file:
+# Begin: Server license  ---------------------
+# Serial Number: 683817-SamsungPOC-G4WDC9CPEK
+PACKAGE WRCP_CONTAINER_PKG wrsd 25 B344E7D03DC8 \
+COMPONENTS=WRCP_CONTAINER:25.09 OPTIONS=SUITE \
+SIGN=FE25ADD46318
+INCREMENT WRCP_CONTAINER_PKG wrsd 25 permanent uncounted FAD41A35BC44 \
+VENDOR_STRING=<ln>683817</ln><ps>2213-43</ps> HOSTID=ANY \
+ISSUED=28-oct-2025 SN=serial-Samsung-LV2IWAULEB \
+START=28-oct-2025 SIGN=3BEB73E89BB4
+ 7.3. Check ceph storage
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-stor-list controller-0
++--------------------------------------+----------+-------+----------------------+--------------------------------------
++-------------------------------------------------+----------------+------------------+-----------+
+| uuid                                 | function | osdid | state                | idisk_uuid                           | journal_path                                    | 
+journal_node   | journal_size_gib | tier_name |
++--------------------------------------+----------+-------+----------------------+--------------------------------------
++-------------------------------------------------+----------------+------------------+-----------+
+| 1b950ec4-2f55-42df-983b-5ba531983050 | osd      |  | 00a1accf-bcd2-469d-be56-ee0e23b1d5d3 | /dev/disk/by-pathNone  | configuring-with-app
+/pci-0000:b7:00.0-nvme-1-part2 | /dev/nvme1n1p2 | 1                | storage   |
++--------------------------------------+----------+-------+----------------------+--------------------------------------
++-------------------------------------------------+----------------+------------------+-----------+
+
+7.4. SSH interface 
+system host-if-list controller-0
+system host-if-add -c data --ipv4-mode static -V 254 controller-0 ssh vlan common0
+system host-if-list controller-0
+system host-addr-list controller-0
+system host-addr-add controller-0 ssh 10.254.170.125 24
+system host-addr-list controller-0
+system host-route-list controller-0
+ system host-route-add controller-0 ssh 0.0.0.0 0 10.254.170.1         //default gw
+system host-route-add controller-0 ssh 10.251.0.0 16 10.254.170.1     //
+system host-route-add controller-0 ssh 10.251.186.0 24 10.254.170.1   //harber 대역
+system host-route-list controller-0
+route -n
+
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-if-add -c data --ipv4-mode static -V 254 controller-0 ssh vlan common0
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-if-list controller-0
++--------------------------------------+---------+-----------+----------+---------+----------+-------------+-----------------+----------------------------+
+| uuid                                 | name    | class     | type     | vlan id | ports    | uses i/f    | used by i/f     | attributes                 |
++--------------------------------------+---------+-----------+----------+---------+----------+-------------+-----------------+----------------------------+
+| 5679aa40-08bf-40f9-8c67-9523861bed93 | common0 | pci-sriov | ethernet | None    | ['eno1'] | []          | ['oam0', 'ssh'] | 
+MTU=9000                   |
+| c0ea79f3-7390-40de-ab3f-b07ca2834799 | ssh     | data      | vlan     | 254     | []       | ['common0'] | []              | MTU=1500,accelerated=False |
+| c7fb0993-b867-40f3-8d7e-41cd44fe186b | lo      | platform  | virtual  | None    | []       | []          | []              | MTU=1500                   |
+| d7cb0175-1898-4d60-b437-48cece41580b | oam0    | platform  | vlan     | 170     | []       | ['common0'] | []              | MTU=1500                   |
++--------------------------------------+---------+-----------+----------+---------+----------+-------------+-----------------+----------------------------+
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-addr-add controller-0 ssh 10.254.170.125 24
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-addr-list controller-0
++--------------------------------------+--------+----------------------+--------+
+| uuid                                 | ifname | address              | prefix |
++--------------------------------------+--------+----------------------+--------+
+| 3ea6c5e4-4ae5-406a-9c71-72fdf1352f15 | lo     | face::1              | 64     |
+| 6fa48664-492f-45b9-a0c5-8abea9986c00 | lo     | feed:beef::1         | 64     |
+| 1c357e4e-4a3f-45a1-9ded-528e6e31fc2c | oam0   | fd03:172:16:170::302 | 64     |
+| f53d946a-e208-41c1-8e72-9e7a21c162cc | ssh    | 10.254.170.125       | 24     |
++--------------------------------------+--------+----------------------+--------+
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-route-add controller-0 ssh 0.0.0.0 0 10.254.170.1
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-route-add controller-0 ssh 10.251.0.0 16 10.254.170.1
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-route-add controller-0 ssh 10.251.186.0 24 10.254.170.1
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-route-list controller-0
++--------------------------------------+--------+--------------+--------+--------------+--------+
+| uuid                                 | ifname | network      | prefix | gateway      | metric |
++--------------------------------------+--------+--------------+--------+--------------+--------+
+| 1ad9693b-dbae-4377-9d18-4936e782f245 | ssh    | 0.0.0.0      | 0      | 10.254.170.1 | 1      |
+| d976ffab-f0da-446f-a2dc-64b15428754b | ssh    | 10.251.0.0   | 16     | 10.254.170.1 | 1      |
+| 5736cef1-503f-45d8-862e-7bd852283352 | ssh    | 10.251.186.0 | 24     | 10.254.170.1 | 1      |
++--------------------------------------+--------+--------------+--------+--------------+--------+
+ 7.5. Unlock controller-0
+
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-unlock controller-0
++------------------------+---------------------------------------------+
+| Property               | Value                                       |
++------------------------+---------------------------------------------+
+| action                 | none                                        |
+| administrative         | locked                                      |
+재부팅하고 routing table 확인사살
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-route-list controller-0
++--------------------------------------+--------+--------------+--------+--------------+--------+
+| uuid                                 | ifname | network      | prefix | gateway      | metric |
++--------------------------------------+--------+--------------+--------+--------------+--------+
+| 1ad9693b-dbae-4377-9d18-4936e782f245 | ssh    | 0.0.0.0      | 0      | 10.254.170.1 | 1      |
+| d976ffab-f0da-446f-a2dc-64b15428754b | ssh    | 10.251.0.0   | 16     | 10.254.170.1 | 1      |
+| 5736cef1-503f-45d8-862e-7bd852283352 | ssh    | 10.251.186.0 | 24     | 10.254.170.1 | 1      |
++--------------------------------------+--------+--------------+--------+--------------+--------+
+[sysadmin@controller-0 ~(keystone_admin)]$ route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         10.254.170.1    0.0.0.0         UG    1      0        0 ssh
+10.251.0.0      10.254.170.1    255.255.0.0     UG    1      0        0 ssh
+10.251.186.0    10.254.170.1    255.255.255.0   UG    1      0        0 ssh
+10.254.170.0    0.0.0.0         255.255.255.0   U     0      0        0 ssh
+7.6. Verify that  is installed correctlyrook-ceph
+     재부팅 직후에 state, task가 'configuring | missing'으로 나오면, 10분 정도 경과후에 재확인
+[sysadmin@controller-0 ~(keystone_admin)]$ system storage-backend-list
++--------------------------------------+-----------------+-----------+------------+---------+------------------
++----------------------------------------------------------------------+
+| uuid                                 | name            | backend   | state      | task    | services         | 
+capabilities                                                         |
++--------------------------------------+-----------------+-----------+------------+---------+------------------
++----------------------------------------------------------------------+
+| 0b80e28c-5f7c-400c-a8da-3b68cc89cae9 | ceph-rook-store | ceph-rook | block,filesystem | deployment_model: open | configured | applied 
+replication: 1 min_replication: 1             |
+|                                      |                 |           |            |         |                  |                                                                      |
++--------------------------------------+-----------------+-----------+------------+---------+------------------
++----------------------------------------------------------------------+
+[sysadmin@controller-0 ~(keystone_admin)]$ system host-fs-list controller-0 | grep ceph
+| d904c854-d29c-4169-a49b-01e4a37f6e71 | ceph    | 20   | ceph-lv        | In-Use | {'functions': ['monitor', 'osd']} |
+
+[sysadmin@controller-0 ~(keystone_admin)]$ system application-list | grep ceph
+| rook-ceph                | 25.09-39 | rook-ceph-fluxcd-manifests                | fluxcd-manifests | applied  | completed |
+[sysadmin@controller-0 ~(keystone_admin)]$ ceph health detail
+HEALTH_OK
+[sysadmin@controller-0 ~(keystone_admin)]$ kubectl get pod -owide -n rook-ceph
+NAME                                                    READY   STATUS      RESTARTS   AGE    IP                               NODE           NOMINATED 
+NODE   READINESS GATES
+csi-cephfsplugin-provisioner-6d8fbb66b7-dpj24           6/6     Running     0          102m   dead:beef::8e22:765f:6121:eb5c   controller-
+0   <none>           <none>
+csi-cephfsplugin-szw2w                                  3/3     Running     0          102m   feed:beef::1                     controller-
+0   <none>           <none>
+csi-rbdplugin-provisioner-b95499b54-zj5hv               6/6     Running     0          102m   dead:beef::8e22:765f:6121:eb5b   controller-
+0   <none>           <none>
+csi-rbdplugin-q6jxr                                     3/3     Running     0          102m   feed:beef::1                     controller-
+0   <none>           <none>
+rook-ceph-crashcollector-controller-0-99fb9dd8f-hppjw   1/1     Running     0          95m    dead:beef::8e22:765f:6121:eb6c   controller-
+0   <none>           <none>
+rook-ceph-exporter-controller-0-557d8546b4-n4bjt        1/1     Running     0          95m    dead:beef::8e22:765f:6121:eb6e   controller-
+0   <none>           <none>
+rook-ceph-mds-kube-cephfs-a-8cd54ddc-x9k77              2/2     Running     0          95m    dead:beef::8e22:765f:6121:eb6b   controller-
+0   <none>           <none>
+rook-ceph-mds-kube-cephfs-b-7f4dc665c5-mdpnx            2/2     Running     0          95m    dead:beef::8e22:765f:6121:eb6d   controller-
+0   <none>           <none>
+rook-ceph-mgr-a-74776b6899-ldlwb                        2/2     Running     0          96m    dead:beef::8e22:765f:6121:eb63   controller-
+0   <none>           <none>
+rook-ceph-mon-a-565785d8b5-7pr4x                        2/2     Running     0          102m   dead:beef::8e22:765f:6121:eb62   controller-
+0   <none>           <none>
+rook-ceph-operator-59f9d98fcd-tb47n                     1/1     Running     0          103m   dead:beef::8e22:765f:6121:eb5a   controller-
+0   <none>           <none>
+rook-ceph-osd-0-84f47f85cb-7zr56                        2/2     Running     0          96m    dead:beef::8e22:765f:6121:eb67   controller-
+0   <none>           <none>
+rook-ceph-osd-prepare-controller-0-vfsds                0/1     Completed   0          96m    dead:beef::8e22:765f:6121:eb66   controller-
+0   <none>           <none>
+rook-ceph-provision-j4z7n                               0/1     Completed   0          95m    dead:beef::8e22:765f:6121:eb70   controller-
+0   <none>           <none>
+rook-ceph-tools-b4c85b669-575bq                         1/1     Running     0          102m   dead:beef::8e22:765f:6121:eb5e   controller-
+0   <none>           <none>
+stx-ceph-manager-7d6694d9cb-89kps                       1/1     Running     0          102m   dead:beef::8e22:765f:6121:eb60   controller-
+0   <none>           <none>
+[sysadmin@controller-0 ~(keystone_admin)]$ kubectl describe node controller-0 | grep enabled
+                    ceph-mgr-placement=enabled
+                    ceph-mon-placement=enabled
+                    sriovdp=enabled
+[sysadmin@controller-0 ~(keystone_admin)]$ system application-list
++--------------------------+----------+-------------------------------------------+------------------+----------+-----------+
+| application              | version  | manifest name                             | manifest file    | status   | progress  |
++--------------------------+----------+-------------------------------------------+------------------+----------+-----------+
+| cert-manager             | 25.09-83 | cert-manager-fluxcd-manifests             | fluxcd-manifests | applied  | completed |
+
+| dell-storage             | 25.09-19 | dell-storage-fluxcd-manifests          

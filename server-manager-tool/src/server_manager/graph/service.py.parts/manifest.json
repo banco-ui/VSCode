@@ -1,0 +1,11 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/graph/service.py",
+  "originalSize": 22233,
+  "sha256": "4e3f8049aa8d78fe1c2a98d73a04005989aa246a8197aec2db019852ac5daefa",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/graph/service.py\""
+}

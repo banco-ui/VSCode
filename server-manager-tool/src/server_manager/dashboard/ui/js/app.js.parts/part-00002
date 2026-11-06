@@ -1,0 +1,340 @@
+ self = this;
+      if (!canonicalId) {
+        this._setContent(showLoading('Loading graph summary\u2026'));
+        this._fetchAll([
+          ApiClient.getGraphSummary(),
+        ]).then(function (results) {
+          var summary = results[0];
+          if (!summary) { self._setContent(showError({ code: 'LOAD_FAILED', message: 'Unable to load graph summary.', status: 0 })); return; }
+          var html = '<h2 class="section-title">Topology Explorer</h2>';
+          html += '<div class="card"><div class="card-title">Graph Summary</div><div class="grid grid-3">';
+          html += self._statCard('Nodes', summary.node_count, 'Total graph nodes', null);
+          html += self._statCard('Relationships', summary.relationship_count, 'Total relationships', null);
+          html += '</div></div>';
+          if (summary.node_ids && summary.node_ids.length > 0) {
+            html += '<div class="card"><div class="card-title">Available Nodes</div>';
+            html += '<div class="table-container"><table><thead><tr><th>Canonical ID</th></tr></thead><tbody>';
+            summary.node_ids.forEach(function (id) {
+              html += '<tr class="clickable-row" onclick="location.hash=\'topology/' + encodeURIComponent(id) + '\'"><td class="mono">' + esc(id) + '</td></tr>';
+            });
+            html += '</tbody></table></div></div>';
+          } else { html += showEmpty('No graph nodes found.', '\uD83D\uDD77'); }
+          self._setContent(html);
+        }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+        return;
+      }
+      this._setContent(showLoading('Loading topology node\u2026'));
+      this._fetchAll([
+        ApiClient.getGraphNode(canonicalId),
+        ApiClient.getNodeRelationships(canonicalId),
+        ApiClient.getNodeNeighbors(canonicalId),
+      ]).then(function (results) {
+        var node = results[0], rels = results[1], neighbors = results[2];
+        var html = '<h2 class="section-title">Topology Explorer</h2>';
+        html += '<div class="topology-breadcrumb"><a href="#topology">Graph</a><span class="separator">\u203A</span><span class="mono">' + escTrunc(canonicalId, 40) + '</span></div>';
+        if (!node) { html += showError({ code: 'NOT_FOUND', message: 'Graph node not found.', status: 404 }); }
+        else {
+          html += '<div class="card"><div class="card-title">Node Information</div><div class="detail-grid">';
+          html += detailRow('Canonical ID', '<span class="mono">' + esc(node.canonical_id) + '</span>');
+          html += detailRow('Entity Type', val(node.entity_type));
+          html += detailRow('Label', val(node.label));
+          if (node.properties) html += detailRow('Properties', '<pre class="mono">' + esc(JSON.stringify(node.properties, null, 2)) + '</pre>');
+          html += '</div></div>';
+          html += '<div class="card"><div class="card-title">Relationships' + (rels ? ' (' + (rels.total || 0) + ')' : '') + '</div>';
+          if (rels && rels.relationships && rels.relationships.length > 0) {
+            html += '<div class="table-container"><table><thead><tr><th>Source</th><th>Type</th><th>Target</th><th>Evidence</th></tr></thead><tbody>';
+            rels.relationships.forEach(function (r) {
+              html += '<tr><td class="mono">' + escTrunc(r.source_id || r.from_id || '', 30) + '</td><td>' + val(r.relationship_type || r.type) + '</td><td class="mono">' + escTrunc(r.target_id || r.to_id || '', 30) + '</td><td>' + val(r.evidence_type) + '</td></tr>';
+            });
+            html += '</tbody></table></div>';
+          } else { html += showEmpty('No relationships found.', '\uD83D\uDD17'); }
+          html += '</div>';
+          html += '<div class="card"><div class="card-title">Neighbors' + (neighbors ? ' (' + (neighbors.total || 0) + ')' : '') + '</div>';
+          if (neighbors && neighbors.neighbors && neighbors.neighbors.length > 0) {
+            neighbors.neighbors.forEach(function (nid) {
+              html += '<div class="topology-neighbor" onclick="location.hash=\'topology/' + encodeURIComponent(nid) + '\'"><span class="neighbor-id mono">' + esc(nid) + '</span><span class="muted">\u2192</span></div>';
+            });
+          } else { html += showEmpty('No neighbors found.', '\uD83D\uDCCD'); }
+          html += '</div>';
+          html += '<div class="card"><p><a href="#inventory/' + encodeURIComponent(canonicalId) + '">View Entity Details \u2192</a></p></div>';
+        }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    // ── Health View ─────────────────────────────────────────────
+    _renderHealth: function (detailId) {
+      var self = this;
+      if (detailId) { this._renderEntityHealthDetail(detailId); return; }
+      this._setContent(showLoading('Loading health report\u2026'));
+      this._fetchAll([
+        ApiClient.getHealthReport(),
+      ]).then(function (results) {
+        var report = results[0];
+        if (!report) { self._setContent(showError({ code: 'LOAD_FAILED', message: 'Unable to load health report.', status: 0 })); return; }
+        var html = '<h2 class="section-title">Health & Resources</h2>';
+        html += '<div class="card"><div class="card-title">Overall Health</div><div class="detail-grid">';
+        html += detailRow('Health Status', badge(report.health_status));
+        html += detailRow('Provider', val(report.provider_type) + (report.provider_id ? ' / ' + esc(report.provider_id) : ''));
+        html += detailRow('Checked At', fmtTime(report.checked_at));
+        html += detailRow('Entity Count', val(report.entity_count));
+        html += '</div></div>';
+        if (report.results && report.results.length > 0) {
+          html += '<div class="card"><div class="card-title">Entity Health Results (' + report.results.length + ')</div>';
+          html += '<div class="table-container"><table><thead><tr><th>Entity ID</th><th>Health</th><th>Availability</th></tr></thead><tbody>';
+          report.results.forEach(function (r) {
+            var eid = r.entity_id || '';
+            html += '<tr class="clickable-row" onclick="location.hash=\'health/' + encodeURIComponent(eid) + '\'"><td class="mono">' + escTrunc(eid, 40) + '</td><td>' + badge(r.health_status) + '</td><td>' + val(r.availability_status) + '</td></tr>';
+          });
+          html += '</tbody></table></div></div>';
+        } else { html += showEmpty('No health results available.', '\u2764'); }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    _renderEntityHealthDetail: function (canonicalId) {
+      this._setContent(showLoading('Loading entity health\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.getEntityHealth(canonicalId),
+        ApiClient.getEntityObservations(canonicalId),
+        ApiClient.getEntityStatus(canonicalId),
+      ]).then(function (results) {
+        var health = results[0], obs = results[1], status = results[2];
+        var html = '<h2 class="section-title">Entity Health Details</h2><p><a href="#health" class="muted">\u2190 Back to Health</a></p>';
+        if (!health) { html += showError({ code: 'NOT_FOUND', message: 'Health data not found.', status: 404 }); }
+        else {
+          html += '<div class="card"><div class="card-title">Health Assessment</div><div class="detail-grid">';
+          html += detailRow('Entity ID', '<span class="mono">' + esc(health.entity_id) + '</span>');
+          html += detailRow('Health Status', badge(health.health_status));
+          html += detailRow('Availability', val(health.availability_status));
+          html += '</div></div>';
+          if (health.resource_statuses) {
+            html += '<div class="card"><div class="card-title">Resource Statuses</div>';
+            html += '<div class="table-container"><table><thead><tr><th>Resource</th><th>Status</th></tr></thead><tbody>';
+            if (typeof health.resource_statuses === 'object' && !Array.isArray(health.resource_statuses)) {
+              Object.keys(health.resource_statuses).forEach(function (key) {
+                var v = health.resource_statuses[key];
+                var st = (typeof v === 'object' && v !== null) ? (v.status || '\u2014') : String(v);
+                html += '<tr><td>' + esc(key) + '</td><td>' + val(st) + '</td></tr>';
+              });
+            }
+            html += '</tbody></table></div></div>';
+          }
+          if (health.capacity_info) { html += '<div class="card"><div class="card-title">Capacity Information</div><pre class="mono">' + esc(JSON.stringify(health.capacity_info, null, 2)) + '</pre></div>'; }
+          if (health.evidence) { html += '<div class="card"><div class="card-title">Evidence</div><pre class="mono">' + esc(JSON.stringify(health.evidence, null, 2)) + '</pre></div>'; }
+        }
+        if (obs && obs.observations && obs.observations.length > 0) {
+          html += '<div class="card"><div class="card-title">Monitoring Observations (' + obs.total + ')</div>';
+          html += '<div class="table-container"><table><thead><tr><th>Health</th><th>Availability</th><th>Observed At</th></tr></thead><tbody>';
+          obs.observations.forEach(function (o) {
+            // Only actual Observation contract fields are displayed. UNKNOWN
+            // policy: never infer healthy when a field is missing or unexpected.
+            var hs = (o && typeof o.health_status === 'string' && o.health_status) ? o.health_status : 'UNKNOWN';
+            var av = (o && typeof o.availability_status === 'string' && o.availability_status) ? o.availability_status : 'UNKNOWN';
+            html += '<tr><td>' + badge(hs) + '</td><td>' + badge(av) + '</td><td>' + fmtTime(o.observed_at) + '</td></tr>';
+          });
+          html += '</tbody></table></div></div>';
+        }
+        if (status) {
+          html += '<div class="card"><div class="card-title">Visibility Status</div><div class="detail-grid">';
+          html += detailRow('Health Status', badge(status.health_status));
+          html += detailRow('Availability', val(status.availability_status));
+          html += detailRow('Active Faults', val(status.active_faults));
+          html += detailRow('Active Alerts', val(status.active_alerts));
+          html += '</div></div>';
+        }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    // ── Monitoring View ─────────────────────────────────────────
+    _renderMonitoring: function () {
+      this._setContent(showLoading('Loading observations\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.listObservations(),
+      ]).then(function (results) {
+        var data = results[0];
+        if (!data) { self._setContent(showError({ code: 'LOAD_FAILED', message: 'Unable to load monitoring data.', status: 0 })); return; }
+        var items = data.observations || [];
+        var html = '<h2 class="section-title">Monitoring Observations</h2>';
+        html += '<p class="muted mb-sm">' + items.length + ' of ' + (data.total || 0) + ' observations</p>';
+        if (items.length === 0) { html += showEmpty('No monitoring observations available.', '\uD83D\uDCC8'); }
+        else {
+          html += '<div class="table-container"><table><thead><tr><th>Entity ID</th><th>Entity Type</th><th>Health</th><th>Availability</th><th>Observed At</th></tr></thead><tbody>';
+          items.forEach(function (o) {
+            // UNKNOWN policy: display the server-provided status as-is.
+            // Never infer healthy when fields are missing or unexpected.
+            var health = (o && typeof o.health_status === 'string' && o.health_status) ? o.health_status : 'UNKNOWN';
+            var avail = (o && typeof o.availability_status === 'string' && o.availability_status) ? o.availability_status : 'UNKNOWN';
+            html += '<tr class="clickable-row" onclick="location.hash=\'inventory/' + encodeURIComponent(o.entity_id || '') + '\'">';
+            html += '<td class="mono">' + escTrunc(o.entity_id || '', 40) + '</td><td>' + val(o.entity_type || '') + '</td>' +
+              '<td>' + badge(health) + '</td><td>' + badge(avail) + '</td><td>' + fmtTime(o.observed_at) + '</td>';
+            html += '</tr>';
+          });
+          html += '</tbody></table></div>';
+        }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    // ── Faults & Alerts View ────────────────────────────────────
+    _renderFaults: function (section, detailId) {
+      var self = this;
+      if (section === 'alerts' && detailId) { this._renderAlertDetail(detailId); return; }
+      if (section === 'fault' && detailId) { this._renderFaultDetail(detailId); return; }
+      this._setContent(showLoading('Loading faults and alerts\u2026'));
+      this._fetchAll([
+        ApiClient.listFaults(),
+        ApiClient.listVisibilityAlerts(),
+      ]).then(function (results) {
+        var faultsData = results[0], alertsData = results[1];
+        var html = '<h2 class="section-title">Faults & Alerts</h2>';
+        html += '<div class="card"><div class="card-title">Faults' + (faultsData ? ' (' + faultsData.total + ')' : '') + '</div>';
+        if (faultsData && faultsData.faults && faultsData.faults.length > 0) {
+          html += '<div class="table-container"><table><thead><tr><th>Fault ID</th><th>Entity ID</th><th>Type</th><th>Severity</th><th>Status</th></tr></thead><tbody>';
+          faultsData.faults.forEach(function (f) {
+            html += '<tr class="clickable-row" onclick="location.hash=\'faults/fault/' + encodeURIComponent(f.fault_id) + '\'"><td class="mono">' + escTrunc(f.fault_id, 30) + '</td><td class="mono">' + escTrunc(f.entity_id, 30) + '</td><td>' + val(f.fault_type) + '</td><td>' + badge(f.severity) + '</td><td>' + badge(f.status) + '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+        } else { html += showEmpty('No faults detected.', '\u2713'); }
+        html += '</div>';
+        html += '<div class="card"><div class="card-title">Alerts' + (alertsData ? ' (' + alertsData.total + ')' : '') + '</div>';
+        if (alertsData && alertsData.alerts && alertsData.alerts.length > 0) {
+          html += '<div class="table-container"><table><thead><tr><th>Alert ID</th><th>Fault ID</th><th>Entity ID</th><th>Severity</th><th>Status</th></tr></thead><tbody>';
+          alertsData.alerts.forEach(function (a) {
+            html += '<tr class="clickable-row" onclick="location.hash=\'faults/alerts/' + encodeURIComponent(a.alert_id) + '\'"><td class="mono">' + escTrunc(a.alert_id, 30) + '</td><td class="mono">' + escTrunc(a.fault_id, 30) + '</td><td class="mono">' + escTrunc(a.entity_id, 30) + '</td><td>' + badge(a.severity) + '</td><td>' + badge(a.status) + '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+        } else { html += showEmpty('No alerts active.', '\u2713'); }
+        html += '</div>';
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    _renderFaultDetail: function (faultId) {
+      this._setContent(showLoading('Loading fault details\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.getFault(faultId),
+      ]).then(function (results) {
+        var fault = results[0];
+        if (!fault) { self._setContent(showError({ code: 'NOT_FOUND', message: 'Fault not found.', status: 404 })); return; }
+        var html = '<h2 class="section-title">Fault Details</h2><p><a href="#faults" class="muted">\u2190 Back to Faults</a></p>';
+        html += '<div class="card"><div class="card-title">Fault Information</div><div class="detail-grid">';
+        html += detailRow('Fault ID', '<span class="mono">' + esc(fault.fault_id) + '</span>');
+        html += detailRow('Entity ID', '<span class="mono">' + esc(fault.entity_id) + '</span>');
+        html += detailRow('Fault Type', val(fault.fault_type));
+        html += detailRow('Severity', badge(fault.severity));
+        html += detailRow('Status', badge(fault.status));
+        html += detailRow('Detected At', fmtTime(fault.detected_at));
+        if (fault.message) html += detailRow('Message', esc(fault.message));
+        html += '</div></div>';
+        if (fault.evidence) { html += '<div class="card"><div class="card-title">Evidence</div><pre class="mono">' + esc(JSON.stringify(fault.evidence, null, 2)) + '</pre></div>'; }
+        html += '<div class="card"><p><a href="#inventory/' + encodeURIComponent(fault.entity_id) + '">View Related Entity \u2192</a></p></div>';
+        html += '<div class="card"><p><a href="#operations">Preview Recovery Action \u2192</a></p></div>';
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    _renderAlertDetail: function (alertId) {
+      this._setContent(showLoading('Loading alert details\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.getVisibilityAlert(alertId),
+      ]).then(function (results) {
+        var alert = results[0];
+        if (!alert) { self._setContent(showError({ code: 'NOT_FOUND', message: 'Alert not found.', status: 404 })); return; }
+        var html = '<h2 class="section-title">Alert Details</h2><p><a href="#faults" class="muted">\u2190 Back to Alerts</a></p>';
+        html += '<div class="card"><div class="card-title">Alert Information</div><div class="detail-grid">';
+        html += detailRow('Alert ID', '<span class="mono">' + esc(alert.alert_id) + '</span>');
+        html += detailRow('Fault ID', '<span class="mono">' + esc(alert.fault_id) + '</span>');
+        html += detailRow('Entity ID', '<span class="mono">' + esc(alert.entity_id) + '</span>');
+        html += detailRow('Fault Type', val(alert.fault_type));
+        html += detailRow('Severity', badge(alert.severity));
+        html += detailRow('Status', badge(alert.status));
+        html += detailRow('Created At', fmtTime(alert.created_at));
+        if (alert.summary) html += detailRow('Summary', esc(alert.summary));
+        html += '</div></div>';
+        html += '<div class="card"><p><a href="#faults/fault/' + encodeURIComponent(alert.fault_id) + '">View Source Fault \u2192</a></p></div>';
+        html += '<div class="card"><p><a href="#inventory/' + encodeURIComponent(alert.entity_id) + '">View Related Entity \u2192</a></p></div>';
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    // ── Operations Preview View ─────────────────────────────────
+    _renderOperations: function () {
+      this._setContent(showLoading('Loading operations data\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.listFaults(),
+        ApiClient.getGraphSummary(),
+      ]).then(function (results) {
+        var faultsData = results[0], graphSummary = results[1];
+        var html = '<h2 class="section-title">Operations Preview</h2>';
+        html += '<div class="preview-warning">\u26A0 This page is PREVIEW ONLY. No operations, mutations, or recovery actions will be executed. Preview results do not indicate that any action was performed.</div>';
+        html += '<div class="card"><div class="card-title">Operation Preview</div><div class="form-row">';
+        html += '<div class="form-group"><label class="form-label">Operation ID</label><input type="text" class="form-input" id="op-id" value="op-preview-001"></div>';
+        html += '<div class="form-group"><label class="form-label">Operation Type</label><select class="form-select" id="op-type"><option value="QUERY_STATUS">QUERY_STATUS</option><option value="RESTART">RESTART</option></select></div>';
+        html += '<div class="form-group"><label class="form-label">Target Canonical ID</label><input type="text" class="form-input" id="op-target" placeholder="k8s:node:..."></div>';
+        html += '<div class="form-group"><label class="form-label">Provider Type</label><select class="form-select" id="op-provider"><option value="KUBERNETES">KUBERNETES</option><option value="UNKNOWN">UNKNOWN</option></select></div>';
+        html += '</div><div class="form-group"><label class="form-label">Reason</label><input type="text" class="form-input" id="op-reason" placeholder="Optional reason"></div>';
+        html += '<button class="btn" type="button" id="btn-op-preview" onclick="App._submitOpPreview()">Preview Operation</button>';
+        html += '<div id="op-preview-result"></div></div>';
+        html += '<div class="card"><div class="card-title">Recovery Preview</div>';
+        if (faultsData && faultsData.faults && faultsData.faults.length > 0) {
+          html += '<div class="form-row"><div class="form-group"><label class="form-label">Fault</label><select class="form-select" id="rec-fault">';
+          faultsData.faults.forEach(function (f) { html += '<option value="' + esc(f.fault_id) + '">' + esc(f.fault_id) + ' (' + esc(f.fault_type) + ')</option>'; });
+          html += '</select></div><div class="form-group"><label class="form-label">Action Type</label><select class="form-select" id="rec-action"><option value="RESTART">RESTART</option></select></div>';
+          html += '<div class="form-group"><label class="form-label">Target Entity ID (optional)</label><input type="text" class="form-input" id="rec-target"></div></div>';
+          html += '<button class="btn" type="button" id="btn-rec-preview" onclick="App._submitRecPreview()">Preview Recovery</button>';
+          html += '<div id="rec-preview-result"></div>';
+        } else { html += showEmpty('No faults available for recovery preview.', '\u26A0'); }
+        html += '</div>';
+        if (graphSummary && graphSummary.node_ids) {
+          html += '<div class="card"><div class="card-title">Available Target Nodes</div><p class="muted">Click a node ID to fill the target field:</p>';
+          html += '<div class="table-container"><table><thead><tr><th>Canonical ID</th></tr></thead><tbody>';
+          graphSummary.node_ids.forEach(function (id) {
+            html += '<tr class="clickable-row" onclick="App._fillTarget(\'' + esc(id) + '\')"><td class="mono">' + esc(id) + '</td></tr>';
+          });
+          html += '</tbody></table></div></div>';
+        }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    _fillTarget: function (id) { var el = document.getElementById('op-target'); if (el) el.value = id; },
+
+    _submitOpPreview: function () {
+      var btn = document.getElementById('btn-op-preview');
+      btn.disabled = true; btn.textContent = 'Previewing\u2026';
+      var resultEl = document.getElementById('op-preview-result');
+      resultEl.innerHTML = showLoading('Generating preview\u2026');
+      var body = {
+        operation_id: document.getElementById('op-id').value,
+        operation_type: document.getElementById('op-type').value,
+        target_canonical_id: document.getElementById('op-target').value,
+        provider_type: document.getElementById('op-provider').value,
+        reason: document.getElementById('op-reason').value,
+      };
+      var self = this;
+      ApiClient.previewOperation(body).then(function (p) {
+        resultEl.innerHTML = self._renderOpPreviewResult(p);
+      }).catch(function (e) { resultEl.innerHTML = showError(e); })
+      .then(function () { btn.disabled = false; btn.textContent = 'Preview Operation'; });
+    },
+
+    _renderOpPreviewResult: function (p) {
+      var html = '<div class="preview-result"><div class="preview-warning">\u26A0 This is a PREVIEW only. No operation was executed.</div><div class="detail-grid">';
+      html += detailRow('Operation ID', val(p.operation_id));
+      html += detailRow('Operation Type', val(p.operation_type));
+      html += detailRow('Target', '<span class="mono">' + esc(p.target_canonical_id) + '</span>');
+      html += detailRow('Resolved', p.resolved ? '\u2713 Yes' : '\u2717 No');
+      if (p.resolved_target_canonical_id) html += detailRow('Resolved Target', '<span class="mono">' + esc(p.resolved_target_canonical_id) + '</span>');
+      html += detailRow('Capability Decision', badge(p.capability_decision));
+      html += detailRow('Expected Effect', val(p.expected_effect));
+      html += detailRow('Safety Result', badge(p.safety_result));
+      if (p.safety_reason) html += detailRow('Safety Reason', val(p.safety_reason));
+      html += detailRow('Authorization Level', val(p.authorization_level));
+      html += deta

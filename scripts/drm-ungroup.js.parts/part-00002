@@ -1,0 +1,221 @@
+'\n'), 'utf-8');
+        const htmlSize = fs.statSync(htmlPath).size;
+        log(`HTML 파일 생성: ${Math.round(htmlSize / 1024)} KB`);
+        log(`HTML 파일: ${htmlPath}`);
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+
+    } else {
+      // fast 모드
+      const tempPs1 = path.join(os.tmpdir(), `ppt-com-${Date.now()}.ps1`);
+      fs.writeFileSync(tempPs1, '\ufeff' + PS_PPT_EXTRACT);
+
+      try {
+        log('PowerPoint COM 으로 텍스트 추출 중...');
+
+        const textOutputFile = path.join(outputFolder, `${baseName}_fast.txt`);
+
+        execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, {
+          env: { ...process.env, DOC_PATH: inputFile, OUTPUT_FILE: textOutputFile },
+          timeout: 300000,
+          encoding: 'utf-8',
+          maxBuffer: 100 * 1024 * 1024,
+        });
+
+        let textLength = 0;
+        if (fs.existsSync(textOutputFile)) {
+          textLength = fs.readFileSync(textOutputFile, 'utf-8').length;
+        }
+        log(`텍스트 추출 완료 (${textLength} 자)`);
+        log(`텍스트 파일 저장: ${textOutputFile}`);
+
+        if (fs.existsSync(textOutputFile)) {
+          const content = fs.readFileSync(textOutputFile, 'utf-8');
+          const preview = content.substring(0, 200).replace(/\n/g, ' ');
+          log(`미리보기: ${preview}...`);
+        }
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+    }
+
+  } catch (error) {
+    log(`오류: ${error.message}`, 'ERROR');
+    if (error.message.includes('PowerPoint')) {
+      log('MS PowerPoint 가 설치되어 있지 않거나 실행 중인지 확인하세요.', 'ERROR');
+    }
+    throw error;
+  }
+}
+
+// ============================================================================
+// PDF 문서 처리 (Python pypdf2)
+// ============================================================================
+
+const PY_EXTRACT_PDF = `
+import sys
+from pypdf import PdfReader
+
+try:
+    pdf_path = sys.argv[1]
+    text_dir = sys.argv[2]
+    
+    print(f"PDF 파일 확인: {pdf_path}")
+    
+    reader = PdfReader(pdf_path)
+    text = ""
+    
+    for page in reader.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text + "\\n\\n"
+    
+    import os
+    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    text_file = os.path.join(text_dir, f"{base_name}-pdf.txt")
+    
+    with open(text_file, 'w', encoding='utf-8') as f:
+        f.write(text)
+    
+    print(f"추출된 텍스트: {len(text)} 자")
+    print(f"텍스트 저장: {text_file}")
+    
+except Exception as e:
+    print(f"오류: {str(e)}", file=sys.stderr)
+    sys.exit(1)
+`;
+
+async function processPdf(inputFile, outputFolder, mode, baseName) {
+  log('PDF 문서 처리 시작 (Python pypdf2 사용)');
+
+  const tempPy = path.join(os.tmpdir(), `pdf-extract-${Date.now()}.py`);
+  fs.writeFileSync(tempPy, PY_EXTRACT_PDF);
+
+  try {
+    log('PDF 텍스트 추출 중...');
+
+    const result = execSync(`python "${tempPy}" "${inputFile}" "${outputFolder}"`, {
+      encoding: 'utf-8',
+      maxBuffer: 100 * 1024 * 1024,
+      timeout: 300000,
+    });
+
+    log(result.trim());
+
+    const textFile = path.join(outputFolder, `${baseName}-pdf.txt`);
+    if (fs.existsSync(textFile)) {
+      const textLength = fs.statSync(textFile).size;
+      log(`텍스트 파일 크기: ${textLength.toLocaleString()} bytes`);
+    }
+  } catch (error) {
+    log(`오류: ${error.message}`, 'ERROR');
+    log('Python pypdf2 가 설치되어 있는지 확인하세요: pip install pypdf', 'ERROR');
+    // Python이 없는 경우 pdf-parse fallback
+    log('pdf-parse 로 fallback 시도...');
+    try {
+      const pdfParse = require('pdf-parse');
+      const pdfBuffer = fs.readFileSync(inputFile);
+      const pdfData = await pdfParse(pdfBuffer);
+      log(`텍스트 추출 완료 (${pdfData.text.length} 문자)`);
+      log(`페이지 수: ${pdfData.numpages}`);
+      const textOutputFile = path.join(outputFolder, `${baseName}_${mode}.txt`);
+      fs.writeFileSync(textOutputFile, pdfData.text, 'utf-8');
+      log(`텍스트 파일 저장: ${textOutputFile}`);
+    } catch (fallbackErr) {
+      log(`fallback 오류: ${fallbackErr.message}`, 'ERROR');
+      throw fallbackErr;
+    }
+  } finally {
+    try { fs.unlinkSync(tempPy); } catch (e) {}
+  }
+}
+
+// ============================================================================
+// 메인 로직
+// ============================================================================
+
+async function main() {
+  const args = process.argv.slice(2);
+
+  if (args.length < 3) {
+    console.error('사용법: node drm-ungroup.js <input_file> <doc_type> <mode> [output_folder]');
+    console.error('  doc_type: word | excel | ppt | pdf');
+    console.error('  mode: fast | capture | html');
+    process.exit(1);
+  }
+
+  const inputFile = path.resolve(args[0]);
+  const docType = args[1]; // word, excel, ppt, pdf
+  const mode = args[2]; // fast, capture, html
+  const outputFolder = args[3]
+    ? path.resolve(args[3])
+    : path.join(__dirname, '..', 'output', 'drm-ungrouped');
+
+  const modeNames = {
+    fast: '빠른 텍스트 추출',
+    capture: '캡처 추출 (텍스트 + 그림/표)',
+    html: 'HTML 저장 (DRM 제거)',
+  };
+
+  log(`=== DRM 문서 풀기 시작 ===`);
+  log(`입력 파일: ${inputFile}`);
+  log(`문서 종류: ${docType}`);
+  log(`처리 방식: ${modeNames[mode] || mode}`);
+  log(`출력 폴더: ${outputFolder}`);
+  log('');
+
+  // 입력 파일 존재 확인
+  if (!fs.existsSync(inputFile)) {
+    log(`오류: 입력 파일을 찾을 수 없습니다: ${inputFile}`, 'ERROR');
+    process.exit(1);
+  }
+
+  // 출력 폴더 생성
+  if (!fs.existsSync(outputFolder)) {
+    fs.mkdirSync(outputFolder, { recursive: true });
+  }
+
+  const ext = path.extname(inputFile).toLowerCase();
+  const baseName = path.basename(inputFile, ext);
+
+  try {
+    switch (docType) {
+      case 'word':
+        await processWord(inputFile, outputFolder, mode, baseName);
+        break;
+      case 'excel':
+        await processExcel(inputFile, outputFolder, mode, baseName);
+        break;
+      case 'ppt':
+        await processPowerPoint(inputFile, outputFolder, mode, baseName);
+        break;
+      case 'pdf':
+        await processPdf(inputFile, outputFolder, mode, baseName);
+        break;
+      default:
+        log(`지원하지 않는 문서 종류: ${docType}`, 'ERROR');
+        log('지원 종류: word, excel, ppt, pdf', 'ERROR');
+        process.exit(1);
+    }
+
+    log('');
+    log('=== DRM 문서 풀기 완료! ===');
+    log(`출력 폴더: ${outputFolder}`);
+
+    // 출력 파일 목록 표시
+    const outputFiles = fs.readdirSync(outputFolder).filter(f => f.startsWith(baseName));
+    log(`출력 파일 수: ${outputFiles.length}`);
+    outputFiles.forEach(f => log(`  - ${f}`));
+
+  } catch (error) {
+    log(`변환 오류: ${error.message}`, 'ERROR');
+    process.exit(1);
+  }
+}
+
+// 실행
+main().catch((error) => {
+  log(`치명적 오류: ${error.message}`, 'ERROR');
+  process.exit(1);
+});

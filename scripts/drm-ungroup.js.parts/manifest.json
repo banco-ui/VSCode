@@ -1,0 +1,12 @@
+{
+  "originalPath": "scripts/drm-ungroup.js",
+  "originalSize": 32072,
+  "sha256": "45f6541475f698a24a17be944e16dae20f4cad05a70ab700f020025c0be89f26",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"scripts/drm-ungroup.js\""
+}

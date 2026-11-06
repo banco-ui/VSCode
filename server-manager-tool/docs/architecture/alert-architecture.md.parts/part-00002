@@ -1,0 +1,401 @@
+ge Cases
+
+### Q7 답변: Snapshot이 누락된 경우
+
+```python
+# previous_snapshot이 None인 경우:
+# - 첫 번째 snapshot: baseline만 설정, degradation alert 생성하지 않음
+# - 단, 현재 health != OK인 경우: 상태 alert 생성 (degradation 아님)
+if previous_snapshot is None:
+    # First snapshot: create alerts for current non-OK states
+    # but don't create "degradation" alerts (no previous to compare)
+    if current.health.psu != OK:
+        create_alert(PSU_FAILURE)  # condition-based, not degradation-based
+    return
+```
+
+### Q8 답변: 첫 번째 snapshot
+
+첫 번째 snapshot에서는:
+- Health degradation alert 생성하지 않음 (이전 상태 없음)
+- 현재 health != OK인 상태는 condition-based alert로 생성
+- Inventory change alert 생성하지 않음 (이전 상태 없음)
+- Verification discrepancy는 생성 (이전 상태 무관)
+
+### Q9 답변: UNREACHABLE 지속 시 Alert 횟수
+
+```python
+# UNREACHABLE이 지속되면:
+# - 첫 번째: SERVER_UNREACHABLE alert OPEN
+# - 두 번째 이후: 동일 fingerprint, last_seen_at만 갱신 (duplicate suppression)
+# - 새 alert 생성하지 않음
+# - 단, 24시간 이상 경과 시 last_updated_at 갱신 + UPDATED event
+```
+
+---
+
+## 14. Security
+
+### Credential Leak 방지
+
+1. AlertRecord/AlertEvent 모델에 `extra="forbid"` 적용
+2. `previous_value`, `current_value`, `metadata`에 credential 미포함
+3. Alert message에 password/token/api_key/private_key/secret/MAC address 미포함
+4. serial_number/service_tag는 이미 마스킹된 상태로 canonical 값에서 가져옴
+5. AlertEngine log message에 credential 미포함
+
+### Alert Message 예시
+
+```
+✗ OK:
+  "PSU health degraded from OK to Critical on server R750-001"
+
+✗ BAD (금지):
+  "PSU health degraded, password=xxx, mac=aa:bb:cc:dd:ee:ff"
+```
+
+---
+
+## 15. Test Strategy
+
+### Detection Tests
+
+| Test | 설명 |
+|------|------|
+| test_server_unreachable | lifecycle=UNREACHABLE → SERVER_UNREACHABLE alert |
+| test_psu_failure | health.psu=Critical → PSU_FAILURE alert |
+| test_thermal_anomaly | health.thermal=Warning → THERMAL_ANOMALY alert |
+| test_storage_warning | health.storage=Critical → STORAGE_WARNING alert |
+| test_health_degradation | OK→Warning → alert OPEN |
+| test_health_unchanged | Warning→Warning → no new alert (duplicate suppression) |
+| test_health_recovery | Warning→OK → alert RESOLVED + HEALTH_RECOVERED |
+| test_verification_discrepancy | discrepancy_count>0 → HARDWARE_DISCREPANCY alert |
+| test_hardware_change | CPU cores changed → HARDWARE_CHANGE alert |
+| test_os_change | OS distribution changed → OS_CHANGE alert |
+| test_os_reinstall | same hardware_identity + OS change → OS_REINSTALL alert |
+| test_eligibility_change | COMPUTE_ELIGIBLE→EXCLUDED → COMPUTE_ELIGIBILITY_CHANGE alert |
+
+### Lifecycle Tests
+
+| Test | 설명 |
+|------|------|
+| test_alert_open | 새 alert OPEN 생성 |
+| test_duplicate_suppression | 동일 condition → no new alert |
+| test_escalation | Warning→Critical → severity upgrade |
+| test_acknowledged | OPEN→ACKNOWLEDGED |
+| test_resolved | condition recovered → RESOLVED |
+| test_reopen | RESOLVED→condition re-occurred → REOPENED |
+
+### Idempotency Tests
+
+| Test | 설명 |
+|------|------|
+| test_same_snapshot_twice | 동일 snapshot 재처리 → no duplicate alert |
+| test_same_run_twice | 동일 run_id 재처리 → no duplicate |
+
+### Fault Isolation Tests
+
+| Test | 설명 |
+|------|------|
+| test_alert_store_failure | AlertStore 실패 → orchestration 성공 유지 |
+| test_malformed_snapshot | 잘못된 snapshot → graceful skip |
+| test_missing_previous | previous snapshot 없음 → baseline only |
+| test_missing_verification | verification 없음 → skip discrepancy alert |
+
+### Security Tests
+
+| Test | 설명 |
+|------|------|
+| test_no_credential_in_alert | password/token/secret 미포함 |
+| test_no_mac_in_alert | MAC address 미포함 |
+| test_extra_forbid | extra field 거부 |
+
+### Regression
+
+기존 237개 테스트가 계속 통과해야 한다.
+
+---
+
+## 16. Phase 8 Implementation Plan
+
+### Phase 8.1: Alert Domain Models
+
+```
+src/server_manager/alerts/
+    __init__.py
+    models.py          # AlertRecord, AlertEvent, AlertType, AlertSeverity, AlertStatus
+```
+
+### Phase 8.2: AlertStore (SQLite)
+
+```
+src/server_manager/alerts/
+    store.py           # AlertStore: CRUD for alerts + alert_events
+```
+
+- `alerts` 테이블 + `alert_events` 테이블 생성
+- `find_open_alert(fingerprint)`, `create_alert()`, `update_alert()`, `list_alerts()`
+- InventoryStore에 `alerts` 테이블 추가 또는 별도 AlertStore class
+
+### Phase 8.3: AlertEngine
+
+```
+src/server_manager/alerts/
+    engine.py          # AlertEngine: detection rules, dedup, lifecycle
+```
+
+- `process_snapshot()` 메인 진입점
+- 각 detection rule 구현
+- Fingerprint 생성 및 dedup logic
+- Recovery detection
+
+### Phase 8.4: Orchestrator Integration
+
+```
+src/server_manager/store/store.py (수정)
+    # save_orchestration_result() 끝에 alert processing 추가 (fault isolated)
+```
+
+### Phase 8.5: Dashboard Alert Query
+
+```
+src/server_manager/dashboard/query_service.py (확장)
+    # get_alerts(), get_alert_detail(), get_alert_summary()
+```
+
+### Phase 8.6: Tests
+
+```
+tests/test_alerts.py
+    # Detection, Lifecycle, Idempotency, Fault Isolation, Security tests
+```
+
+### Phase 8.7: Documentation
+
+```
+docs/implementation/phase-8-alerts.md
+```
+
+---
+
+## 17. Issues
+
+### P0 (Critical)
+
+없음.
+
+### P1 (Should fix before/during implementation)
+
+1. **AlertStore 위치 결정**: InventoryStore에 통합할지 별도 class로 분리할지 최종 결정 필요. 권장은 같은 DB 내 별도 테이블 + AlertStore class로 분리.
+
+2. **OrchestrationResult.status == FAILED 판단**: 현재 `save_orchestration_result()`에서 orchestration status를 기반으로 SERVER_UNREACHABLE을 판단해야 하지만, 이는 Collector 실패와 Server 실제 unreachable을 구분해야 함.
+
+### P2 (Nice to have)
+
+3. **Alert retention policy**: 해결된 alert를 얼마나 보존할 것인가? (권장: 90일)
+
+4. **Alert acknowledgment UI**: 현재는 API만 제공, manual acknowledge는 향후 UI에서.
+
+5. **Notification throttling**: 같은 서버에서 너무 많은 alert가 발생하는 경우 throttling.
+
+### P3 (Future)
+
+6. **Notification adapter**: Email/Slack/Teams/Webhook 연동 (Phase 9+)
+
+7. **Alert correlation**: 여러 alert가 동일 근본 원인을 가지는 경우 grouping
+
+8. **Machine learning**: Anomaly detection based on historical patterns
+
+---
+
+## 18. Q&A Summary
+
+### Q1: InventoryStore에 통합 vs 별도 AlertStore?
+→ 같은 SQLite DB 내 별도 `alerts`/`alert_events` 테이블. AlertStore class로 분리.
+
+### Q2: AlertRecord와 AlertEvent 분리?
+→ Yes. AlertRecord (현재 상태, mutable) + AlertEvent (이력, append-only).
+
+### Q3: Fingerprint?
+→ `sha256(server_id + ":" + alert_type + ":" + field_path)`
+
+### Q4: Deduplication?
+→ Fingerprint로 기존 OPEN alert 검색. 동일 condition이면 last_seen_at만 갱신.
+
+### Q5: Warning → Critical 같은 Alert?
+→ Yes. 같은 fingerprint, severity만 upgrade. ESCALATED event 기록.
+
+### Q6: Recovery 판단?
+→ 이전 snapshot health != OK, 현재 health == OK → RESOLVED.
+
+### Q7: Snapshot 누락?
+→ previous_snapshot이 None이면 baseline만 설정, degradation alert 생성하지 않음.
+
+### Q8: 첫 번째 snapshot?
+→ Health degradation/inventory change alert 생성하지 않음. 현재 non-OK health는 condition-based alert 생성.
+
+### Q9: UNREACHABLE 지속?
+→ 첫 번째: OPEN. 이후: duplicate suppression (last_seen_at만 갱신).
+
+### Q10: 연결 지점?
+→ `save_orchestration_result()` 완료 후, fault isolated.
+
+### Q11: Alert 실패 영향?
+→ Alert 실패는 log에 기록, orchestration 성공에 영향 없음.
+
+### Q12: Alert history 보존?
+→ 권장 90일. RESOLVED alert는 90일 후 자동 삭제 (config 가능).
+
+### Q13: Notification 연결?
+→ 향후 `NotificationAdapter` 인터페이스로 확장. AlertEngine → NotificationAdapter.
+
+### Q14: 확장성?
+→ 수십 대: 충분. 수백 대: SQLite WAL mode + index로 대응 가능. 수천 대: PostgreSQL migration 검토.
+
+---
+
+## 19. Project Context
+
+```
+Server Manager
+│
+├── Phase 8: Alert / Early Fault Detection (이번 설계)
+│
+├── Dashboard & Topology (Phase 7 COMPLETE)
+│   → Alert를 Dashboard에서 표시 (Phase 8.5에서 연결)
+│
+├── CaaS Recovery Wizard (WRCP) (future)
+│   → Alert가 trigger가 되어 recovery 자동화 가능
+│   → 단, 이번 Phase에서는 구현하지 않음
+│
+└── Switch Zero-Touch Backup/Restore (future)
+    → Switch 장애 alert 연계 가능
+    → 단, 이번 Phase에서는 구현하지 않음
+```
+
+---
+
+## PHASE 8 ALERT DESIGN REVIEW
+
+```
+Status:
+READY_FOR_IMPLEMENTATION
+
+Repository inspection:
+- Phase 0-7 code and models verified from conversation context
+- VerificationResult: field_results, discrepancy_count, verified_count, etc.
+- OrchestrationResult: run_id, status, source_results, canonical_inventory
+- InventoryStore: save_snapshot (P1 fixed), get_current_snapshot, list_snapshots
+- DashboardQueryService: get_snapshot_diff, get_server_list, get_dashboard_summary
+- SnapshotDiff: compute_snapshot_diff (recursive, deterministic)
+- Health model: 8 health fields (system, cpu, memory, storage, thermal, network, psu, fan)
+- ServerLifecycle: 5 states (ACTIVE, MAINTENANCE, UNREACHABLE, DECOMMISSIONED, PROVISIONING)
+
+Current architecture:
+- Collector → Normalizer → Verifier → Orchestrator → InventoryStore → DashboardQueryService
+- Append-only snapshot storage with idempotency (run_id based)
+- P1 fix applied (cursor.rowcount check in save_snapshot)
+
+Recommended architecture:
+- Add AlertEngine as post-save processor (fault isolated)
+- Add alerts + alert_events tables to same SQLite DB
+- AlertStore class for CRUD operations
+- AlertEngine uses existing Store data (read-only) + SnapshotDiff
+
+Alert model:
+- AlertRecord (mutable, current state) + AlertEvent (append-only, history)
+- AlertType: 15 types across 6 categories
+- AlertSeverity: INFO/WARNING/CRITICAL
+- AlertStatus: OPEN/ACKNOWLEDGED/RESOLVED
+
+Detection rules:
+- Server unreachable (lifecycle/status)
+- Health degradation (8 health fields, previous vs current)
+- Hardware discrepancy (Verifier result, not recomputed)
+- Inventory change (SnapshotDiff)
+- OS change/reinstall (hardware_identity comparison)
+- Compute eligibility change (canonical value diff)
+- Recovery (health != OK → OK)
+
+Lifecycle:
+- OPEN → ACKNOWLEDGED → RESOLVED
+- OPEN → RESOLVED (auto, on recovery)
+- RESOLVED → OPEN (re-open, on re-occurrence)
+- Warning → Critical escalation (same alert, severity upgrade)
+
+Deduplication:
+- Fingerprint: sha256(server_id + alert_type + field_path)
+- Same fingerprint + OPEN → update last_seen_at only
+- Same fingerprint + RESOLVED → re-open
+
+Storage:
+- Same SQLite DB, separate alerts + alert_events tables
+- AlertStore class (separate from InventoryStore)
+- Indexes on server_id, fingerprint, status
+
+Idempotency:
+- server_id + snapshot_id + fingerprint
+- Already-processed snapshot → skip
+
+Fault isolation:
+- AlertEngine failure → log error, return success
+- Orchestrator pipeline unaffected
+
+Security:
+- extra="forbid" on all alert models
+- No credential/MAC in alert data
+- Masked serial/service_tag only
+
+Test strategy:
+- Detection: 12 test cases
+- Lifecycle: 6 test cases
+- Idempotency: 2 test cases
+- Fault isolation: 4 test cases
+- Security: 3 test cases
+- Regression: 237 existing tests must pass
+
+Implementation phases:
+- Phase 8.1: Alert domain models
+- Phase 8.2: AlertStore (SQLite)
+- Phase 8.3: AlertEngine (detection rules)
+- Phase 8.4: Orchestrator integration
+- Phase 8.5: Dashboard alert query
+- Phase 8.6: Tests
+- Phase 8.7: Documentation
+
+P0:
+- (none)
+
+P1:
+- AlertStore integration approach (same DB, separate class)
+- OrchestrationResult FAILED vs actual unreachable distinction
+
+P2:
+- Alert retention policy (90 days recommended)
+- Alert acknowledgment UI
+- Notification throttling
+
+P3:
+- Notification adapter (Email/Slack/Teams)
+- Alert correlation
+- ML-based anomaly detection
+
+Files created:
+- docs/architecture/alert-architecture.md (this document)
+
+Code changes:
+- NONE
+
+Server changes:
+- NONE
+
+Database changes:
+- NONE (design only; implementation will add alerts/alert_events tables)
+
+Final recommendation:
+- READY_FOR_IMPLEMENTATION
+- Phase 8.1 (models) → 8.2 (store) → 8.3 (engine) → 8.4 (integration) → 8.5 (dashboard) → 8.6 (tests) → 8.7 (docs)
+- Estimated new tests: ~27 TC (total: ~264)
+- Schema v1.0 remains FROZEN
+- Alert is a separate domain, not part of ServerInventory
+```

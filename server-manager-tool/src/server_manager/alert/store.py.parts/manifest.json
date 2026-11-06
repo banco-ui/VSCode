@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/alert/store.py",
+  "originalSize": 26045,
+  "sha256": "3f32157064851f6e60f719548128e1fd932de64ad469e1eefc51bd2b4666cc5b",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/alert/store.py\""
+}

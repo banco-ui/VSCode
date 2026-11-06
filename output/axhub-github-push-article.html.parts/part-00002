@@ -1,0 +1,133 @@
+vc$view" src="/scripts/CKEditorReactive.CKFlow.CKEditor.mvc.js?I_gIDES6QMA+61vBd9sdDA"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="AI_Agent_Wrapper.model" src="/scripts/AI_Agent_Wrapper.model.js?O1xSvKXFTzU2MOWb70SQQQ"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="MultipleFileUploadReactive_CW.FileUploadWithBinaryData.FileUpload_BinaryData.mvc$view" src="/scripts/MultipleFileUploadReactive_CW.FileUploadWithBinaryData.FileUpload_BinaryData.mvc.js?g0P2va+1CfalSJUzQPZH8A"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="CKEditorReactive.model" src="/scripts/CKEditorReactive.model.js?Fw0ctohdQ+WsJpHLgLkt0w"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="CKEditorReactive.clientVariables" src="/scripts/CKEditorReactive.clientVariables.js?UA1CtFvk7IwH+cvIH2T75Q"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="CKEditorReactive.languageResources" src="/scripts/CKEditorReactive.languageResources.js?tlNm_XCFpARxPq7r3g36nw"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="AX_Hub_Landing_V4.LayoutTopMenu.LayoutTopMenu_Header_LNB_Section_Item.mvc$model" src="/scripts/AX_Hub_Landing_V4.LayoutTopMenu.LayoutTopMenu_Header_LNB_Section_Item.mvc.js?X3fawnRlRhfRLKlQpvfUkg"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="MultipleFileUploadReactive_CW.model" src="/scripts/MultipleFileUploadReactive_CW.model.js?JVwko0TSDncit058noByIQ"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="MultipleFileUploadReactive_CW.controller" src="/scripts/MultipleFileUploadReactive_CW.controller.js?HcVmimIKH_Wtu7DH_MQcUQ"></script><script type="text/javascript" charset="utf-8" async="" data-requirecontext="_" data-requiremodule="MultipleFileUploadReactive_CW.languageResources" src="/scripts/MultipleFileUploadReactive_CW.languageResources.js?vPbJagpLp1lU7VTyEbTqIw"></script><script src="/scripts/OutSystemsUI.OutSystemsUI.js?gQesJhKgOxZH_fi2KPujNw" data-os-finished="true"></script><script src="/scripts/OutSystemsUI.FloatingUICore.js?3L8gtehLwnHkVDOln8bm8w" data-os-finished="true"></script><script src="/scripts/OutSystemsUI.FloatingUIDom.js?iJYMx0VVRD+p2HyuiRx0yw" data-os-finished="true"></script><script src="/scripts/CKEditorReactive.jQuery.js?RoI4ORp4XK1ZqfViqmlsCg" data-os-finished="true"></script><script src="/scripts/CKEditorReactive.CKEditor.js?66Pq20w4qmxXeIpodMzX0Q" data-os-finished="true"></script><script src="/scripts/OutSystemsUI.Flatpickr.js?D1BAomZQZEr_PhgHRXH71g" data-os-finished="true"></script><script src="/scripts/OutSystemsUI.FlatpickrLocale.js?ljK4P8JVjB9AfmRi9QXwPA" data-os-finished="true"></script><script src="/scripts/OutSystemsUI.MWO.js?fZcFt60k3mJDWeENwt0Gbg" data-os-finished="true"></script><link type="image/x-icon" rel="shortcut icon" href="favicon.png"></head>
+    <body class="portrait desktop is-ltr windows chrome is--touch">
+        <div id="reactContainer"><div id="transitionContainer"><div class="active-screen screen-container fade-enter-done"><div data-container=""><div data-block="Layouts.LayoutTopMenu" class="OSBlockWidget" id="$b1"><div data-container="" class="layout layout-top fixed-header Dark-theme" id="b1-LayoutWrapper"><div data-container="" class="main"><header data-advancedhtml="" role="banner" class="header no-responsive" id="b1-Header2"><div data-container="" class="header-top ThemeGrid_Container"><div data-container="" class="header-content display-flex "><div class="header-navigation OSInline" id="b1-Header"><div data-block="LayoutTopMenu.LayoutTopMenu_Header" class="OSBlockWidget" id="$b2"><nav data-advancedhtml="" class="top-nav-wrap" role="navigation"><a data-link="" class="tmp-bi" href="#"><img data-image="" src="/img/AX_Hub_Landing_V4.AXHub_Logo.png?WVKW0ZkGt98m9wsLppGqcw"></a><div data-container="" class="app-menu-links gnb-col" role="menubar" id="b2-GNB_Wrap"><div data-container=""><div data-container="" class="list list-group"><div data-block="LayoutTopMenu.LayoutTopMenu_Header_GNB_Item" class="OSBlockWidget" id="b2-$b3"><a data-link="" class="" href="#"><span data-expression="">Home</span></a></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_GNB_Item" class="OSBlockWidget" id="b2-$b4"><a data-link="" class="" href="#"><span data-expression="">AI Services</span></a></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_GNB_Item" class="OSBlockWidget" id="b2-$b5"><a data-link="" class="" href="#"><span data-expression="">AI News</span></a></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_GNB_Item" class="OSBlockWidget" id="b2-$b6"><a data-link="" class="" href="#"><span data-expression="">AI Practices</span></a></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_GNB_Item" class="OSBlockWidget" id="b2-$b7"><a data-link="" class="" href="#"><span data-expression="">AI Learning</span></a></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_GNB_Item" class="OSBlockWidget" id="b2-$b8"><a data-link="" class="" href="#"><span data-expression="">AI Community</span></a></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_GNB_Item" class="OSBlockWidget" id="b2-$b9"><a data-link="" class="" href="#"><span data-expression="">AI Ranking</span></a></div></div></div><div data-container="" id="b2-TopLNB_Wrap"><div data-advancedhtml="" class="dimd"></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB" class="OSBlockWidget" id="b2-$b10"><ul data-advancedhtml="" class="gnb-col-content"><div data-container="" class="lnb-box-wrap"><div data-list="" class="lnb-box-wrap-mymenu OSFillParent" id="b2-b10-MenuGroupList" style="position: relative;"><script style=""></script><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB_Section" class="OSBlockWidget" id="b2-b10-l1-60_0-$b2"><li data-advancedhtml="" class="lnb"><div data-list="" class="&quot;list list-group&quot;" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></li></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB_Section" class="OSBlockWidget" id="b2-b10-l1-60_1-$b2"><li data-advancedhtml="" class="lnb"><div data-list="" class="&quot;list list-group&quot;" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></li></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB_Section" class="OSBlockWidget" id="b2-b10-l1-60_2-$b2"><li data-advancedhtml="" class="lnb"><div data-list="" class="&quot;list list-group&quot;" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></li></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB_Section" class="OSBlockWidget" id="b2-b10-l1-60_3-$b2"><li data-advancedhtml="" class="lnb"><div data-list="" class="&quot;list list-group&quot;" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></li></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB_Section" class="OSBlockWidget" id="b2-b10-l1-60_4-$b2"><li data-advancedhtml="" class="lnb"><div data-list="" class="&quot;list list-group&quot;" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></li></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB_Section" class="OSBlockWidget" id="b2-b10-l1-60_5-$b2"><li data-advancedhtml="" class="lnb"><div data-list="" class="&quot;list list-group&quot;" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></li></div><div data-block="LayoutTopMenu.LayoutTopMenu_Header_LNB_Section" class="OSBlockWidget" id="b2-b10-l1-60_6-$b2"><li data-advancedhtml="" class="lnb"><div data-list="" class="&quot;list list-group&quot;" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></li></div><script style="display: flex; height: 0px; width: 100%;"></script></div></div></ul></div></div></div><div data-container="" class="pnb-nav" id="b2-PNB_Wrap"><div data-container="" class="right_search" id="b2-searchbox"><span class="input-search"><input data-input="" class="form-control OSFillParent" type="search" aria-required="false" maxlength="50" autocomplete="Off" value="" id="b2-search" style="user-select: auto;"></span><img data-image="" class="right_icon" src="/img/AX_Hub_Landing_V4.search_icon_dark.png?KhxxZmHC4mDwi1PISrrnvw"></div><div data-container="" id="b2-NavLanguage" style="display: none;"><div data-block="B_CM_GL.CM_GL_Language" class="OSBlockWidget" id="b2-$b11"><div data-container="" role="button"><div data-block="Content.Tooltip" class="OSBlockWidget" id="b2-b11-Language"><div data-container="" class="osui-tooltip osui-tooltip--is-hover" name="0.o309437fwtp" id="b2-b11-b1-TooltipWrapper"><div class="osui-tooltip__content" id="b2-b11-b1-Content" role="button" aria-describedby="b2-b11-b1-Tooltip" tabindex="0" default-tabindex-element=""><div data-popover="" class="popover language-popover"><div class="popover-top" tabindex="0"><div data-container="" style="cursor: pointer;"><i data-icon="" class="icon fa fa-globe fa-1x"></i></div></div></div></div><div data-container="" class="osui-tooltip__balloon-wrapper osui-balloon" data-uniqueid="0.o309437fwtp" id="b2-b11-b1-TooltipBallonWrapper" role="tooltip" aria-hidden="true" style="--osui-balloon-width: max-content; --osui-balloon-shape: var(--border-radius-none);"><div class="osui-tooltip__balloon-wrapper__balloon OSInline" id="b2-b11-b1-Tooltip">언어 선택</div><div data-container="" class="osui-tooltip__balloon-arrow" id="b2-b11-b1-ArrowElement"></div></div></div></div></div></div></div><div data-container="" class="app-login-info ph" id="b2-LoginInfo"><div data-block="Common.UserInfoN" class="OSBlockWidget" id="b2-$b12"><div data-container="" class="user-info OSInline"><div data-container=""><div data-block="Content.Tooltip" class="OSBlockWidget" id="b2-b12-$b1"><div data-container="" class="osui-tooltip osui-tooltip--is-hover" name="0.0swmsbq0405f" id="b2-b12-b1-TooltipWrapper"><div class="osui-tooltip__content" id="b2-b12-b1-Content" role="button" aria-describedby="b2-b12-b1-Tooltip" tabindex="0" default-tabindex-element=""><div data-popover="" class="popover myInfo-popover"><div class="popover-top" tabindex="0"><div data-block="Content.UserAvatar" class="OSBlockWidget" id="b2-b12-$b2"><div data-container="" class="avatar  border-radius-rounded background-primary myinfo" aria-label="사용자 이니셜,배" role="img"><span data-expression="" class="OSFillParent">배</span></div></div></div></div></div><div data-container="" class="osui-tooltip__balloon-wrapper osui-balloon" data-uniqueid="0.0swmsbq0405f" id="b2-b12-b1-TooltipBallonWrapper" role="tooltip" aria-hidden="true" style="--osui-balloon-width: max-content; --osui-balloon-shape: var(--border-radius-none);"><div class="osui-tooltip__balloon-wrapper__balloon OSInline" id="b2-b12-b1-Tooltip"><span class="">나의 정보</span></div><div data-container="" class="osui-tooltip__balloon-arrow" id="b2-b12-b1-ArrowElement"></div></div></div></div></div></div><div data-block="AppGen_Component.OnChangeLocale" class="OSBlockWidget" id="b2-b12-$b3"></div></div></div></div></nav><div data-block="AppGen_Component.OnChangeLocale" class="OSBlockWidget" id="b2-$b13"></div></div></div></div></div></header><div data-container="" class="body-wrapall"><div data-container="" class="content" id="b1-Content"><div data-container="" class="main-content ThemeGrid_Container" role="main" id="b1-MainContentWrapper"><div data-container="" class="content-top"><div class="content-top-title heading1 ph ThemeGrid_Width6" id="b1-Title"><div data-block="Common_ScreenHeadline.ScreenHeadline" class="OSBlockWidget" id="$b3"><h2 data-advancedhtml=""><span data-expression="" class="screen-title"></span><div class="screen-title-star ThemeGrid_Width1 ThemeGrid_MarginGutter" id="b3-MyMenu"><div data-block="B_AD_MM.AD_MM_NavMyMenu" class="OSBlockWidget" id="$b4"><div data-block="Content.Tooltip" class="OSBlockWidget" id="b4-$b1"><div data-container="" class="osui-tooltip osui-tooltip--is-hover" name="0.izbvhxc5xh" id="b4-b1-TooltipWrapper"><div class="osui-tooltip__content" id="b4-b1-Content" role="button" aria-describedby="b4-b1-Tooltip" tabindex="0" default-tabindex-element=""><div data-container="" style="cursor: pointer;"><i data-icon="" class="icon fa fa-star-o fa-1x"></i></div></div><div data-container="" class="osui-tooltip__balloon-wrapper osui-balloon" data-uniqueid="0.izbvhxc5xh" id="b4-b1-TooltipBallonWrapper" role="tooltip" aria-hidden="true" style="--osui-balloon-width: max-content; --osui-balloon-shape: var(--border-radius-none);"><div class="osui-tooltip__balloon-wrapper__balloon OSInline" id="b4-b1-Tooltip">My Menu에 추가합니다.</div><div data-container="" class="osui-tooltip__balloon-arrow" id="b4-b1-ArrowElement"></div></div></div></div></div></div></h2><div data-block="AppGen_Component.OnChangeLocale" class="OSBlockWidget" id="b3-$b1"></div></div></div><div class="content-breadcrumbs ph ThemeGrid_Width6 ThemeGrid_MarginGutter" id="b1-Breadcrumbs"><div data-block="Common_ScreenHeadline.ScreenBreadcrumbs" class="OSBlockWidget" id="$b5"><div data-block="Navigation.Breadcrumbs" class="OSBlockWidget" id="b5-$b1"><nav data-advancedhtml="" aria-label="breadcrumb" class="breadcrumbs "><div class="breadcrumbs-content" id="b5-b1-Content"><div data-list="" class="list list-group OSFillParent" style="position: relative;"><script style="display: flex; height: 0px; width: 100%;"></script><script style="display: flex; height: 0px; width: 100%;"></script></div></div></nav></div><div data-block="AppGen_Component.OnChangeLocale" class="OSBlockWidget" id="b5-$b3"></div></div></div></div><div data-container="" class="content-body-wrap"><div class="content-middle" id="b1-MainContent"><div data-block="B_Post.AD_PT_Post" class="OSBlockWidget" id="$b6"><div data-block="B_Post.AD_PT_PostDetail" class="OSBlockWidget" id="b6-$b3"><div data-container="" class="notice_container_box"><div data-block="AppGen_Patterns.DetailViewTitle1Group" class="OSBlockWidget" id="b6-b3-$b1"><div class="ThemeGrid_Width6" id="b6-b3-b1-DetailView_Headline1"><span data-expression="" class="notice-view-title sub_title">삼성 Github 활용 - 산출물 공유하기(Git ignore, Commit &amp; Push)</span></div><div class="text-align-right ThemeGrid_Width6" id="b6-b3-b1-DetailView_ButtonGroup1"></div><div class="margin-top-10 margin-bottom-20" id="b6-b3-b1-DetailView_Content1"><div data-container="" class="position-relative info_line_box"><div data-container="" class="notice_top_info"><div data-container="" class="sub_date"><span data-expression="">2026년 8월 13일 (목)</span><a data-link="" href="#"><span data-expression="" class="writer">김지선</span></a></div><div data-container="" class="sub_vlew_num" style="text-align: right;"><div data-block="Common.AX_POST_Counts" class="OSBlockWidget" id="b6-b3-$b2"><div data-container="" class="sub_vlew_num"><div data-container="" class="vlew_num OSInline" id="b6-b3-b2-hitCount"><img data-image="" src="/img/AGL_Board_WG.view_icon_dark.png?lvqS3JDBrg76PwOi30NYIw"><span data-expression="" class="ThemeGrid_MarginGutter">285</span></div><div data-container="" class="vlew_num" id="b6-b3-b2-CommentCnt"><img data-image="" src="/img/AGL_Board_WG.comment_icon_dark.png?ykd5vpTv+Nd0zpuQtTP42w"><span data-expression="" class="ThemeGrid_MarginGutter">0</span></div><div data-container="" class="vlew_num" id="b6-b3-b2-likeCount" style="cursor: pointer;"><img data-image="" class="check-hart" src="/img/AGL_Board_WG.like_icon_b.png?RJko8br_NqsJeNl+gfpK7w"><span data-expression="" class="like-cnt-on ThemeGrid_MarginGutter">20</span></div><div data-container="" class="vlew_num" id="b6-b3-b2-BookMark" style="cursor: pointer;"><img data-image="" class="check-Star" src="/img/AGL_Board_WG.bookmark_icon_b.png?Eij_ZMSgxngIsFzv6BDrlw"></div></div></div></div></div><div data-container="" class="content_text"><div data-container="" class="notice_main_content" id="b6-b3-NoticeContent"><div data-block="CKFlow.HTMLViewer" class="OSBlockWidget" id="b6-b3-$b3"><div data-container="" class="cke_contents_ltr" id="b6-b3-b3-InnerContainer"><blockquote data-pm-slice="2 4 []">
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">삼성 사내 Enterprise GitHub(<a href="https://github.sec.samsung.net/" title="">github.sec.samsung.net</a>)을 활용하여 AI 산출물을 공유하고 팀원들과 안전하게 협업하는 방법입니다.<br>
+Git의 기초 개념부터 VS Code/PowerShell 활용법, <code>.gitignore</code> 보안 관리, AI 프롬프트 활용 팁까지 한눈에 정리했습니다.</span></span></p>
+</blockquote>
+
+<hr>
+<h3><span style="font-size:12px;"><span style="font-family:NanumGothic;">1. Git이란 무엇인가? (Git의 용도)</span></span></h3>
+
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>Git</strong>은 코드 및 파일의 변경 이력을 관리하는 **분산 버전 관리 시스템(DVCS)**입니다.</span></span></p>
+
+<ul data-tight="undefined">
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>코드 이력 관리</strong>: 누가, 언제, 어떤 코드를 수정했는지 상세히 기록하며, 필요시 과거 시점으로 손쉽게 복구할 수 있습니다.</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>안전한 협업</strong>: 여러 사람이 동시에 동일한 프로젝트를 작업하더라도 코드가 덮어씌워지지 않고 안전하게 병합(Merge)됩니다.</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>브랜치(Branch) 활용</strong>: 기존 서비스에 영향을 주지 않고 새로운 기능을 독립적인 공간에서 실험 및 개발할 수 있습니다.</span></span></p>
+	</li>
+</ul>
+
+<hr>
+<h3><span style="font-size:12px;"><span style="font-family:NanumGothic;">2. VS Code를 활용한 협업 및 동기화 (Sync) 💡 <em>권장</em></span></span></h3>
+
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">Visual Studio Code(VS Code)를 사용하면 터미널 명령어 없이 GUI 환경에서 간편하고 직관적으로 코드를 동기화하고 협업할 수 있습니다.</span></span></p>
+
+<ul data-tight="undefined">
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>실시간 동시 수정 (VS Code Live Share)</strong></span></span></p>
+
+	<ul data-tight="undefined">
+		<li>
+		<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">확장 프로그램 <code>Live Share</code>를 설치하면 팀원과 동일한 코드 에디터 화면을 공유하여 실시간 동시 편집 및 공동 디버깅이 가능합니다.</span></span></p>
+		</li>
+	</ul>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>원격 저장소 동기화 (Sync Changes)</strong></span></span></p>
+
+	<ul data-tight="undefined">
+		<li>
+		<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">좌측 <strong>소스 제어(Source Control)</strong> 탭(<code>Ctrl + Shift + G</code>)에서 클릭 한 번으로 팀원의 최신 코드를 불러오고(<code>Pull</code>), 내 변경사항을 바로 올릴(<code>Push</code>) 수 있습니다.</span></span></p>
+		</li>
+	</ul>
+	</li>
+</ul>
+
+<hr>
+<h3><span style="font-size:12px;"><span style="font-family:NanumGothic;">3. 저장소 복제 (Clone) 방법</span></span></h3>
+
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">원격 저장소(<a href="https://github.sec.samsung.net/" title="">github.sec.samsung.net</a>)의 코드를 내 로컬 PC로 가져오는 두 가지 방법입니다.</span></span></p>
+
+<h4><span style="font-size:12px;"><span style="font-family:NanumGothic;">3.1 VS Code를 활용한 복제 (GUI 방식) ⭐ <em>추천</em></span></span></h4>
+
+<ol start="null">
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">VS Code 실행 후 상단 메뉴에서 <strong>View → Command Palette...</strong> 선택 (<code>Ctrl + Shift + P</code>)</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">검색창에 <code>Git: Clone</code> 입력 후 선택</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">삼성 Enterprise GitHub 저장소 URL 입력:<br>
+	<code>https://github.sec.samsung.net/{조직 또는 사용자명}/{저장소명}.git</code></span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">저장할 로컬 폴더를 지정하면 복제가 완료되며, 즉시 열어서 작업을 시작할 수 있습니다.</span></span></p>
+	</li>
+</ol>
+
+<blockquote>
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">💡 <strong>더 쉬운 방법</strong>: 좌측 소스 제어(Source Control) 탭 클릭 → <strong>[Clone Repository]</strong> 버튼 클릭 후 URL 붙여넣기</span></span></p>
+</blockquote>
+
+<h4><span style="font-size:12px;"><span style="font-family:NanumGothic;">3.2 PowerShell을 활용한 복제 (CLI 방식)</span></span></h4>
+
+<ol start="null">
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code>Win + X</code> 누른 후 <strong>Windows PowerShell</strong> 실행 (또는 VS Code 내 통합 터미널 <code>Ctrl + ` </code> 실행)</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">프로젝트를 저장할 디렉터리로 이동:</span></span></p>
+
+	<pre data-params=""><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code>cd C:\Users\Username\Projects
+</code></span></span></pre>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">다음 복제 명령어 실행:</span></span></p>
+
+	<pre data-params=""><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code>git clone https://github.sec.samsung.net/{조직 또는 사용자명}/{저장소명}.git
+</code></span></span></pre>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">생성된 프로젝트 폴더로 이동:</span></span></p>
+
+	<pre data-params=""><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code>cd {저장소명}
+</code></span></span></pre>
+	</li>
+</ol>
+
+<hr>
+<h3><span style="font-size:12px;"><span style="font-family:NanumGothic;">4. Git 기본 워크플로우 (Commit &amp; Push)</span></span></h3>
+
+<h4><span style="font-size:12px;"><span style="font-family:NanumGothic;">4.1 VS Code GUI 이용하기</span></span></h4>
+
+<ol start="null">
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>변경 사항 확인</strong>: 파일 수정 후 좌측 <strong>소스 제어</strong> 탭 이동</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>스테이징 (Stage Changes)</strong>: 변경된 파일 옆의 <code>+</code> 버튼 클릭하여 커밋 대기 상태 전환</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>커밋 (Commit)</strong>: 상단 텍스트 상자에 커밋 메시지(예: <code>feat: 로그인 기능 구현</code>) 입력 후 <strong>[Commit]</strong> 버튼 클릭</span></span></p>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>푸시 및 동기화 (Sync/Push)</strong>: 하단의 <strong>[Sync Changes]</strong> 또는 <strong>[Publish Branch]</strong> 버튼을 클릭하여 사내 GitHub에 반영</span></span></p>
+	</li>
+</ol>
+
+<h4><span style="font-size:12px;"><span style="font-family:NanumGothic;">4.2 PowerShell 이용하기</span></span></h4>
+
+<pre data-params=""><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code># 1. 상태 확인
+git status
+
+# 2. 변경된 파일 스테이징
+git add .
+
+# 3. 커밋 생성
+git commit -m "feat: 로그�

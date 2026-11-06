@@ -1,0 +1,771 @@
+#!/usr/bin/env node
+
+/**
+ * DRM 문서 풀기 스크립트 (원본 drm-unlocker 방식)
+ * ================================
+ * DRM 이 적용된 Office 문서(.docx, .xlsx, .pptx, .pdf)를 
+ * PowerShell COM 객체를 사용하여 해독합니다.
+ * 
+ * 처리 방식:
+ *   1. 빠른 텍스트 추출 (fast) - COM 객체로 텍스트만 추출
+ *   2. 캡처 추출 (capture) - 텍스트 + 그림/표 화면 캡처 (Word만 지원)
+ *   3. HTML 저장 (html) - Word/Excel/PPT 를 HTML 포맷으로 저장 (DRM 제거)
+ * 
+ * 사용법:
+ *   node drm-ungroup.js <input_file> <doc_type> <mode> [output_folder]
+ * 
+ *   doc_type: word | excel | ppt | pdf
+ *   mode: fast | capture | html
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const os = require('os');
+
+// ============================================================================
+// 유틸리티 함수
+// ============================================================================
+
+function log(message, level = 'INFO') {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] [${level}] ${message}`;
+  console.log(line);
+}
+
+// ============================================================================
+// Word 문서 처리 (Word COM 객체)
+// ============================================================================
+
+const PS_WORD_EXTRACT = `
+$ErrorActionPreference = "Stop"
+
+try {
+  $word = New-Object -ComObject Word.Application
+  $word.Visible = $false
+  $word.DisplayAlerts = 0
+  
+  $docPath = "$env:DOC_PATH"
+  $outputFile = "$env:OUTPUT_FILE"
+  Write-Host "문서 여는 중: $docPath"
+  $doc = $word.Documents.Open($docPath, $false, $true)
+  
+  $text = $doc.Content.Text
+  
+  $doc.Close($false)
+  $word.Quit()
+  
+  # UTF-8 BOM 으로 파일에 직접 저장 (stdout 인코딩 문제 회피)
+  $utf8 = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($outputFile, $text, $utf8)
+  Write-Host "저장 완료: $outputFile"
+  
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+} catch {
+  Write-Error "오류: $($_.Exception.Message)"
+  if ($word) {
+    try {
+      $doc.Close($false)
+      $word.Quit()
+      [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+    } catch {}
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+  exit 1
+}
+`;
+
+
+// Word 캡처 추출: 텍스트 + 페이지별 화면 캡처
+const PS_WORD_CAPTURE = `
+$ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+try {
+  $word = New-Object -ComObject Word.Application
+  $word.Visible = $true
+  $word.DisplayAlerts = 0
+  $word.WindowState = 0
+
+  $docPath = "$env:DOC_PATH"
+  $outputDir = "$env:OUTPUT_DIR"
+  Write-Host "문서 여는 중: $docPath"
+  $doc = $word.Documents.Open($docPath, $false, $true)
+
+  # 전체 텍스트 추출
+  $text = $doc.Content.Text
+  $textPath = Join-Path $outputDir "capture-text.txt"
+  $utf8 = New-Object System.Text.UTF8Encoding($true)
+  [System.IO.File]::WriteAllText($textPath, $text, $utf8)
+  Write-Host "텍스트 추출 완료: $($text.Length) 자"
+
+  # 페이지 수 확인
+  $pageCount = $doc.ComputeStatistics(2)
+  Write-Host "총 페이지 수: $pageCount"
+
+  # 캡처 폴더 생성
+  $captureDir = Join-Path $outputDir "screenshots"
+  if (!(Test-Path $captureDir)) { New-Item -ItemType Directory -Path $captureDir | Out-Null }
+
+  # Word 창 활성화
+  $word.Activate()
+  Start-Sleep -Milliseconds 1000
+
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type -AssemblyName System.Drawing
+
+  for ($i = 1; $i -le $pageCount; $i++) {
+    Write-Host "페이지 $i/$pageCount 캡처 중..."
+
+    $selection = $word.Selection
+    $selection.GoTo(-1, 1, $i)
+    Start-Sleep -Milliseconds 500
+
+    $imagePath = Join-Path $captureDir ("page_{0:D3}.jpg" -f $i)
+
+    $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+    $bitmap = New-Object System.Drawing.Bitmap $screen.Bounds.Width, $screen.Bounds.Height
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $graphics.CopyFromScreen($screen.Bounds.X, $screen.Bounds.Y, 0, 0, $bitmap.Size)
+    $bitmap.Save($imagePath, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+    $graphics.Dispose()
+    $bitmap.Dispose()
+
+    Write-Host "  저장: $imagePath"
+  }
+
+  $doc.Close($false)
+  $word.Quit()
+
+  Write-Output "완료"
+
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+} catch {
+  Write-Error "오류: $($_.Exception.Message)"
+  if ($word) {
+    try {
+      $doc.Close($false)
+      $word.Quit()
+      [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+    } catch {}
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+  exit 1
+}
+`;
+
+// Word HTML 저장: Word SaveAs HTML (DRM 제거)
+const PS_WORD_HTML = `
+$ErrorActionPreference = "Stop"
+
+try {
+  $word = New-Object -ComObject Word.Application
+  $word.Visible = $false
+  $word.DisplayAlerts = 0
+
+  $docPath = "$env:DOC_PATH"
+  $outputDir = "$env:OUTPUT_DIR"
+  Write-Host "문서 여는 중: $docPath"
+  $doc = $word.Documents.Open($docPath, $false, $true)
+
+  # HTML 로 저장 (wdFormatHTML = 10)
+  $htmlPath = Join-Path $outputDir "document.html"
+  $doc.SaveAs([ref]$htmlPath, [ref]10)
+  Write-Host "HTML 저장 완료: $htmlPath"
+
+  $doc.Close($false)
+  $word.Quit()
+
+  Write-Output "완료"
+
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+} catch {
+  Write-Error "오류: $($_.Exception.Message)"
+  if ($word) {
+    try {
+      $doc.Close($false)
+      $word.Quit()
+      [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+    } catch {}
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+  exit 1
+}
+`;
+
+async function processWord(inputFile, outputFolder, mode, baseName) {
+  log('Word 문서 처리 시작 (Word COM 객체 사용)');
+
+  try {
+    if (mode === 'capture') {
+      log('캡처 추출 모드: 텍스트 + 페이지별 화면 캡처');
+      const captureOutputDir = path.join(outputFolder, `${baseName}_capture`);
+      if (!fs.existsSync(captureOutputDir)) {
+        fs.mkdirSync(captureOutputDir, { recursive: true });
+      }
+
+      const tempPs1 = path.join(os.tmpdir(), `word-capture-${Date.now()}.ps1`);
+      fs.writeFileSync(tempPs1, '\ufeff' + PS_WORD_CAPTURE);
+
+      try {
+        execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, {
+          env: { ...process.env, DOC_PATH: inputFile, OUTPUT_DIR: captureOutputDir },
+          timeout: 600000,
+          encoding: 'utf-8',
+          maxBuffer: 100 * 1024 * 1024,
+        });
+
+        log('캡처 추출 완료!');
+        log(`출력 폴더: ${captureOutputDir}`);
+
+        // 텍스트 파일 확인
+        const textFile = path.join(captureOutputDir, 'capture-text.txt');
+        if (fs.existsSync(textFile)) {
+          const textLength = fs.readFileSync(textFile, 'utf-8').length;
+          log(`텍스트 파일: ${textLength} 자`);
+        }
+
+        // 캡처 이미지 확인
+        const screenshotDir = path.join(captureOutputDir, 'screenshots');
+        if (fs.existsSync(screenshotDir)) {
+          const images = fs.readdirSync(screenshotDir).filter(f => f.endsWith('.jpg'));
+          log(`캡처 이미지: ${images.length} 개`);
+        }
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+
+    } else if (mode === 'html') {
+      log('HTML 저장 모드: Word SaveAs HTML (DRM 제거)');
+      const htmlOutputDir = path.join(outputFolder, `${baseName}_html`);
+      if (!fs.existsSync(htmlOutputDir)) {
+        fs.mkdirSync(htmlOutputDir, { recursive: true });
+      }
+
+      const tempPs1 = path.join(os.tmpdir(), `word-html-${Date.now()}.ps1`);
+      fs.writeFileSync(tempPs1, '\ufeff' + PS_WORD_HTML);
+
+      try {
+        execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, {
+          env: { ...process.env, DOC_PATH: inputFile, OUTPUT_DIR: htmlOutputDir },
+          timeout: 300000,
+          encoding: 'utf-8',
+          maxBuffer: 100 * 1024 * 1024,
+        });
+
+        log('HTML 저장 완료!');
+        log(`출력 폴더: ${htmlOutputDir}`);
+
+        // HTML 파일 확인
+        const htmlFile = path.join(htmlOutputDir, 'document.html');
+        if (fs.existsSync(htmlFile)) {
+          const htmlSize = fs.statSync(htmlFile).size;
+          log(`HTML 파일: ${Math.round(htmlSize / 1024)} KB`);
+        }
+
+        // 이미지 폴더 확인
+        const filesDir = path.join(htmlOutputDir, 'document_files');
+        if (fs.existsSync(filesDir)) {
+          const images = fs.readdirSync(filesDir).filter(f => /\.(png|jpg|gif|emf|wmf)$/i.test(f));
+          log(`추출된 이미지: ${images.length} 개`);
+        }
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+
+    } else {
+      // fast 모드
+      log('빠른 텍스트 추출 모드 (Word COM)');
+      log('   (DRM 문서는 시간이 걸릴 수 있습니다)');
+
+      const tempPs1 = path.join(os.tmpdir(), `word-com-${Date.now()}.ps1`);
+      fs.writeFileSync(tempPs1, '\ufeff' + PS_WORD_EXTRACT);
+
+      try {
+        const textOutputFile = path.join(outputFolder, `${baseName}_fast.txt`);
+
+        execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, {
+          env: { ...process.env, DOC_PATH: inputFile, OUTPUT_FILE: textOutputFile },
+          timeout: 300000,
+          encoding: 'utf-8',
+          maxBuffer: 100 * 1024 * 1024,
+        });
+
+        let textLength = 0;
+        if (fs.existsSync(textOutputFile)) {
+          textLength = fs.readFileSync(textOutputFile, 'utf-8').length;
+        }
+        log(`텍스트 추출 완료 (${textLength} 자)`);
+        log(`텍스트 파일 저장: ${textOutputFile}`);
+
+        if (fs.existsSync(textOutputFile)) {
+          const content = fs.readFileSync(textOutputFile, 'utf-8');
+          const preview = content.substring(0, 200).replace(/\n/g, ' ');
+          log(`미리보기: ${preview}...`);
+        }
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+    }
+
+  } catch (error) {
+    log(`오류: ${error.message}`, 'ERROR');
+    if (error.message.includes('timeout')) {
+      log('문서가 크거나 DRM 으로 인해 시간이 더 걸릴 수 있습니다.', 'ERROR');
+    } else if (error.message.includes('Word')) {
+      log('MS Word 가 설치되어 있지 않거나 실행 중인지 확인하세요.', 'ERROR');
+    }
+    throw error;
+  }
+}
+
+// ============================================================================
+// Excel 문서 처리 (Excel COM 객체)
+// ============================================================================
+
+const PS_EXCEL_EXTRACT = `
+$ErrorActionPreference = "Stop"
+
+try {
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = 0
+  
+  $docPath = "$env:DOC_PATH"
+  $outputFile = "$env:OUTPUT_FILE"
+  Write-Host "워크북 여는 중: $docPath"
+  $workbook = $excel.Workbooks.Open($docPath, $false, $true)
+  
+  $allText = @()
+  foreach ($sheet in $workbook.Sheets) {
+    $sheetName = $sheet.Name
+    $allText += "=== 시트: $sheetName ==="
+    
+    $usedRange = $sheet.UsedRange
+    $rows = $usedRange.Rows.Count
+    $cols = $usedRange.Columns.Count
+    
+    for ($r = 1; $r -le $rows; $r++) {
+      $rowValues = @()
+      for ($c = 1; $c -le $cols; $c++) {
+        $cellValue = $sheet.Cells.Item($r, $c).Text
+        $rowValues += $cellValue
+      }
+      $allText += ($rowValues -join [char]9)
+    }
+    $allText += ""
+  }
+  
+  $workbook.Close($false)
+  $excel.Quit()
+  
+  $text = $allText -join [Environment]::NewLine
+  $utf8 = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($outputFile, $text, $utf8)
+  Write-Host "저장 완료: $outputFile"
+  
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+} catch {
+  Write-Error "오류: $($_.Exception.Message)"
+  if ($excel) {
+    try {
+      $workbook.Close($false)
+      $excel.Quit()
+      [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+    } catch {}
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+  exit 1
+}
+`;
+
+// Excel HTML 저장: Excel SaveAs HTML (DRM 제거)
+const PS_EXCEL_HTML = `
+$ErrorActionPreference = "Stop"
+
+try {
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = 0
+
+  $docPath = "$env:DOC_PATH"
+  $outputDir = "$env:OUTPUT_DIR"
+  Write-Host "워크북 여는 중: $docPath"
+  $workbook = $excel.Workbooks.Open($docPath, $false, $true)
+
+  # HTML 로 저장 (xlHtml = 44)
+  $htmlPath = Join-Path $outputDir "document.html"
+  $workbook.SaveAs($htmlPath, 44)
+  Write-Host "HTML 저장 완료: $htmlPath"
+
+  $workbook.Close($false)
+  $excel.Quit()
+
+  Write-Output "완료"
+
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+} catch {
+  Write-Error "오류: $($_.Exception.Message)"
+  if ($excel) {
+    try {
+      $workbook.Close($false)
+      $excel.Quit()
+      [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+    } catch {}
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+  exit 1
+}
+`;
+
+
+async function processExcel(inputFile, outputFolder, mode, baseName) {
+  log('Excel 문서 처리 시작 (Excel COM 객체 사용)');
+
+  try {
+    if (mode === 'html') {
+      log('HTML 저장 모드: Excel SaveAs HTML (DRM 제거)');
+      const htmlOutputDir = path.join(outputFolder, `${baseName}_html`);
+      if (!fs.existsSync(htmlOutputDir)) {
+        fs.mkdirSync(htmlOutputDir, { recursive: true });
+      }
+
+      const tempPs1 = path.join(os.tmpdir(), `excel-html-${Date.now()}.ps1`);
+      fs.writeFileSync(tempPs1, '\ufeff' + PS_EXCEL_HTML);
+
+      try {
+        execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, {
+          env: { ...process.env, DOC_PATH: inputFile, OUTPUT_DIR: htmlOutputDir },
+          timeout: 300000,
+          encoding: 'utf-8',
+          maxBuffer: 100 * 1024 * 1024,
+        });
+
+        log('HTML 저장 완료!');
+        log(`출력 폴더: ${htmlOutputDir}`);
+
+        const htmlFile = path.join(htmlOutputDir, 'document.html');
+        if (fs.existsSync(htmlFile)) {
+          const htmlSize = fs.statSync(htmlFile).size;
+          log(`HTML 파일: ${Math.round(htmlSize / 1024)} KB`);
+        }
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+
+    } else {
+      // fast 모드
+      const tempPs1 = path.join(os.tmpdir(), `excel-com-${Date.now()}.ps1`);
+      fs.writeFileSync(tempPs1, '\ufeff' + PS_EXCEL_EXTRACT);
+
+      try {
+        log('Excel COM 으로 텍스트 추출 중...');
+
+        const textOutputFile = path.join(outputFolder, `${baseName}_fast.txt`);
+
+        execSync(`powershell -ExecutionPolicy Bypass -File "${tempPs1}"`, {
+          env: { ...process.env, DOC_PATH: inputFile, OUTPUT_FILE: textOutputFile },
+          timeout: 300000,
+          encoding: 'utf-8',
+          maxBuffer: 100 * 1024 * 1024,
+        });
+
+        let textLength = 0;
+        let content = '';
+        if (fs.existsSync(textOutputFile)) {
+          content = fs.readFileSync(textOutputFile, 'utf-8');
+          textLength = content.length;
+        }
+        log(`텍스트 추출 완료 (${textLength} 자)`);
+        log(`텍스트 파일 저장: ${textOutputFile}`);
+
+        // CSV로도 저장 (탭 구분 → 쉼표 구분)
+        const csvContent = content.replace(/\t/g, ',');
+        const csvOutputFile = path.join(outputFolder, `${baseName}_fast.csv`);
+        fs.writeFileSync(csvOutputFile, csvContent, 'utf-8');
+        log(`CSV 파일 저장: ${csvOutputFile}`);
+
+        const preview = content.substring(0, 200).replace(/\n/g, ' ');
+        log(`미리보기: ${preview}...`);
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+    }
+
+  } catch (error) {
+    log(`오류: ${error.message}`, 'ERROR');
+    if (error.message.includes('Excel')) {
+      log('MS Excel 이 설치되어 있지 않거나 실행 중인지 확인하세요.', 'ERROR');
+    }
+    throw error;
+  }
+}
+
+// ============================================================================
+// PowerPoint 문서 처리 (PowerPoint COM 객체)
+// ============================================================================
+
+const PS_PPT_EXTRACT = `
+$ErrorActionPreference = "Stop"
+
+try {
+  $ppt = New-Object -ComObject PowerPoint.Application
+  $ppt.Visible = [Microsoft.Office.Core.MsoTriState]::msoTrue
+  
+  $docPath = "$env:DOC_PATH"
+  $outputFile = "$env:OUTPUT_FILE"
+  Write-Host "프레젠테이션 여는 중: $docPath"
+  $presentation = $ppt.Presentations.Open($docPath, $false, $false, $true)
+  
+  $allText = @()
+  $slideNum = 1
+  foreach ($slide in $presentation.Slides) {
+    $allText += "=== 슬라이드 $slideNum ==="
+    
+    foreach ($shape in $slide.Shapes) {
+      if ($shape.HasTextFrame) {
+        if ($shape.TextFrame.HasText) {
+          $allText += $shape.TextFrame.TextRange.Text
+        }
+      }
+    }
+    
+    $allText += ""
+    $slideNum++
+  }
+  
+  $presentation.Close()
+  $ppt.Quit()
+  
+  $text = $allText -join [Environment]::NewLine
+  $utf8 = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($outputFile, $text, $utf8)
+  Write-Host "저장 완료: $outputFile"
+  
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($ppt) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+} catch {
+  Write-Error "오류: $($_.Exception.Message)"
+  if ($ppt) {
+    try {
+      $presentation.Close()
+      $ppt.Quit()
+      [System.Runtime.Interopservices.Marshal]::ReleaseComObject($ppt) | Out-Null
+    } catch {}
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+  exit 1
+}
+`;
+
+// PowerPoint HTML 저장: 클립보드 기반 PNG 추출 + 텍스트 추출 → HTML 생성 (DRM 제거)
+// 주의: $presentation.Export()는 DRM 래핑된 파일을 생성하므로 사용하지 않음
+// 대신 $slide.Copy() → 클립보드 → System.Drawing.Bitmap.Save()로 DRM-free PNG 생성
+const PS_PPT_HTML = `
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+try {
+  $ppt = New-Object -ComObject PowerPoint.Application
+  $ppt.Visible = [Microsoft.Office.Core.MsoTriState]::msoTrue
+
+  $docPath = "$env:DOC_PATH"
+  $outputDir = "$env:OUTPUT_DIR"
+  Write-Host "프레젠테이션 여는 중: $docPath"
+  $presentation = $ppt.Presentations.Open($docPath, $false, $false, $true)
+
+  # 슬라이드 이미지 저장 폴더
+  $imageDir = Join-Path $outputDir "slides"
+  if (!(Test-Path $imageDir)) {
+    New-Item -ItemType Directory -Path $imageDir | Out-Null
+  }
+
+  # 클립보드 기반 슬라이드 이미지 추출 (DRM-free)
+  $slideNum = 1
+  $allText = @()
+  foreach ($slide in $presentation.Slides) {
+    # 텍스트 추출
+    $allText += "=== 슬라이드 $slideNum ==="
+    foreach ($shape in $slide.Shapes) {
+      if ($shape.HasTextFrame) {
+        if ($shape.TextFrame.HasText) {
+          $allText += $shape.TextFrame.TextRange.Text
+        }
+      }
+    }
+    $allText += ""
+
+    # 클립보드로 슬라이드 복사 → PNG 저장
+    $slide.Copy()
+    Start-Sleep -Milliseconds 500
+    $img = [System.Windows.Forms.Clipboard]::GetImage()
+    if ($img) {
+      $imgPath = Join-Path $imageDir "slide_$slideNum.png"
+      $img.Save($imgPath, [System.Drawing.Imaging.ImageFormat]::Png)
+      $img.Dispose()
+      Write-Host "슬라이드 $slideNum 이미지 저장 완료"
+    } else {
+      Write-Host "슬라이드 $slideNum 이미지 추출 실패 (클립보드 비어있음)"
+    }
+    [System.Windows.Forms.Clipboard]::Clear()
+    $slideNum++
+  }
+
+  Write-Host "이미지 추출 완료: $imageDir"
+
+  $textPath = Join-Path $outputDir "slide-text.txt"
+  $text = $allText -join [Environment]::NewLine
+  $utf8 = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($textPath, $text, $utf8)
+  Write-Host "텍스트 추출 완료: $($text.Length) 자"
+
+  # 슬라이드 수 출력
+  Write-Output "SLIDE_COUNT:$($slideNum - 1)"
+
+  $presentation.Close()
+  $ppt.Quit()
+
+  Write-Output "완료"
+
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($ppt) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+} catch {
+  Write-Error "오류: $($_.Exception.Message)"
+  if ($ppt) {
+    try {
+      $presentation.Close()
+      $ppt.Quit()
+      [System.Runtime.Interopservices.Marshal]::ReleaseComObject($ppt) | Out-Null
+    } catch {}
+  }
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+  exit 1
+}
+`;
+
+
+
+async function processPowerPoint(inputFile, outputFolder, mode, baseName) {
+  log('PowerPoint 문서 처리 시작 (PowerPoint COM 객체 사용)');
+
+  try {
+        if (mode === 'html') {
+      log('HTML 저장 모드: PowerPoint PNG Export + HTML 생성 (DRM 제거)');
+      const htmlOutputDir = path.join(outputFolder, `${baseName}_html`);
+      if (!fs.existsSync(htmlOutputDir)) {
+        fs.mkdirSync(htmlOutputDir, { recursive: true });
+      }
+
+      const tempPs1 = path.join(os.tmpdir(), `ppt-html-${Date.now()}.ps1`);
+      fs.writeFileSync(tempPs1, '\ufeff' + PS_PPT_HTML);
+
+      try {
+        const stdout = execSync(`powershell -ExecutionPolicy Bypass -Sta -File "${tempPs1}"`, {
+          env: { ...process.env, DOC_PATH: inputFile, OUTPUT_DIR: htmlOutputDir },
+          timeout: 300000,
+          encoding: 'utf-8',
+          maxBuffer: 100 * 1024 * 1024,
+        });
+
+        log('PNG 내보내기 + 텍스트 추출 완료!');
+        log(`출력 폴더: ${htmlOutputDir}`);
+
+        // 슬라이드 이미지 확인
+        const slidesDir = path.join(htmlOutputDir, 'slides');
+        let imageFiles = [];
+        if (fs.existsSync(slidesDir)) {
+          imageFiles = fs.readdirSync(slidesDir)
+            .filter(f => f.toLowerCase().endsWith('.png') || f.toLowerCase().endsWith('.jpg'))
+            .sort((a, b) => {
+              const ma = a.match(/(\d+)/);
+              const mb = b.match(/(\d+)/);
+              if (ma && mb) return parseInt(ma[1]) - parseInt(mb[1]);
+              return a.localeCompare(b);
+            });
+          log(`슬라이드 이미지: ${imageFiles.length} 개`);
+        }
+
+        // 텍스트 파일 확인
+        const textFile = path.join(htmlOutputDir, 'slide-text.txt');
+        let slideTexts = [];
+        if (fs.existsSync(textFile)) {
+          const textContent = fs.readFileSync(textFile, 'utf-8');
+          const textLength = textContent.length;
+          log(`텍스트 파일: ${textLength} 자`);
+
+          // 슬라이드별 텍스트 분리
+          slideTexts = textContent.split(/=== 슬라이드 \d+ ===/).filter(s => s.trim());
+        }
+
+        // HTML 생성 (이미지 + 텍스트)
+        const htmlParts = [`<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${baseName}</title>
+  <style>
+    body { margin: 0; padding: 20px; background: #1a1a2e; color: #e0e0e0; font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; }
+    h1 { text-align: center; margin-bottom: 30px; }
+    .slide { margin: 20px auto; max-width: 960px; }
+    .slide img { width: 100%; border: 1px solid #333; border-radius: 4px; display: block; }
+    .slide-text { background: #16213e; padding: 15px; margin-top: 5px; border-radius: 4px; white-space: pre-wrap; font-size: 14px; line-height: 1.6; }
+    .slide-num { background: #f472b6; color: #1a1a2e; padding: 5px 12px; border-radius: 4px; display: inline-block; margin-bottom: 5px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>${baseName}</h1>
+`];
+
+        for (let i = 0; i < imageFiles.length; i++) {
+          const imgPath = `slides/${imageFiles[i]}`;
+          const textContent = (i < slideTexts.length) ? slideTexts[i].trim() : '';
+          htmlParts.push(`  <div class="slide">
+    <span class="slide-num">슬라이드 ${i + 1}</span>
+    <img src="${imgPath}" alt="슬라이드 ${i + 1}" />
+    <div class="slide-text">${textContent ? escapeHtml(textContent) : '(텍스트 없음)'}</div>
+  </div>
+`);
+        }
+
+        htmlParts.push(`</body>
+</html>`);
+
+        function escapeHtml(text) {
+          return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+        }
+
+        const htmlPath = path.join(htmlOutputDir, 'document.html');
+        fs.writeFileSync(htmlPath, htmlParts.join('\n'), 'utf-8');
+        const htmlSize = fs.statSync(htmlPath).size;
+        log(`HTML 파일 생성: ${Math.round(htmlSize / 1024)} KB`);
+        log(`HTML 파일: ${htmlPath}`);
+      } finally {
+        try { fs.unlinkSync(tempPs1); } catch (e) {}
+      }
+
+    

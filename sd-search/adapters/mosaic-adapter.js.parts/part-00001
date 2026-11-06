@@ -1,0 +1,556 @@
+/**
+ * Mosaic Adapter (CDP + 통합검색 API)
+ * - 1순위: Chrome CDP로 쿠키 추출 → Mosaic 통합검색 API(itg-search, i-search) 호출
+ * - 2순위: mosaic-session.json의 쿠키 사용 → 통합검색 API 호출
+ * - 3순위: CDP로 Mosaic 검색 페이지 직접 스크래핑
+ * - 4순위: 캐시 파일에서 검색
+ * 
+ * 검색 범위:
+ * - Workspace (itg-search, service_name=workspace)
+ * - M Cast (itg-search, service_name=mcast)
+ * - Mind Map (itg-search, service_name=mindmap)
+ * - 게시글 (itg-search, service_name=board)
+ * - Ideation/CX/Life Trend/Idea/Discussion/Survey (i-search)
+ * - 동료 검색 (search-employee)
+ */
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+
+class MosaicAdapter {
+    constructor(config) {
+        this.config = config;
+        this.baseUrl = config.baseUrl;
+        this.cdpPort = config.cdpPort || 9222;
+        this.session = this.loadSession();
+        this.cdpCookies = null;
+    }
+
+    loadSession() {
+        try {
+            const sessionPath = path.resolve(__dirname, this.config.sessionFile);
+            if (fs.existsSync(sessionPath)) {
+                return JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+            }
+            return null;
+        } catch (e) {
+            console.error('[Mosaic] 세션 파일 로드 실패:', e.message);
+            return null;
+        }
+    }
+
+    async getCookiesFromCDP() {
+        if (this.cdpCookies) return this.cdpCookies;
+        let browser = null;
+        try {
+            // CDP 자동 실행 보장
+            const { ensureCDP } = require('../core/cdp-launcher');
+            await ensureCDP(this.cdpPort);
+
+            const { chromium } = require('playwright');
+            browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
+            const contexts = browser.contexts();
+            if (contexts.length === 0) {
+                console.log('[Mosaic] CDP 컨텍스트 없음, 세션 쿠키 사용 시도');
+                return null;
+            }
+            const context = contexts[0];
+            
+            // Mosaic 쿠키 추출 시도
+            const cookies = await context.cookies(this.baseUrl);
+            
+            if (cookies && cookies.length > 0) {
+                const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+                if (cookieStr) {
+                    console.log('[Mosaic] CDP에서 쿠키 획득 성공 (' + cookies.length + '개 쿠키)');
+                    this.cdpCookies = cookieStr;
+                    return cookieStr;
+                }
+            }
+            
+            // 모든 쿠키에서 Mosaic 도메인 쿠키 찾기
+            const allCookies = await context.cookies();
+            const mosaicCookies = allCookies.filter(c => 
+                c.domain && c.domain.includes('mosaic.sec.samsung.net')
+            );
+            if (mosaicCookies.length > 0) {
+                const cookieStr = mosaicCookies.map(c => `${c.name}=${c.value}`).join('; ');
+                console.log('[Mosaic] 전체 쿠키에서 Mosaic 쿠키 획득 (' + mosaicCookies.length + '개)');
+                this.cdpCookies = cookieStr;
+                return cookieStr;
+            }
+            
+            console.log('[Mosaic] CDP에서 Mosaic 쿠키를 찾을 수 없음');
+            console.log('[Mosaic] Chrome에서 mosaic.sec.samsung.net에 로그인되어 있는지 확인하세요');
+            return null;
+        } catch (e) {
+            console.log('[Mosaic] CDP 연결 실패:', e.message);
+
+            console.log('[Mosaic] Chrome이 --remote-debugging-port=9222로 실행 중인지 확인하세요');
+            return null;
+        } finally {
+            if (browser) {
+                try { browser.close(); } catch(e) {}
+            }
+        }
+    }
+
+
+    getSessionCookie() {
+        if (this.session && this.session.cookie) {
+            let cookie = this.session.cookie;
+            if (!cookie.startsWith('userToken=') && !cookie.startsWith('userToken%3D')) {
+                cookie = `userToken=${cookie}`;
+            }
+            return cookie;
+        }
+        return null;
+    }
+
+    getHeaders(cookieStr) {
+        return {
+            'Cookie': cookieStr,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        };
+    }
+
+    async search(keyword, maxResults = 20, options = {}) {
+        // options가 boolean이면 cacheOnly로 처리 (하위 호환)
+        const cacheOnly = typeof options === 'boolean' ? options : (options.cacheOnly || false);
+        const category = typeof options === 'object' ? options.category : null;
+
+        console.log(`[Mosaic] 검색: "${keyword}"${category ? ` (카테고리: ${category})` : ''}`);
+        if (cacheOnly) return this.searchFromCache(keyword);
+
+        let cookieStr = await this.getCookiesFromCDP() || this.getSessionCookie();
+        if (!cookieStr) {
+            console.error('[Mosaic] 쿠키가 없습니다. 로그인 페이지를 엽니다.');
+            // 로그인 창 띄우기
+            try {
+                const { chromium } = require('playwright');
+                const loginBrowser = await chromium.launch({ headless: false });
+                const loginPage = await loginBrowser.newPage();
+                await loginPage.goto(`${this.baseUrl}/auth/login`, { waitUntil: 'domcontentloaded' });
+                console.log('[Mosaic] 로그인 창이 열렸습니다. 로그인 완료 후 이 메시지를 확인하세요.');
+                // 사용자가 로그인할 때까지 대기 (최대 120 초)
+                await loginPage.waitForTimeout(120000);
+                await loginBrowser.close();
+                console.log('[Mosaic] 로그인 완료. 다시 쿠키를 확인합니다...');
+                cookieStr = await this.getCookiesFromCDP();
+                if (!cookieStr) {
+                    console.error('[Mosaic] 로그인 후에도 쿠키를 가져올 수 없습니다. 캐시에서 검색합니다.');
+                    return this.searchFromCache(keyword);
+                }
+            } catch (loginErr) {
+                console.error('[Mosaic] 로그인 창 열기 실패:', loginErr.message);
+                console.error('[Mosaic] 수동으로 Chrome 에서 https://mosaic.sec.samsung.net 에 로그인하세요.');
+                return this.searchFromCache(keyword);
+            }
+        }
+
+
+        // 1순위: 통합검색 API 호출
+        try {
+            const results = await this.searchViaIntegratedAPI(keyword, maxResults, cookieStr, category);
+            if (results.length > 0) {
+                console.log(`[Mosaic] 통합검색 API에서 ${results.length}개 결과 발견`);
+                return results;
+            }
+            console.log('[Mosaic] 통합검색 API 결과 없음, 스크래핑으로 전환');
+        } catch (error) {
+            console.error('[Mosaic] 통합검색 API 오류:', error.message);
+        }
+
+
+        // 2순위: CDP 스크래핑
+        try {
+            const results = await this.searchViaCDP(keyword, maxResults);
+            if (results.length > 0) {
+                console.log(`[Mosaic] CDP 스크래핑에서 ${results.length}개 결과 발견`);
+                return results;
+            }
+        } catch (error) {
+            console.error('[Mosaic] CDP 스크래핑 오류:', error.message);
+        }
+
+        // 3순위: 캐시
+        return this.searchFromCache(keyword);
+    }
+
+    /**
+     * Mosaic 통합검색 API 직접 호출
+     * 두 개의 API를 병렬로 호출:
+     * 1. /api/v1/collaboration/search/itg-search (Workspace, M Cast, Mind Map, 게시글)
+     * 2. /api/v1/ideation/i-search (Ideation, CX, Life Trend, Idea, Discussion, Survey)
+     */
+    async searchViaIntegratedAPI(keyword, maxResults, cookieStr, categoryFilter = null) {
+        const headers = this.getHeaders(cookieStr);
+        const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+        const results = [];
+
+        // 카테고리 매핑: GUI에서 오는 category 값을 API 파라미터로 변환
+        const allItgServiceTypes = [
+            { label: 'Workspace', serviceType: 'workspace', value: 'workspace' },
+            { label: 'Board', serviceType: 'board', value: 'board' },
+            { label: 'M Cast', serviceType: 'mcast', value: 'mcast' },
+            { label: 'Mind Map', serviceType: 'mindmap', value: 'mindmap' },
+        ];
+
+        const allISearchCategories = [
+            { label: 'Ideation', category: 'IDEATION', value: 'ideation' },
+            { label: 'CX', category: 'CX', value: 'cx' },
+            { label: 'Life Trend', category: 'LIFETREND', value: 'lifetrend' },
+            { label: 'Idea', category: 'IDEA', value: 'idea' },
+            { label: 'Discussion', category: 'DISCUSSION', value: 'discussion' },
+            { label: 'Survey', category: 'SURVEY', value: 'survey' },
+        ];
+
+        // 카테고리 필터링: 특정 카테고리만 검색
+        let itgServiceTypes = allItgServiceTypes;
+        let iSearchCategories = allISearchCategories;
+        if (categoryFilter && categoryFilter !== 'all') {
+            itgServiceTypes = allItgServiceTypes.filter(st => st.value === categoryFilter);
+            iSearchCategories = allISearchCategories.filter(cat => cat.value === categoryFilter);
+            // 매칭되는 카테고리가 없으면 빈 배열
+            if (itgServiceTypes.length === 0) itgServiceTypes = [];
+            if (iSearchCategories.length === 0) iSearchCategories = [];
+        }
+
+
+        // itg-search API 호출 (각 serviceType별)
+        // Mosaic API 는 size 당 최대 500 개 제한이 있으므로 페이지네이션 필요
+        const MAX_SIZE = 500;
+        const itgPromises = itgServiceTypes.map(async (st) => {
+            try {
+                const allItems = [];
+                const totalPages = Math.ceil(maxResults / MAX_SIZE);
+
+                for (let page = 0; page < totalPages; page++) {
+                    const reqSize = Math.min(MAX_SIZE, maxResults - allItems.length);
+                    const response = await axios.post(
+                        `${this.baseUrl}/api/v1/collaboration/search/itg-search`,
+                        {
+                            keyword: keyword,
+                            serviceType: st.serviceType,
+                            page: page,
+                            size: reqSize,
+                            order: 'REL',
+                            advancedSearchYn: false,
+                        },
+                        { headers, timeout: this.config.timeout, httpsAgent }
+                    );
+                    if (response.data && response.data.response && response.data.response.data) {
+                        const pageItems = response.data.response.data;
+                        allItems.push(...pageItems);
+                        if (pageItems.length < reqSize) break; // 더 이상 결과 없음
+                        if (allItems.length >= maxResults) break;
+                    } else {
+                        break;
+                    }
+                }
+
+                console.log(`[Mosaic] ${st.label}: 페이지네이션으로 ${allItems.length}개 수집 (요청: ${maxResults})`);
+                return { label: st.label, data: { response: { data: allItems, total_count: allItems.length } } };
+            } catch (e) {
+                // 401 이면 쿠키 만료
+                if (e.response && e.response.status === 401) {
+                    console.error(`[Mosaic] ${st.label} 검색 인증 실패 (401)`);
+                } else if (e.response) {
+                    const ct = e.response.headers['content-type'] || '';
+                    if (ct && ct.includes('text/html')) {
+                        console.error(`[Mosaic] ${st.label} API 가 HTML 을 반환했습니다. size 가 API 제한 (${MAX_SIZE}) 을 초과했을 수 있습니다.`);
+                    }
+                }
+                return { label: st.label, data: null };
+            }
+        });
+
+        // i-search API 호출 (각 category 별)
+        const iSearchPromises = iSearchCategories.map(async (cat) => {
+            try {
+                const allItems = [];
+                const totalPages = Math.ceil(maxResults / MAX_SIZE);
+
+                for (let page = 0; page < totalPages; page++) {
+                    const reqSize = Math.min(MAX_SIZE, maxResults - allItems.length);
+                    const response = await axios.post(
+                        `${this.baseUrl}/api/v1/ideation/i-search`,
+                        {
+                            keyword: keyword,
+                            category: cat.category,
+                            page: page,
+                            size: reqSize,
+                            order: 'REL',
+                        },
+                        { headers, timeout: this.config.timeout, httpsAgent }
+                    );
+                    if (response.data && response.data.response && response.data.response.data) {
+                        const pageItems = response.data.response.data;
+                        allItems.push(...pageItems);
+                        if (pageItems.length < reqSize) break; // 더 이상 결과 없음
+                        if (allItems.length >= maxResults) break;
+                    } else {
+                        break;
+                    }
+                }
+
+                console.log(`[Mosaic] ${cat.label}: 페이지네이션으로 ${allItems.length}개 수집 (요청: ${maxResults})`);
+                return { label: cat.label, data: { response: { data: allItems, total_count: allItems.length } } };
+            } catch (e) {
+                if (e.response) {
+                    const ct = e.response.headers['content-type'] || '';
+                    if (ct && ct.includes('text/html')) {
+                        console.error(`[Mosaic] ${cat.label} API 가 HTML 을 반환했습니다. size 가 API 제한 (${MAX_SIZE}) 을 초과했을 수 있습니다.`);
+                    }
+                }
+                return { label: cat.label, data: null };
+            }
+        });
+
+
+        // 모든 API 병렬 호출 대기
+        const [itgResults, iSearchResults] = await Promise.all([
+            Promise.all(itgPromises),
+            Promise.all(iSearchPromises),
+        ]);
+
+        // itg-search 결과 파싱
+        for (const r of itgResults) {
+            if (r.data && r.data.response && r.data.response.data) {
+                const totalCount = r.data.response.total_count || 0;
+                if (totalCount > 0) {
+                    console.log(`[Mosaic] ${r.label}: ${totalCount}건 발견`);
+                }
+                for (const item of r.data.response.data) {
+                    const source = item._source || item;
+                    const title = this.stripHtml(source.title || item.title || '');
+                    const content = this.stripHtml(source.contents || source.contents_chunk || '');
+                    const author = source.create_user_name || source.last_update_user_name_en || '';
+                    const date = source.create_date || source.last_update_date || '';
+                    let url = source.link_url || item.link_url || '';
+                    if (url && !url.startsWith('http')) {
+                        url = this.baseUrl + (url.startsWith('/') ? '' : '/') + url;
+                    }
+                    const id = item._id || source.id || '';
+
+                    results.push({
+                        platform: 'mosaic',
+                        category: r.label,
+                        id: String(id),
+                        title: title,
+                        content: content.substring(0, 2000),
+                        url: url || `${this.baseUrl}/collaboration/workspace/${source.workspace_id || id}`,
+                        author: author,
+                        date: date,
+                        score: parseFloat(item._score || source._score || 0.7),
+                        keyword: keyword,
+                        source: 'api',
+                        workspaceName: source.workspace_name || '',
+                        viewCount: source.view_count || 0,
+                        likeCount: source.like_count || 0,
+                        commentCount: source.comment_count || 0,
+                        hasAttachment: source.attach_yn === 'Y' || false
+                    });
+
+                }
+            }
+        }
+
+        // i-search 결과 파싱
+        for (const r of iSearchResults) {
+            if (r.data && r.data.response && r.data.response.data) {
+                const totalCount = r.data.response.total_count || 0;
+                if (totalCount > 0) {
+                    console.log(`[Mosaic] ${r.label}: ${totalCount}건 발견`);
+                }
+                for (const item of r.data.response.data) {
+                    const source = item._source || item;
+                    const title = this.stripHtml(source.title || '');
+                    const author = source.create_user_name || source.create_user_name_en || '';
+                    const date = source.create_date || '';
+                    let url = source.link_url || '';
+                    if (url && !url.startsWith('http')) {
+                        url = this.baseUrl + (url.startsWith('/') ? '' : '/') + url;
+                    }
+                    const id = item._id || source.id || '';
+
+                    results.push({
+                        platform: 'mosaic',
+                        category: r.label,
+                        id: String(id),
+                        title: title,
+                        content: '',
+                        url: url || `${this.baseUrl}/ideation/${r.label.toLowerCase().replace(' ', '-')}/${id}`,
+                        author: author,
+                        date: date,
+                        score: parseFloat(item._score || 0.7),
+                        keyword: keyword,
+                        source: 'api'
+                    });
+                }
+            }
+        }
+
+        // 점수순 정렬 후 maxResults 만큼 자르기
+        results.sort((a, b) => b.score - a.score);
+        return results.slice(0, maxResults);
+    }
+
+    /**
+     * HTML 태그 제거
+     */
+    stripHtml(text) {
+        if (!text) return '';
+        return text.replace(/<[^>]*>/g, '').trim();
+    }
+
+    /**
+     * CDP로 Mosaic 통합검색 페이지 스크래핑 (폴백)
+     */
+    async searchViaCDP(keyword, maxResults) {
+        // CDP 자동 실행 보장
+        const { ensureCDP } = require('../core/cdp-launcher');
+        await ensureCDP(this.cdpPort);
+
+        const { chromium } = require('playwright');
+        const browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
+        const contexts = browser.contexts();
+        if (contexts.length === 0) { browser.close(); return []; }
+        
+        const context = contexts[0];
+        const pages = context.pages();
+        let page = pages.find(p => p.url().includes('mosaic.sec.samsung.net'));
+        if (!page) page = await context.newPage();
+
+        
+        console.log('[Mosaic] CDP 스크래핑으로 검색 중...');
+        
+        // 네트워크 요청 가로채기
+        const apiResponses = [];
+        page.on('response', async (response) => {
+            const url = response.url();
+            if (url.includes('/api/') && (url.includes('itg-search') || url.includes('i-search'))) {
+                try {
+                    const ct = response.headers()['content-type'] || '';
+                    if (ct.includes('json')) {
+                        const body = await response.json();
+                        apiResponses.push({ url, data: body });
+                    }
+                } catch (e) {}
+            }
+        });
+        
+        const searchUrl = `${this.baseUrl}/common/isearch?isSrch=true&keyword=${encodeURIComponent(keyword)}`;
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: this.config.timeout });
+        await page.waitForTimeout(8000);
+        
+        const results = [];
+        for (const resp of apiResponses) {
+            if (resp.data && resp.data.response && resp.data.response.data) {
+                for (const item of resp.data.response.data) {
+                    if (results.length >= maxResults) break;
+                    const source = item._source || item;
+                    const title = this.stripHtml(source.title || '');
+                    let url = source.link_url || '';
+                    if (url && !url.startsWith('http')) {
+                        url = this.baseUrl + (url.startsWith('/') ? '' : '/') + url;
+                    }
+                    results.push({
+                        platform: 'mosaic',
+                        category: source.service_name || '',
+                        id: String(item._id || source.id || ''),
+                        title: title,
+                        content: this.stripHtml(source.contents || '').substring(0, 500),
+                        url: url,
+                        author: source.create_user_name || '',
+                        date: source.create_date || '',
+                        score: parseFloat(item._score || 0.7),
+                        keyword: keyword,
+                        source: 'cdp'
+                    });
+                }
+            }
+        }
+        
+        browser.close();
+        return results;
+    }
+
+
+    /**
+     * 캐시에서 검색
+     */
+    async searchFromCache(keyword) {
+        console.log('[Mosaic] 캐시에서 검색 중...');
+        const results = [];
+        const cacheDir = path.resolve(__dirname, '../../output');
+        try {
+            const files = fs.readdirSync(cacheDir).filter(f => f.startsWith('mosaic-'));
+            for (const file of files) {
+                const filePath = path.join(cacheDir, file);
+                const stat = fs.statSync(filePath);
+                if (stat.isFile() && (file.endsWith('.json') || file.endsWith('.html') || file.endsWith('.txt'))) {
+                    const raw = fs.readFileSync(filePath, 'utf8');
+                    const text = raw.toLowerCase();
+                    if (text.includes(keyword.toLowerCase())) {
+                        let title = file;
+                        let content = text.substring(0, 500);
+                        if (file.endsWith('.json')) {
+                            try {
+                                const data = JSON.parse(raw);
+                                if (data.title) title = data.title;
+                                if (data.results && data.results[0]) {
+                                    content = JSON.stringify(data.results[0]).substring(0, 500);
+                                }
+                            } catch (e) {}
+                        }
+                        results.push({
+                            platform: 'mosaic',
+                            id: file,
+                            title: `Mosaic Cache: ${title}`,
+                            content: content,
+                            url: `${this.baseUrl}`,
+                            author: '',
+                            date: stat.mtime.toISOString(),
+                            score: 0.5,
+                            keyword: keyword,
+                            source: 'cache'
+                        });
+                    }
+                }
+            }
+        } catch (e) {}
+        console.log(`[Mosaic] 캐시에서 ${results.length}개 결과 발견`);
+        return results;
+    }
+
+    /**
+     * 상세 내용 조회
+     */
+    async getDetail(id) {
+        try {
+            const cookieStr = await this.getCookiesFromCDP() || this.getSessionCookie();
+            if (cookieStr) {
+                const headers = this.getHeaders(cookieStr);
+                const response = await axios.get(
+                    `${this.baseUrl}/api/v1/collaboration/workspace/${id}`,
+                    { headers, timeout: this.config.timeout, httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false }) }
+                );
+                return response.data;
+            }
+        } catch (error) {
+            console.error('[Mosaic] 상세 조회 오류:', error.message);
+        }
+        try {
+            // CDP 자동 실행 보장
+            const { ensureCDP } = require('../core/cdp-launcher');
+            await ensureCDP(this.cdpPort);
+
+            const { chromium } = require('playwright');
+            const browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
+            const contexts = browser.contexts();
+            if (contexts.length === 0) { browser.close(); return null; }
+            const page = await contexts[0].newPage();
+            const detailUrl = `${this.baseUrl}/collaboration/workspace/${id}`;
+            await page.goto(detailUrl, 

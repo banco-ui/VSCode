@@ -1,0 +1,730 @@
+"""Management API Routes — Phase 22 + Phase 24.
+
+Provider-neutral REST endpoints that expose existing Phase 13-21
+backend services (Discovery, Health, Graph, Monitoring, Fault,
+Alert, Visibility, Operation/Recovery) as read-only and preview-only
+APIs under /api/v1/.
+
+SAFETY PRINCIPLES:
+    - All GET endpoints are read-only
+    - POST /operations/preview and /recovery/preview are preview-only
+    - POST /discovery/run triggers read-only provider exploration only
+    - No shell commands or external process calls
+    - No provider mutation API calls (no START/STOP/RESTART/REDEPLOY/SCALE)
+    - No recovery executor invocation
+    - No operation service invocation
+    - No kubeconfig or credential creation/modification
+
+This module contains ONLY HTTP boundary code + response mapping.
+No business logic is implemented here.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from .dependencies import (
+    DiscoveryAlreadyRunningError,
+    ManagementContext,
+    get_management_context,
+)
+from .management_schemas import (
+    SystemHealthResponse,
+    SystemReadinessResponse,
+    InventorySummaryResponse,
+    EntityListResponse,
+    HealthReportResponse,
+    GraphSummaryResponse,
+    ObservationListResponse,
+    FaultListResponse,
+    OperationalSummaryResponse,
+    EntityStatusResponse,
+    OperationPreviewRequest,
+    OperationPreviewResponse,
+    RecoveryPreviewRequest,
+    RecoveryPreviewResponse,
+    DiscoveryRunResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1", tags=["management"])
+
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+_ENTITY_LISTS: list[tuple[str, str]] = [
+    ("physicals", "PHYSICAL"),
+    ("os_entities", "OS"),
+    ("platforms", "PLATFORM"),
+    ("clusters", "CLUSTER"),
+    ("nodes", "NODE"),
+    ("execution_environments", "EXECUTION_ENVIRONMENT"),
+    ("workloads", "WORKLOAD"),
+    ("networks", "NETWORK"),
+    ("storages", "STORAGE"),
+    ("accelerators", "ACCELERATOR"),
+]
+
+
+def _require_inventory(ctx: ManagementContext):
+    """Return the CanonicalInventory or raise 503."""
+    inventory = ctx.inventory
+    if inventory is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No discovery pipeline result available. Run discovery first.",
+                "details": {},
+            },
+        )
+    return inventory
+
+
+def _find_entity(inventory, canonical_id: str) -> tuple[Optional[Any], str]:
+    """Search all entity lists by canonical_id."""
+    for attr_name, type_name in _ENTITY_LISTS:
+        entities = getattr(inventory, attr_name, [])
+        for entity in entities:
+            if entity.canonical_id == canonical_id:
+                return entity, type_name
+    return None, ""
+
+
+def _entity_counts(inventory) -> dict[str, int]:
+    """Return entity counts per type."""
+    counts: dict[str, int] = {}
+    for attr_name, type_name in _ENTITY_LISTS:
+        entities = getattr(inventory, attr_name, [])
+        counts[type_name] = len(entities)
+    return counts
+
+
+# ── System ────────────────────────────────────────────────────────────
+
+@router.get("/system/health", response_model=SystemHealthResponse)
+def system_health() -> SystemHealthResponse:
+    """Liveness probe — always returns ok if the process is running."""
+    return SystemHealthResponse(status="ok")
+
+
+@router.get("/system/readiness", response_model=SystemReadinessResponse)
+def system_readiness(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> SystemReadinessResponse:
+    """Readiness probe — checks if pipeline services are configured."""
+    components = {
+        "discovery": ctx.discovery_result is not None,
+        "inventory": ctx.inventory is not None,
+        "health": ctx.health_report is not None,
+        "graph": ctx.graph_query is not None,
+        "monitoring": ctx.monitoring_report is not None,
+        "faults": ctx.fault_result is not None,
+        "alerts": ctx.alert_service is not None,
+        "visibility": ctx.visibility is not None,
+        "operations": ctx.operation_service is not None,
+        "recovery": ctx.recovery_service is not None,
+    }
+    ready = ctx.is_configured
+    return SystemReadinessResponse(ready=ready, components=components)
+
+
+# ── Inventory ─────────────────────────────────────────────────────────
+
+@router.get("/inventory", response_model=InventorySummaryResponse)
+def get_inventory_summary(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> InventorySummaryResponse:
+    """Get a summary of the canonical inventory from the latest discovery run."""
+    inventory = _require_inventory(ctx)
+    return InventorySummaryResponse(
+        provider_type=inventory.provider_type.value,
+        provider_id=inventory.provider_id,
+        snapshot_id=inventory.snapshot_id,
+        discovered_at=inventory.discovered_at,
+        identified_platform_type=inventory.identified_platform_type.value,
+        total_entities=inventory.entity_count,
+        entity_counts=_entity_counts(inventory),
+    )
+
+
+@router.get("/inventory/entities", response_model=EntityListResponse)
+def list_entities(
+    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityListResponse:
+    """List all canonical entities, optionally filtered by type."""
+    inventory = _require_inventory(ctx)
+    items: list[dict[str, Any]] = []
+    for attr_name, type_name in _ENTITY_LISTS:
+        if entity_type and entity_type.upper() != type_name:
+            continue
+        for entity in getattr(inventory, attr_name, []):
+            d = entity.model_dump()
+            d["_entity_type"] = type_name
+            items.append(d)
+    return EntityListResponse(items=items, total=len(items))
+
+
+@router.get("/inventory/entities/{canonical_id}", response_model=None)
+def get_entity(
+    canonical_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get a specific canonical entity by its canonical_id."""
+    inventory = _require_inventory(ctx)
+    entity, entity_type = _find_entity(inventory, canonical_id)
+    if entity is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NOT_FOUND",
+                "message": f"Entity '{canonical_id}' not found",
+                "details": {},
+            },
+        )
+    result = entity.model_dump()
+    result["_entity_type"] = entity_type
+    return result
+
+
+@router.get("/inventory/platforms", response_model=EntityListResponse)
+def list_platforms(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityListResponse:
+    """List all platform entities."""
+    inventory = _require_inventory(ctx)
+    items = [e.model_dump() for e in inventory.platforms]
+    return EntityListResponse(items=items, total=len(items))
+
+
+@router.get("/inventory/clusters", response_model=EntityListResponse)
+def list_clusters(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityListResponse:
+    """List all cluster entities."""
+    inventory = _require_inventory(ctx)
+    items = [e.model_dump() for e in inventory.clusters]
+    return EntityListResponse(items=items, total=len(items))
+
+
+@router.get("/inventory/nodes", response_model=EntityListResponse)
+def list_nodes(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityListResponse:
+    """List all node entities."""
+    inventory = _require_inventory(ctx)
+    items = [e.model_dump() for e in inventory.nodes]
+    return EntityListResponse(items=items, total=len(items))
+
+
+@router.get("/inventory/execution-environments", response_model=EntityListResponse)
+def list_execution_environments(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityListResponse:
+    """List all execution environment entities."""
+    inventory = _require_inventory(ctx)
+    items = [e.model_dump() for e in inventory.execution_environments]
+    return EntityListResponse(items=items, total=len(items))
+
+
+@router.get("/inventory/networks", response_model=EntityListResponse)
+def list_networks(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityListResponse:
+    """List all network entities."""
+    inventory = _require_inventory(ctx)
+    items = [e.model_dump() for e in inventory.networks]
+    return EntityListResponse(items=items, total=len(items))
+
+
+@router.get("/inventory/storages", response_model=EntityListResponse)
+def list_storages(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityListResponse:
+    """List all storage entities."""
+    inventory = _require_inventory(ctx)
+    items = [e.model_dump() for e in inventory.storages]
+    return EntityListResponse(items=items, total=len(items))
+
+
+# ── Health ────────────────────────────────────────────────────────────
+
+@router.get("/health", response_model=HealthReportResponse)
+def get_health_report(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> HealthReportResponse:
+    """Get the health report from the latest health assessment."""
+    report = ctx.health_report
+    if report is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No health report available.",
+                "details": {},
+            },
+        )
+    return HealthReportResponse(
+        provider_type=report.provider_type.value,
+        provider_id=report.provider_id,
+        health_status=report.health_status.value,
+        checked_at=report.checked_at,
+        entity_count=report.entity_count,
+        results=[r.model_dump() for r in report.results],
+    )
+
+
+@router.get("/health/entities/{canonical_id}", response_model=None)
+def get_entity_health(
+    canonical_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get health assessment for a specific entity."""
+    report = ctx.health_report
+    if report is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No health report available.",
+                "details": {},
+            },
+        )
+    for result in report.results:
+        if result.entity_id == canonical_id:
+            return result.model_dump()
+    raise HTTPException(
+        status_code=404,
+        detail={
+            "code": "NOT_FOUND",
+            "message": f"Health result for entity '{canonical_id}' not found",
+            "details": {},
+        },
+    )
+
+
+# ── Graph ─────────────────────────────────────────────────────────────
+
+@router.get("/graph/summary", response_model=GraphSummaryResponse)
+def get_graph_summary(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> GraphSummaryResponse:
+    """Get a summary of the infrastructure graph."""
+    gq = ctx.graph_query
+    if gq is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No graph available.",
+                "details": {},
+            },
+        )
+    return GraphSummaryResponse(
+        node_count=gq.node_count,
+        relationship_count=gq.relationship_count,
+        node_ids=sorted(gq.node_ids),
+    )
+
+
+@router.get("/graph/nodes/{canonical_id}", response_model=None)
+def get_graph_node(
+    canonical_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get a specific graph node by canonical_id."""
+    gq = ctx.graph_query
+    if gq is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No graph available.",
+                "details": {},
+            },
+        )
+    node = gq.get_node(canonical_id)
+    if node is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NOT_FOUND",
+                "message": f"Graph node '{canonical_id}' not found",
+                "details": {},
+            },
+        )
+    return node.model_dump()
+
+
+@router.get("/graph/nodes/{canonical_id}/relationships", response_model=None)
+def get_node_relationships(
+    canonical_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get all relationships for a graph node."""
+    gq = ctx.graph_query
+    if gq is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No graph available.",
+                "details": {},
+            },
+        )
+    node = gq.get_node(canonical_id)
+    if node is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NOT_FOUND",
+                "message": f"Graph node '{canonical_id}' not found",
+                "details": {},
+            },
+        )
+    rels = gq.get_relationships(canonical_id)
+    return {
+        "canonical_id": canonical_id,
+        "relationships": [r.model_dump() for r in rels],
+        "total": len(rels),
+    }
+
+
+@router.get("/graph/nodes/{canonical_id}/neighbors", response_model=None)
+def get_node_neighbors(
+    canonical_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get neighbor node IDs for a graph node."""
+    gq = ctx.graph_query
+    if gq is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No graph available.",
+                "details": {},
+            },
+        )
+    node = gq.get_node(canonical_id)
+    if node is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NOT_FOUND",
+                "message": f"Graph node '{canonical_id}' not found",
+                "details": {},
+            },
+        )
+    neighbors = gq.get_neighbors(canonical_id)
+    return {
+        "canonical_id": canonical_id,
+        "neighbors": neighbors,
+        "total": len(neighbors),
+    }
+
+
+# ── Monitoring ────────────────────────────────────────────────────────
+
+@router.get("/monitoring/observations", response_model=ObservationListResponse)
+def list_observations(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> ObservationListResponse:
+    """List all latest monitoring observations."""
+    ms = ctx.monitoring_service
+    if ms is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No monitoring service available.",
+                "details": {},
+            },
+        )
+    observations = ms.get_all_latest()
+    return ObservationListResponse(
+        observations=[o.model_dump() for o in observations],
+        total=len(observations),
+    )
+
+
+@router.get("/monitoring/observations/{entity_id}", response_model=None)
+def get_entity_observations(
+    entity_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get monitoring observations for a specific entity."""
+    ms = ctx.monitoring_service
+    if ms is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No monitoring service available.",
+                "details": {},
+            },
+        )
+    observations = ms.get_observations(entity_id)
+    if not observations:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NOT_FOUND",
+                "message": f"No observations found for entity '{entity_id}'",
+                "details": {},
+            },
+        )
+    return {
+        "entity_id": entity_id,
+        "observations": [o.model_dump() for o in observations],
+        "total": len(observations),
+    }
+
+
+# ── Faults ────────────────────────────────────────────────────────────
+
+@router.get("/faults", response_model=FaultListResponse)
+def list_faults(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    ctx: ManagementContext = Depends(get_management_context),
+) -> FaultListResponse:
+    """List all detected faults, optionally filtered by status."""
+    fr = ctx.fault_result
+    if fr is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No fault detection result available.",
+                "details": {},
+            },
+        )
+    faults = list(fr.faults)
+    if status_filter:
+        faults = [f for f in faults if f.status.value == status_filter.upper()]
+    return FaultListResponse(
+        faults=[f.model_dump() for f in faults],
+        total=len(faults),
+    )
+
+
+@router.get("/faults/{fault_id}", response_model=None)
+def get_fault(
+    fault_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get a specific fault by fault_id."""
+    fr = ctx.fault_result
+    if fr is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No fault detection result available.",
+                "details": {},
+            },
+        )
+    for fault in fr.faults:
+        if fault.fault_id == fault_id:
+            return fault.model_dump()
+    raise HTTPException(
+        status_code=404,
+        detail={
+            "code": "NOT_FOUND",
+            "message": f"Fault '{fault_id}' not found",
+            "details": {},
+        },
+    )
+
+
+@router.get("/faults/entities/{canonical_id}", response_model=FaultListResponse)
+def get_entity_faults(
+    canonical_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+) -> FaultListResponse:
+    """Get all faults for a specific canonical entity."""
+    fr = ctx.fault_result
+    if fr is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No fault detection result available.",
+                "details": {},
+            },
+        )
+    faults = [f for f in fr.faults if f.entity_id == canonical_id]
+    return FaultListResponse(
+        faults=[f.model_dump() for f in faults],
+        total=len(faults),
+    )
+
+
+# ── Visibility ────────────────────────────────────────────────────────
+
+@router.get("/visibility/summary", response_model=OperationalSummaryResponse)
+def get_operational_summary(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> OperationalSummaryResponse:
+    """Get the operational visibility summary (read-only)."""
+    vis = ctx.visibility
+    if vis is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No visibility service available.",
+                "details": {},
+            },
+        )
+    summary = vis.get_summary()
+    return OperationalSummaryResponse(
+        infrastructure=summary.infrastructure.model_dump(),
+        health=summary.health.model_dump(),
+        resources=summary.resources.model_dump(),
+        faults=summary.faults.model_dump(),
+        alerts=summary.alerts.model_dump(),
+        operations=summary.operations.model_dump(),
+        generated_at=summary.generated_at,
+    )
+
+
+@router.get("/visibility/alerts", response_model=None)
+def list_visibility_alerts(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """List Phase 20 visibility alerts (read-only)."""
+    vis = ctx.visibility
+    if vis is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No visibility service available.",
+                "details": {},
+            },
+        )
+    from ..visibility.models import AlertStatus
+    sf = None
+    if status_filter:
+        try:
+            sf = AlertStatus(status_filter.upper())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "INVALID_STATUS",
+                    "message": f"Invalid alert status: {status_filter}",
+                    "details": {},
+                },
+            )
+    alerts = vis.get_alerts(sf)
+    return {
+        "alerts": [a.model_dump() for a in alerts],
+        "total": len(alerts),
+    }
+
+
+@router.get("/visibility/alerts/{alert_id}", response_model=None)
+def get_visibility_alert(
+    alert_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+):
+    """Get a specific Phase 20 visibility alert by alert_id."""
+    vis = ctx.visibility
+    if vis is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No visibility service available.",
+                "details": {},
+            },
+        )
+    alert = vis.get_alert(alert_id)
+    if alert is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NOT_FOUND",
+                "message": f"Alert '{alert_id}' not found",
+                "details": {},
+            },
+        )
+    return alert.model_dump()
+
+
+@router.get("/visibility/entities/{canonical_id}", response_model=EntityStatusResponse)
+def get_entity_status(
+    canonical_id: str,
+    ctx: ManagementContext = Depends(get_management_context),
+) -> EntityStatusResponse:
+    """Get operational status for a single entity (read-only)."""
+    vis = ctx.visibility
+    if vis is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No visibility service available.",
+                "details": {},
+            },
+        )
+    status = vis.get_entity_status(canonical_id)
+    return EntityStatusResponse(
+        entity_id=status.entity_id,
+        entity_type=status.entity_type,
+        health_status=status.health_status,
+        availability_status=status.availability_status,
+        active_faults=status.active_faults,
+        active_alerts=status.active_alerts,
+        alert_ids=status.alert_ids,
+        fault_ids=status.fault_ids,
+    )
+
+
+# ── Operation Preview ─────────────────────────────────────────────────
+
+@router.post("/operations/preview", response_model=OperationPreviewResponse)
+def preview_operation(
+    request: OperationPreviewRequest,
+    ctx: ManagementContext = Depends(get_management_context),
+) -> OperationPreviewResponse:
+    """Preview an operation without mutation or execution.
+
+    Generates a deterministic preview of what an operation would do.
+    No provider API calls, no mutations, no execution.
+    """
+    svc = ctx.operation_service
+    if svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No operation service available.",
+                "details": {},
+            },
+        )
+
+    from ..operations.models import OperationRequest, OperationType
+    from ..models.canonical import ProviderType
+
+    try:
+        op_type = OperationType(request.operation_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_OPERATION_TYPE",
+                "message": f"Invalid operation type: {request.operation_type}",
+                "details": {},
+            },
+        )
+
+    try:
+        prov_type = ProviderType(request.pr

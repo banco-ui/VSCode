@@ -1,0 +1,136 @@
+ilRow('Execution Allowed', p.execution_allowed ? 'Yes' : 'No (Disabled)');
+      html += detailRow('Previewed At', fmtTime(p.previewed_at));
+      html += '</div></div>';
+      return html;
+    },
+
+    _submitRecPreview: function () {
+      var btn = document.getElementById('btn-rec-preview');
+      btn.disabled = true; btn.textContent = 'Previewing\u2026';
+      var resultEl = document.getElementById('rec-preview-result');
+      resultEl.innerHTML = showLoading('Generating recovery preview\u2026');
+      var body = {
+        fault_id: document.getElementById('rec-fault').value,
+        action_type: document.getElementById('rec-action').value,
+        target_entity_id: document.getElementById('rec-target').value || null,
+      };
+      var self = this;
+      ApiClient.previewRecovery(body).then(function (p) {
+        resultEl.innerHTML = self._renderRecPreviewResult(p);
+      }).catch(function (e) { resultEl.innerHTML = showError(e); })
+      .then(function () { btn.disabled = false; btn.textContent = 'Preview Recovery'; });
+    },
+
+    _renderRecPreviewResult: function (p) {
+      var html = '<div class="preview-result"><div class="preview-warning">\u26A0 This is a PREVIEW only. No recovery action was executed.</div><div class="detail-grid">';
+      html += detailRow('Candidate ID', val(p.candidate_id));
+      html += detailRow('Action ID', val(p.action_id));
+      html += detailRow('Action Type', val(p.action_type));
+      html += detailRow('Target Entity', '<span class="mono">' + esc(p.target_entity_id) + '</span>');
+      html += detailRow('Fault ID', '<span class="mono">' + esc(p.fault_id) + '</span>');
+      html += detailRow('Expected Effect', val(p.expected_effect));
+      html += detailRow('Safety Result', badge(p.safety_result));
+      if (p.safety_reason) html += detailRow('Safety Reason', val(p.safety_reason));
+      html += detailRow('Supported', p.supported ? '\u2713 Yes' : '\u2717 No');
+      html += detailRow('Previewed At', fmtTime(p.previewed_at));
+      html += '</div></div>';
+      return html;
+    },
+
+    // ── Discovery View ──────────────────────────────────────────
+    _discoveryRunning: false,
+
+    _renderDiscovery: function () {
+      var self = this;
+      var html = '<h2 class="section-title">Discovery</h2>';
+      html += '<div class="card"><div class="card-title">Run Discovery</div>';
+      html += '<p class="muted">Trigger a read-only discovery run to refresh the inventory and all dependent services (health, graph, monitoring, faults, alerts).</p>';
+      html += '<div class="preview-warning">\u26A0 Discovery is a read-only exploration operation. No provider resources will be created, modified, or deleted.</div>';
+      html += '<button class="btn" type="button" id="btn-discovery-run" onclick="App._runDiscovery()">Run Discovery</button>';
+      html += '<div id="discovery-result"></div>';
+      html += '</div>';
+      html += '<div class="card"><div class="card-title">Current Inventory Status</div>';
+      html += '<div id="discovery-current-status">' + showLoading('Loading current status\u2026') + '</div>';
+      html += '</div>';
+      self._setContent(html);
+      self._loadDiscoveryCurrentStatus();
+    },
+
+    _runDiscovery: function () {
+      if (this._discoveryRunning) return;
+      this._discoveryRunning = true;
+      var btn = document.getElementById('btn-discovery-run');
+      if (btn) { btn.disabled = true; btn.textContent = 'Running\u2026'; }
+      var resultEl = document.getElementById('discovery-result');
+      if (resultEl) resultEl.innerHTML = '<div class="loading-state"><p>Running discovery\u2026</p></div>';
+      var self = this;
+      ApiClient.discoveryRun().then(function (r) {
+        resultEl.innerHTML = self._renderDiscoveryResult(r);
+        self._loadDiscoveryCurrentStatus();
+      }).catch(function (e) {
+        resultEl.innerHTML = showError(e);
+      }).then(function () {
+        self._discoveryRunning = false;
+        if (btn) { btn.disabled = false; btn.textContent = 'Run Discovery'; }
+      });
+    },
+
+    _renderDiscoveryResult: function (r) {
+      var html = '<div class="preview-result"><div class="detail-grid">';
+      html += detailRow('Discovery Status', badge(r.discovery_status));
+      html += detailRow('Provider Type', val(r.provider_type));
+      if (r.provider_id) html += detailRow('Provider ID', '<span class="mono">' + esc(r.provider_id) + '</span>');
+      html += detailRow('Snapshot ID', '<span class="mono">' + esc(r.snapshot_id) + '</span>');
+      html += detailRow('Collected At', fmtTime(r.collected_at));
+      html += detailRow('Platform Type', val(r.identified_platform_type));
+      html += detailRow('Entity Count', val(r.entity_count));
+      if (r.capabilities_attempted && r.capabilities_attempted.length > 0) {
+        html += detailRow('Capabilities Attempted', r.capabilities_attempted.join(', '));
+      }
+      if (r.capabilities_succeeded && r.capabilities_succeeded.length > 0) {
+        html += detailRow('Capabilities Succeeded', '<span class="text-success">' + r.capabilities_succeeded.join(', ') + '</span>');
+      }
+      if (r.capabilities_failed && r.capabilities_failed.length > 0) {
+        html += detailRow('Capabilities Failed', '<span class="text-error">' + r.capabilities_failed.join(', ') + '</span>');
+      }
+      html += '</div>';
+      if (r.errors && r.errors.length > 0) {
+        html += '<div class="error-state mt-sm"><span class="error-code">Errors</span><ul>';
+        r.errors.forEach(function (e) { html += '<li>' + esc(e) + '</li>'; });
+        html += '</ul></div>';
+      }
+      if (r.warnings && r.warnings.length > 0) {
+        html += '<div class="preview-warning mt-sm"><strong>Warnings:</strong><ul>';
+        r.warnings.forEach(function (w) { html += '<li>' + esc(w) + '</li>'; });
+        html += '</ul></div>';
+      }
+      html += '</div>';
+      return html;
+    },
+
+    _loadDiscoveryCurrentStatus: function () {
+      var el = document.getElementById('discovery-current-status');
+      if (!el) return;
+      el.innerHTML = showLoading('Loading current status\u2026');
+      ApiClient.getInventorySummary().then(function (inv) {
+        var html = '<div class="detail-grid">';
+        html += detailRow('Provider Type', val(inv.provider_type));
+        if (inv.provider_id) html += detailRow('Provider ID', '<span class="mono">' + esc(inv.provider_id) + '</span>');
+        html += detailRow('Snapshot ID', '<span class="mono">' + esc(inv.snapshot_id) + '</span>');
+        html += detailRow('Discovered At', fmtTime(inv.discovered_at));
+        html += detailRow('Platform Type', val(inv.identified_platform_type));
+        html += detailRow('Total Entities', val(inv.total_entities));
+        html += '</div>';
+        if (inv.total_entities === 0) {
+          html += showEmpty('Inventory is empty. Run discovery to populate.', '\uD83D\uDCC5');
+        }
+        el.innerHTML = html;
+      }).catch(function (e) {
+        el.innerHTML = showError(e);
+      });
+    }
+  };
+
+  global.App = App;
+  document.addEventListener('DOMContentLoaded', function () { App.init(); });
+})(window);

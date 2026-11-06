@@ -1,0 +1,465 @@
+/* Server Manager Dashboard — Main Application (Phase 23)
+ *
+ * Single-page application using hash-based routing.
+ * Consumes Phase 22 Management API via ApiClient.
+ *
+ * SAFETY:
+ *   - All dynamic content is HTML-escaped before rendering.
+ *   - No credential storage in localStorage.
+ *   - No direct provider API calls.
+ *   - No shell command invocation.
+ *   - POST preview endpoints are never auto-repeated.
+ *   - Duplicate requests are prevented during loading.
+ *
+ * This file contains ONLY read-only and preview-only UI logic.
+ * No operation/recovery execution is performed or triggered.
+ */
+(function (global) {
+  'use strict';
+
+  // ── Utility Functions ────────────────────────────────────────────
+
+  /** Escape HTML to prevent XSS. */
+  function esc(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /** Escape and truncate a string for display. */
+  function escTrunc(str, max) {
+    var s = esc(str);
+    if (max && s.length > max) return s.substring(0, max) + '\u2026';
+    return s;
+  }
+
+  /** Format ISO timestamp for display. */
+  function fmtTime(iso) {
+    if (!iso) return '\u2014';
+    try { return new Date(iso).toLocaleString(); }
+    catch (_) { return esc(iso); }
+  }
+
+  /** Map a health/status string to a CSS badge class. */
+  function badgeClass(status) {
+    if (!status) return 'badge-unknown';
+    var s = String(status).toUpperCase();
+    if (s === 'HEALTHY' || s === 'READY' || s === 'OK' || s === 'BOUND' || s === 'RUNNING') return 'badge-healthy';
+    if (s === 'NOT READY') return 'badge-degraded';
+    if (s === 'DEGRADED' || s === 'PENDING') return 'badge-degraded';
+    if (s === 'UNHEALTHY' || s === 'FAILED' || s === 'ERROR' || s === 'CRITICAL') return 'badge-unhealthy';
+    return 'badge-unknown';
+  }
+
+  function badge(status) {
+    return '<span class="badge ' + badgeClass(status) + '">' + esc(status || 'UNKNOWN') + '</span>';
+  }
+
+  function val(v) {
+    if (v === null || v === undefined || v === '') return '<span class="no-data">\u2014</span>';
+    return esc(v);
+  }
+
+  function detailRow(label, valueHtml) {
+    return '<div class="detail-label">' + esc(label) + '</div><div class="detail-value">' + valueHtml + '</div>';
+  }
+
+  function showLoading(msg) {
+    return '<div class="loading-state"><p>' + esc(msg || 'Loading\u2026') + '</p></div>';
+  }
+
+  function showEmpty(msg, icon) {
+    return '<div class="empty-state"><div class="empty-icon">' + (icon || '\uD83D\uDCC5') + '</div><p>' + esc(msg || 'No data available.') + '</p></div>';
+  }
+
+  function showError(err) {
+    var code = (err && err.code) ? err.code : 'ERROR';
+    var msg = (err && err.message) ? err.message : 'An unexpected error occurred.';
+    var status = (err && err.status) ? ' (HTTP ' + err.status + ')' : '';
+    return '<div class="error-state"><span class="error-code">' + esc(code) + status + '</span>' +
+      '<div class="error-message">' + esc(msg) + '</div>' +
+      '<button class="btn btn-secondary btn-sm mt-sm" type="button" onclick="App.retry()">Retry</button></div>';
+  }
+
+  // ── Readiness helpers (Overview readiness card) ─────────────────
+  // UNKNOWN policy: never guess READY or NOT READY when the
+  // `ready` field is missing or is not a boolean. Guidance text is
+  // grounded in the actual API response (components.discovery).
+  function readinessState(readiness) {
+    if (!readiness || typeof readiness.ready !== 'boolean') return 'UNKNOWN';
+    return readiness.ready ? 'READY' : 'NOT READY';
+  }
+  function readinessSub(readiness) {
+    if (!readiness || typeof readiness.ready !== 'boolean') return 'Readiness status unavailable';
+    if (readiness.ready) return 'Management pipeline is configured';
+    var comps = readiness.components || {};
+    if (comps.discovery === false) return 'Discovery has not run yet \u2014 open the Discovery page to run it';
+    return 'Management pipeline is not fully configured';
+  }
+
+  // ── App State & Core ────────────────────────────────────────────
+
+  var App = {
+    _autoRefresh: true,
+    _autoRefreshTimer: null,
+    _autoRefreshInterval: 30000,
+    _lastRefresh: null,
+    _lastRefreshError: null,
+    _stale: false,
+    _loading: false,
+    _inventorySearch: null,
+
+    init: function () {
+      document.getElementById('btn-refresh').addEventListener('click', this.refresh.bind(this));
+      document.getElementById('btn-retry').addEventListener('click', function () { this.hideError(); this.refresh(); }.bind(this));
+      document.getElementById('auto-refresh').addEventListener('change', function (e) {
+        this._autoRefresh = e.target.checked;
+        if (this._autoRefresh) this._startAutoRefresh(); else this._stopAutoRefresh();
+      }.bind(this));
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden && this._autoRefresh) { this.refresh(); }
+      }.bind(this));
+      this._checkApiHealth();
+      global.addEventListener('hashchange', this._route.bind(this));
+      this._route();
+    },
+
+    _startAutoRefresh: function () {
+      this._stopAutoRefresh();
+      if (this._autoRefresh) {
+        var self = this;
+        this._autoRefreshTimer = setInterval(function () {
+          if (!document.hidden) self.refresh();
+        }, this._autoRefreshInterval);
+      }
+    },
+
+    _stopAutoRefresh: function () {
+      if (this._autoRefreshTimer) { clearInterval(this._autoRefreshTimer); this._autoRefreshTimer = null; }
+    },
+
+    _setLoading: function (loading) {
+      this._loading = loading;
+      var btn = document.getElementById('btn-refresh');
+      if (btn) {
+        btn.disabled = loading;
+        if (loading) { btn.classList.add('btn-refresh-loading'); }
+        else { btn.classList.remove('btn-refresh-loading'); }
+      }
+    },
+
+    _checkApiHealth: function () {
+      var dot = document.getElementById('api-status-dot');
+      var text = document.getElementById('api-status-text');
+      dot.className = 'status-dot connecting';
+      text.textContent = 'Connecting\u2026';
+      var self = this;
+      ApiClient.getSystemHealth()
+        .then(function () { dot.className = 'status-dot connected'; text.textContent = 'API Connected'; self._startAutoRefresh(); })
+        .catch(function (e) { dot.className = 'status-dot disconnected'; text.textContent = 'API Disconnected'; self._showErrorBanner(e); });
+    },
+
+    refresh: function () {
+      if (this._loading) return;
+      this._route();
+    },
+    retry: function () { this.hideError(); this.refresh(); },
+
+    _showErrorBanner: function (err) {
+      var banner = document.getElementById('error-banner');
+      var text = document.getElementById('error-banner-text');
+      text.textContent = (err && err.message) ? err.message : 'An error occurred.';
+      banner.hidden = false;
+    },
+
+    hideError: function () { document.getElementById('error-banner').hidden = true; },
+
+    _updateLastRefresh: function () {
+      this._lastRefresh = new Date();
+      this._lastRefreshError = null;
+      this._stale = false;
+      var el = document.getElementById('last-refresh');
+      el.textContent = 'Updated: ' + this._lastRefresh.toLocaleTimeString();
+    },
+
+    _markStale: function () {
+      this._stale = true;
+      var el = document.getElementById('last-refresh');
+      var timeStr = this._lastRefresh ? this._lastRefresh.toLocaleTimeString() : '\u2014';
+      el.innerHTML = 'Updated: ' + timeStr +
+        ' <span class="stale-indicator">(stale)</span>';
+    },
+
+    _markPartialStale: function (failedCount, totalCount) {
+      this._stale = true;
+      var el = document.getElementById('last-refresh');
+      var timeStr = this._lastRefresh ? this._lastRefresh.toLocaleTimeString() : 'never';
+      el.innerHTML = 'Updated: ' + timeStr +
+        ' <span class="stale-indicator">(partial \u2014 ' + failedCount + '/' + totalCount + ' failed)</span>';
+    },
+
+    /**
+     * Fetch multiple API calls with partial-failure tracking.
+     * - Each call that fails is captured as { _error: e } instead of null.
+     * - On full success: _updateLastRefresh() + hideError().
+     * - On partial failure: _markPartialStale() (last refresh time updated but stale indicator shown).
+     * - On total failure: _markStale() + _showErrorBanner().
+     * - Returns cleaned results (null for failed calls) for downstream rendering.
+     * - Sets _loading flag to prevent duplicate concurrent requests.
+     */
+    _fetchAll: function (calls) {
+      this._setLoading(true);
+      var self = this;
+      return Promise.all(calls.map(function (c) {
+        return c.catch(function (e) { return { _error: e }; });
+      })).then(function (results) {
+        var errors = results.filter(function (r) { return r && r._error; });
+        var successes = results.filter(function (r) { return r && !r._error; });
+        if (errors.length === 0) {
+          self._updateLastRefresh();
+          self.hideError();
+        } else if (successes.length > 0) {
+          self._lastRefresh = new Date();
+          self._markPartialStale(errors.length, results.length);
+        } else {
+          self._markStale();
+          self._showErrorBanner(errors[0]._error);
+        }
+        self._setLoading(false);
+        return results.map(function (r) { return (r && r._error) ? null : r; });
+      });
+    },
+
+    _setContent: function (html) { document.getElementById('main-content').innerHTML = html; },
+    _setPageTitle: function (title) { document.getElementById('page-title').textContent = title; },
+    _setActiveNav: function (route) {
+      document.querySelectorAll('.nav-link').forEach(function (a) {
+        a.classList.toggle('active', a.dataset.route === route);
+      });
+    },
+
+    _statCard: function (label, value, sub, route) {
+      var onclick = route ? ' onclick="location.hash=\'' + route + '\'"' : '';
+      return '<div class="stat-card"' + onclick + '><div class="stat-label">' + esc(label) + '</div>' +
+        '<div class="stat-value">' + esc(value) + '</div>' +
+        (sub ? '<div class="stat-sub">' + esc(sub) + '</div>' : '') + '</div>';
+    },
+
+    // ── Router ──────────────────────────────────────────────────
+    _route: function () {
+      var hash = global.location.hash.slice(1) || 'overview';
+      var parts = hash.split('/');
+      var route = parts[0] || 'overview';
+      this._setActiveNav(route);
+      switch (route) {
+        case 'overview': this._setPageTitle('Overview'); this._renderOverview(); break;
+        case 'inventory': this._setPageTitle('Inventory Explorer'); this._renderInventory(parts[1] || null); break;
+        case 'topology': this._setPageTitle('Topology Explorer'); this._renderTopology(parts[1] || null); break;
+        case 'health': this._setPageTitle('Health & Resources'); this._renderHealth(parts[1] || null); break;
+        case 'monitoring': this._setPageTitle('Monitoring'); this._renderMonitoring(); break;
+        case 'faults': this._setPageTitle('Faults & Alerts'); this._renderFaults(parts[1] || null, parts[2] || null); break;
+        case 'operations': this._setPageTitle('Operations Preview'); this._renderOperations(); break;
+        case 'discovery': this._setPageTitle('Discovery'); this._renderDiscovery(); break;
+        default: this._setPageTitle('Not Found'); this._setContent('<div class="empty-state"><p>Page not found. <a href="#overview">Go to Overview</a></p></div>'); break;
+      }
+    },
+
+    // ── Overview View ───────────────────────────────────────────
+    _renderOverview: function () {
+      this._setContent(showLoading('Loading summary\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.getVisibilitySummary(),
+        ApiClient.getInventorySummary(),
+        ApiClient.getHealthReport(),
+        ApiClient.listFaults(),
+        ApiClient.listVisibilityAlerts(),
+        ApiClient.getSystemReadiness(),
+      ]).then(function (results) {
+        var summary = results[0], inventory = results[1], health = results[2];
+        var readiness = results[5];
+        var html = '<h2 class="section-title">Infrastructure Overview</h2>';
+        if (self._stale) html += '<div class="preview-warning">\u26A0 Data may be stale or partially unavailable.</div>';
+        html += '<div class="card"><div class="card-title">System Readiness</div>' +
+          badge(readinessState(readiness)) +
+          '<p class="muted mt-sm">' + esc(readinessSub(readiness)) + '</p></div>';
+        html += '<div class="grid grid-auto mt-md">';
+        if (inventory) {
+          html += self._statCard('Total Entities', inventory.total_entities, 'From latest discovery', 'inventory');
+          var counts = inventory.entity_counts || {};
+          html += self._statCard('Platforms', counts.PLATFORM || 0, 'Platform entities', 'inventory');
+          html += self._statCard('Clusters', counts.CLUSTER || 0, 'Cluster entities', 'inventory');
+          html += self._statCard('Nodes', counts.NODE || 0, 'Node entities', 'inventory');
+          html += self._statCard('Workloads', counts.WORKLOAD || 0, 'Workload entities', 'inventory');
+        } else { html += '<div class="card"><p class="muted">Inventory data unavailable</p></div>'; }
+        html += '</div>';
+        html += '<h2 class="section-title mt-lg">Health Summary</h2>';
+        if (summary && summary.health) {
+          var h = summary.health;
+          html += '<div class="grid grid-4">';
+          html += self._statCard('Healthy', h.healthy || 0, 'Entities assessed as healthy', 'health');
+          html += self._statCard('Degraded', h.degraded || 0, 'Entities with degraded health', 'health');
+          html += self._statCard('Unhealthy', h.unhealthy || 0, 'Entities with unhealthy status', 'health');
+          html += self._statCard('Unknown', h.unknown || 0, 'Entities with unknown health', 'health');
+          html += '</div>';
+        } else if (health) { html += '<div class="card">' + badge(health.health_status) + '</div>'; }
+        else { html += '<div class="card"><p class="muted">Health data unavailable</p></div>'; }
+        html += '<h2 class="section-title mt-lg">Faults & Alerts</h2><div class="grid grid-4">';
+        if (summary && summary.faults) {
+          html += self._statCard('Total Faults', summary.faults.total_faults || 0, 'All detected faults', 'faults');
+          html += self._statCard('Ongoing', summary.faults.ongoing || 0, 'Active faults', 'faults');
+        } else { html += '<div class="card"><p class="muted">Fault data unavailable</p></div>'; }
+        if (summary && summary.alerts) {
+          html += self._statCard('Total Alerts', summary.alerts.total_alerts || 0, 'All alerts', 'faults');
+          html += self._statCard('Open Alerts', summary.alerts.open || 0, 'Alerts needing attention', 'faults');
+        } else { html += '<div class="card"><p class="muted">Alert data unavailable</p></div>'; }
+        html += '</div>';
+        html += '<h2 class="section-title mt-lg">Operations Summary</h2>';
+        if (summary && summary.operations) {
+          var o = summary.operations;
+          html += '<div class="grid grid-4">';
+          html += self._statCard('Recovery Candidates', o.total_recovery_candidates || 0, 'Proposed recovery actions', 'operations');
+          html += self._statCard('Recovery Executed', o.recovery_executed || 0, 'Past recovery executions', 'operations');
+          html += self._statCard('Operation Results', o.total_operation_results || 0, 'Past operation results', 'operations');
+          html += self._statCard('Operations Executed', o.operations_executed || 0, 'Past operations executed', 'operations');
+          html += '</div>';
+        } else { html += '<div class="card"><p class="muted">Operations data unavailable</p></div>'; }
+        if (summary && summary.generated_at) html += '<p class="muted mt-md">Summary generated at: ' + fmtTime(summary.generated_at) + '</p>';
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    // ── Inventory View ──────────────────────────────────────────
+    _renderInventory: function (detailId) {
+      if (detailId) { this._renderEntityDetail(detailId); return; }
+      this._setContent(showLoading('Loading inventory\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.listEntities(),
+      ]).then(function (results) {
+        var data = results[0];
+        if (!data) { self._setContent(showError({ code: 'LOAD_FAILED', message: 'Unable to load inventory data.', status: 0 })); return; }
+        var items = data.items || [];
+        var html = '<h2 class="section-title">Inventory Explorer</h2>';
+        html += '<div class="card"><div class="form-row">';
+        html += '<div class="form-group"><label class="form-label">Entity Type</label>';
+        html += '<select class="form-select" id="entity-type-filter" onchange="App._onInvFilter()">';
+        var types = ['', 'PHYSICAL', 'OS', 'PLATFORM', 'CLUSTER', 'NODE', 'EXECUTION_ENVIRONMENT', 'WORKLOAD', 'NETWORK', 'STORAGE', 'ACCELERATOR'];
+        types.forEach(function (t) { html += '<option value="' + esc(t) + '">' + esc(t || 'All Types') + '</option>'; });
+        html += '</select></div>';
+        html += '<div class="form-group"><label class="form-label">Search</label>';
+        html += '<input type="text" class="form-input" id="inv-search" placeholder="Name or Canonical ID" onkeyup="App._onInvSearch(event)"></div>';
+        html += '</div></div>';
+        html += '<p class="muted mb-sm">' + items.length + ' of ' + (data.total || 0) + ' entities</p>';
+        if (items.length === 0) { html += showEmpty('No entities found.', '\uD83D\uDD0D'); }
+        else {
+          html += '<div class="table-container"><table><thead><tr><th>Canonical ID</th><th>Name</th><th>Type</th><th>Provider</th></tr></thead><tbody>';
+          items.forEach(function (item) {
+            var cid = item.canonical_id || '';
+            html += '<tr class="clickable-row" onclick="location.hash=\'inventory/' + encodeURIComponent(cid) + '\'">';
+            html += '<td class="mono">' + escTrunc(cid, 40) + '</td><td>' + val(item.name) + '</td><td>' + badge(item._entity_type) + '</td><td>' + val(item.provider_type) + '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+        }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    _onInvFilter: function () {
+      var t = document.getElementById('entity-type-filter').value;
+      var self = this;
+      this._fetchAll([
+        ApiClient.listEntities(t || null),
+      ]).then(function (results) {
+        var data = results[0];
+        if (!data) return;
+        var items = data.items || [];
+        var html = '<p class="muted mb-sm">' + items.length + ' entities</p>';
+        if (items.length === 0) { html += showEmpty('No entities found.', '\uD83D\uDD0D'); }
+        else {
+          html += '<div class="table-container"><table><thead><tr><th>Canonical ID</th><th>Name</th><th>Type</th></tr></thead><tbody>';
+          items.forEach(function (item) {
+            html += '<tr class="clickable-row" onclick="location.hash=\'inventory/' + encodeURIComponent(item.canonical_id) + '\'">';
+            html += '<td class="mono">' + escTrunc(item.canonical_id, 40) + '</td><td>' + val(item.name) + '</td><td>' + badge(item._entity_type) + '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+        }
+        document.getElementById('main-content').innerHTML = '<h2 class="section-title">Inventory Explorer</h2>' + html;
+      });
+    },
+
+    _onInvSearch: function (e) {
+      if (e.key !== 'Enter') return;
+      var s = e.target.value.toLowerCase();
+      var self = this;
+      ApiClient.listEntities().then(function (data) {
+        var items = (data.items || []).filter(function (i) {
+          return (i.name || '').toLowerCase().indexOf(s) >= 0 || (i.canonical_id || '').toLowerCase().indexOf(s) >= 0;
+        });
+        self._updateLastRefresh();
+        var html = '<p class="muted mb-sm">' + items.length + ' matching entities</p>';
+        if (items.length === 0) { html += showEmpty('No matching entities.', '\uD83D\uDD0D'); }
+        else {
+          html += '<div class="table-container"><table><thead><tr><th>Canonical ID</th><th>Name</th><th>Type</th></tr></thead><tbody>';
+          items.forEach(function (item) {
+            html += '<tr class="clickable-row" onclick="location.hash=\'inventory/' + encodeURIComponent(item.canonical_id) + '\'">';
+            html += '<td class="mono">' + escTrunc(item.canonical_id, 40) + '</td><td>' + val(item.name) + '</td><td>' + badge(item._entity_type) + '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+        }
+        document.getElementById('main-content').innerHTML = '<h2 class="section-title">Inventory Explorer</h2>' + html;
+      });
+    },
+
+
+    _renderEntityDetail: function (canonicalId) {
+      this._setContent(showLoading('Loading entity details\u2026'));
+      var self = this;
+      this._fetchAll([
+        ApiClient.getEntity(canonicalId),
+        ApiClient.getEntityHealth(canonicalId),
+        ApiClient.getEntityFaults(canonicalId),
+        ApiClient.getGraphNode(canonicalId),
+      ]).then(function (results) {
+        var entity = results[0], health = results[1], faultsData = results[2], graphNode = results[3];
+        var html = '<h2 class="section-title">Entity Details</h2><p><a href="#inventory" class="muted">\u2190 Back to Inventory</a></p>';
+        if (!entity) { html += showError({ code: 'NOT_FOUND', message: 'Entity not found.', status: 404 }); }
+        else {
+          html += '<div class="card"><div class="card-title">Basic Information</div><div class="detail-grid">';
+          html += detailRow('Canonical ID', '<span class="mono">' + esc(entity.canonical_id) + '</span>');
+          html += detailRow('Entity Type', badge(entity._entity_type));
+          html += detailRow('Name', val(entity.name));
+          html += detailRow('Provider Type', val(entity.provider_type));
+          html += detailRow('Provider ID', val(entity.provider_id));
+          html += '</div></div>';
+          html += '<div class="card"><div class="card-title">Health</div>';
+          if (health) { html += '<div class="detail-grid">' + detailRow('Health Status', badge(health.health_status)) + detailRow('Availability', val(health.availability_status)) + '</div>'; }
+          else { html += '<p class="muted">No health data available.</p>'; }
+          html += '</div>';
+          html += '<div class="card"><div class="card-title">Provenance & Source Evidence</div>';
+          if (entity.provenance) {
+            var p = entity.provenance;
+            html += '<div class="detail-grid">' + detailRow('Source Type', val(p.source_type)) + detailRow('Provider ID', val(p.provider_id)) + detailRow('Discovered At', fmtTime(p.discovered_at)) + detailRow('Evidence Type', val(p.evidence_type)) + detailRow('Confidence', val(p.confidence)) + '</div>';
+          } else { html += '<p class="muted">No provenance information available.</p>'; }
+          html += '</div>';
+          if (faultsData && faultsData.total > 0) {
+            html += '<div class="card"><div class="card-title">Active Faults (' + faultsData.total + ')</div>';
+            html += '<div class="table-container"><table><thead><tr><th>Fault ID</th><th>Type</th><th>Severity</th><th>Status</th></tr></thead><tbody>';
+            faultsData.faults.forEach(function (f) {
+              html += '<tr class="clickable-row" onclick="location.hash=\'faults/fault/' + encodeURIComponent(f.fault_id) + '\'"><td class="mono">' + escTrunc(f.fault_id, 30) + '</td><td>' + val(f.fault_type) + '</td><td>' + badge(f.severity) + '</td><td>' + badge(f.status) + '</td></tr>';
+            });
+            html += '</tbody></table></div></div>';
+          }
+          if (graphNode) { html += '<div class="card"><p><a href="#topology/' + encodeURIComponent(canonicalId) + '">View in Topology \u2192</a></p></div>'; }
+        }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    // ── Topology View ───────────────────────────────────────────
+    _renderTopology: function (canonicalId) {
+      var

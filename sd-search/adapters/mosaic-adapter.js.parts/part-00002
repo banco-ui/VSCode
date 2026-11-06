@@ -1,0 +1,14 @@
+{ waitUntil: 'domcontentloaded', timeout: this.config.timeout });
+            await page.waitForTimeout(5000);
+            const bodyText = await page.evaluate(() => document.body.innerText.trim());
+            browser.close();
+            return { id: id, content: bodyText, url: detailUrl };
+
+        } catch (error) {
+            console.error('[Mosaic] CDP 상세 페이지 오류:', error.message);
+            return null;
+        }
+    }
+}
+
+module.exports = MosaicAdapter;

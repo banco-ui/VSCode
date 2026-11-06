@@ -1,0 +1,12 @@
+{
+  "originalPath": "electron/scripts/drm-ungroup.js",
+  "originalSize": 25148,
+  "sha256": "084f050209177f8ad62eb72f62229f23c5c061a7523f94f865fad0a69cd82de1",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"electron/scripts/drm-ungroup.js\""
+}

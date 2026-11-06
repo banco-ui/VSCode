@@ -1,0 +1,489 @@
+/**
+ * Confluence Adapter (CDP + REST API 하이브리드)
+ * - 1순위: Chrome CDP를 통해 이미 로그인된 브라우저의 쿠키를 가져와 REST API 호출
+ * - 2순위: confluence-session.json의 쿠키/토큰 사용
+ * - 3순위: 캐시 파일에서 검색
+ */
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+
+class ConfluenceAdapter {
+    constructor(config) {
+        this.config = config;
+        this.baseUrl = config.baseUrl;
+        this.cdpPort = config.cdpPort || 9222;
+        this.session = this.loadSession();
+        this.cdpCookies = null;
+    }
+
+    loadSession() {
+        try {
+            const sessionPath = path.resolve(__dirname, this.config.cookieFile);
+            if (fs.existsSync(sessionPath)) {
+                return JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+            }
+            return null;
+        } catch (e) {
+            console.error('[Confluence] 세션 파일 로드 실패:', e.message);
+            return null;
+        }
+    }
+
+    /**
+     * CDP를 통해 Chrome에서 Confluence 쿠키 추출
+     */
+    async getCookiesFromCDP() {
+        if (this.cdpCookies) return this.cdpCookies;
+
+        try {
+            // CDP 자동 실행 보장
+            const { ensureCDP } = require('../core/cdp-launcher');
+            await ensureCDP(this.cdpPort);
+
+            const { chromium } = require('playwright');
+            const browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
+            
+            // Confluence 페이지 찾기 또는 새 페이지에서 쿠키 수집
+            const contexts = browser.contexts();
+            if (contexts.length === 0) return null;
+            
+            const context = contexts[0];
+            // confluence-nw와 confluence 양쪽 쿠키 모두 시도
+            const cookieDomain = this.config.cdpCookieDomain || 'https://confluence-nw.sec.samsung.net';
+            let cookies = await context.cookies(cookieDomain);
+            
+            // confluence-nw 쿠키가 없으면 일반 confluence 쿠키 시도
+            if (!cookies || cookies.length === 0) {
+                console.log('[Confluence] confluence-nw 쿠키 없음, 일반 confluence 쿠키 시도...');
+                cookies = await context.cookies('https://confluence.sec.samsung.net');
+            }
+
+
+            
+            browser.disconnect(); // CDP 연결만 종료 (Chrome은 유지)
+            
+            if (cookies && cookies.length > 0) {
+                // 쿠키를 Cookie 헤더 형식으로 변환
+                const cookieStr = cookies
+                    .filter(c => !c.httpOnly || true) // 모든 쿠키 포함
+                    .map(c => `${c.name}=${c.value}`)
+                    .join('; ');
+                
+                if (cookieStr) {
+                    console.log('[Confluence] CDP에서 쿠키 획득 성공 (' + cookies.length + '개 쿠키)');
+                    this.cdpCookies = cookieStr;
+                    return cookieStr;
+                }
+            }
+            
+            console.log('[Confluence] CDP에서 Confluence 쿠키를 찾을 수 없음');
+            return null;
+        } catch (e) {
+            console.log('[Confluence] CDP 연결 실패:', e.message);
+            return null;
+        }
+    }
+
+    getHeaders(cookieStr) {
+        const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        };
+        
+        if (cookieStr) {
+            headers['Cookie'] = cookieStr;
+        }
+        
+        if (this.session && this.session.token) {
+            headers['Authorization'] = `Bearer ${this.session.token}`;
+        }
+        
+        return headers;
+    }
+
+    async search(keyword, maxResults = 20, options = {}) {
+        // options가 객체인 경우 cacheOnly 추출, 불린인 경우 직접 사용
+        const cacheOnly = typeof options === 'object' ? options.cacheOnly : options;
+        
+        console.log(`[Confluence] 검색: "${keyword}" (cacheOnly: ${cacheOnly})`);
+        
+        if (cacheOnly) {
+            return this.searchFromCache(keyword);
+        }
+
+
+        // 1순위: CDP 쿠키로 REST API 검색
+        try {
+            const cdpCookie = await this.getCookiesFromCDP();
+            console.log('[Confluence] CDP 쿠키:', cdpCookie ? '있음' : '없음');
+            if (cdpCookie) {
+                console.log('[Confluence] API 호출 시도:', this.baseUrl + this.config.searchEndpoint);
+                const results = await this.searchViaAPI(keyword, maxResults, cdpCookie);
+                console.log('[Confluence] API 결과:', results.length, '건');
+                if (results.length > 0) {
+                    return results;
+                }
+            }
+        } catch (error) {
+            console.log('[Confluence] CDP API 검색 오류:', error.message);
+            if (error.response) {
+                console.log('[Confluence]   status:', error.response.status);
+                console.log('[Confluence]   data:', JSON.stringify(error.response.data).substring(0, 300));
+            }
+        }
+
+        // 2순위: 세션 파일 쿠키로 REST API 검색
+        if (this.session && this.session.cookie) {
+            try {
+                console.log('[Confluence] 세션 파일로 API 호출 시도...');
+                const results = await this.searchViaAPI(keyword, maxResults, this.session.cookie);
+                if (results.length > 0) {
+                    console.log(`[Confluence] 세션 API에서 ${results.length}개 결과 발견`);
+                    return results;
+                }
+            } catch (error) {
+                console.log('[Confluence] 세션 API 검색 오류:', error.message);
+            }
+        }
+
+
+        // 3순위: CDP를 통해 Confluence 페이지 직접 스크래핑
+        try {
+            const results = await this.searchViaCDP(keyword, maxResults);
+            if (results.length > 0) {
+                console.log(`[Confluence] CDP 스크래핑에서 ${results.length}개 결과 발견`);
+                return results;
+            }
+        } catch (error) {
+            console.error('[Confluence] CDP 스크래핑 오류:', error.message);
+        }
+
+        // 4순위: 캐시에서 검색
+        return this.searchFromCache(keyword);
+    }
+
+    /**
+     * Confluence REST API (CQL) 검색
+     */
+    async searchViaAPI(keyword, maxResults, cookieStr) {
+        const headers = this.getHeaders(cookieStr);
+        
+        // CQL 검색 쿼리
+        const cql = `type = page AND (text ~ "${keyword}" OR title ~ "${keyword}")`;
+        
+        const response = await axios.get(
+            `${this.baseUrl}${this.config.searchEndpoint}`,
+            {
+                params: {
+                    cql: cql,
+                    limit: maxResults,
+                    start: 0
+                },
+                headers,
+                timeout: this.config.timeout,
+                httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
+            }
+        );
+
+        return this.parseSearchResults(response.data, keyword);
+    }
+
+    /**
+     * CDP를 통해 Confluence 페이지 직접 스크래핑
+     * Confluence 검색 페이지를 열고 결과를 파싱
+     */
+    async searchViaCDP(keyword, maxResults) {
+        // CDP 자동 실행 보장
+        const { ensureCDP } = require('../core/cdp-launcher');
+        await ensureCDP(this.cdpPort);
+
+        const { chromium } = require('playwright');
+        const browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
+        
+        const contexts = browser.contexts();
+        if (contexts.length === 0) {
+            browser.disconnect();
+            return [];
+        }
+        
+        const context = contexts[0];
+        const pages = context.pages();
+        
+        // Confluence 페이지 찾기 또는 새 페이지 생성
+        let page = pages.find(p => p.url().includes('confluence'));
+
+        if (!page) {
+            page = await context.newPage();
+        }
+        
+        console.log('[Confluence] CDP 스크래핑으로 검색 중...');
+        
+        // Confluence 검색 URL
+        const searchUrl = `${this.baseUrl}/dosearchsite.action?queryString=${encodeURIComponent(keyword)}`;
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: this.config.timeout });
+        await page.waitForTimeout(3000); // 렌더링 대기
+        
+        // 검색 결과 파싱 (단일 인자 객체로 전달)
+        const results = await page.evaluate(({ kw, max }) => {
+            const items = [];
+            
+            // Confluence 검색 결과 셀렉터들
+            const selectors = [
+                '.search-result',
+                '.search-results li',
+                '[data-search-result]',
+                '.result-item',
+                'li[class*="result"]',
+                'div[class*="search-result"]',
+                '.wiki-content a',
+                '#main-content a'
+            ];
+            
+            let resultElements = [];
+            for (const sel of selectors) {
+                resultElements = document.querySelectorAll(sel);
+                if (resultElements.length > 0) break;
+            }
+            
+            // 결과가 없으면 모든 링크에서 검색
+            if (resultElements.length === 0) {
+                const allLinks = document.querySelectorAll('a[href*="/display/"], a[href*="/pages/"], a[href*="/confluence"]');
+                allLinks.forEach((link, idx) => {
+                    const text = link.innerText || link.textContent || '';
+                    if (text.trim().length > 3) {
+                        items.push({
+                            title: text.trim().substring(0, 200),
+                            content: (link.closest('div')?.innerText || text).trim().substring(0, 500),
+                            url: link.href,
+                            id: link.href.match(/pageId=(\d+)/)?.[1] || 
+                                link.href.match(/\/display\/([^\/?#]+)/)?.[1] || 
+                                `conf-${idx}`,
+                            author: '',
+                            date: ''
+                        });
+                    }
+                });
+            } else {
+                resultElements.forEach((el, idx) => {
+                    if (idx >= max) return;
+                    const titleEl = el.querySelector('a, .result-title, h3, h4');
+                    const descEl = el.querySelector('.result-summary, .result-context, p, .summary');
+                    const link = el.querySelector('a');
+                    
+                    const title = titleEl ? titleEl.innerText.trim() : `Result ${idx + 1}`;
+                    const content = descEl ? descEl.innerText.trim() : '';
+                    const url = link ? link.href : '';
+                    const id = url.match(/pageId=(\d+)/)?.[1] || 
+                               url.match(/\/display\/([^\/?#]+)/)?.[1] || 
+                               `conf-${idx}`;
+                    
+                    // 작성자/날짜 추출 시도
+                    const metaEl = el.querySelector('.result-meta, .search-meta, .meta');
+                    let author = '';
+                    let date = '';
+                    if (metaEl) {
+                        const metaText = metaEl.innerText;
+                        const authorMatch = metaText.match(/by\s+([^\d]+)/i);
+                        if (authorMatch) author = authorMatch[1].trim();
+                        const dateMatch = metaText.match(/\d{4}[-/]\d{2}[-/]\d{2}/);
+                        if (dateMatch) date = dateMatch[0];
+                    }
+                    
+                    items.push({ title, content, url, id, author, date });
+                });
+            }
+            
+            return items;
+        }, { kw: keyword, max: maxResults });
+
+        
+        browser.disconnect(); // CDP 연결만 종료
+        
+        // 결과를 표준 형식으로 변환
+        return results.map(r => ({
+            platform: 'confluence',
+            id: r.id,
+            title: r.title,
+            content: r.content,
+            url: r.url || `${this.baseUrl}`,
+            author: r.author,
+            date: r.date,
+            score: 0.8,
+            keyword: keyword,
+            source: 'cdp'
+        }));
+    }
+
+    parseSearchResults(data, keyword) {
+        const results = [];
+        
+        if (data && data.results) {
+            for (const item of data.results) {
+                const content = item.content || {};
+                const pageId = content.id || item.id || '';
+                
+                // 하이라이트 마커 제거
+                const cleanTitle = this.stripHighlightMarkers(content.title || item.title || '');
+                const cleanExcerpt = this.stripHighlightMarkers(item.excerpt || content.body || '');
+                
+                // 실제 페이지 URL 생성
+                const pageUrl = pageId 
+                    ? `${this.baseUrl}/pages/viewpage.action?pageId=${pageId}`
+                    : (content.url || `${this.baseUrl}`);
+                
+                results.push({
+                    platform: 'confluence',
+                    id: pageId,
+                    title: cleanTitle,
+                    content: cleanExcerpt,
+                    url: pageUrl,
+                    author: content.history?.createdBy?.displayName || '',
+                    date: content.history?.createdDate || content.version?.when || '',
+                    score: item.score || 0.8,
+                    keyword: keyword,
+                    space: content.space?.key || '',
+                    type: content.type || 'page',
+                    source: 'api'
+                });
+            }
+        }
+        
+        return results;
+    }
+
+    /**
+     * Confluence 하이라이트 마커(@@@hl@@@...@@@endhl@@@) 제거
+     */
+    stripHighlightMarkers(text) {
+        if (!text) return '';
+        return text
+            .replace(/@@@hl@@@/g, '')
+            .replace(/@@@endhl@@@/g, '')
+            .trim();
+    }
+
+
+    /**
+     * 캐시에서 검색
+     */
+    async searchFromCache(keyword) {
+        console.log('[Confluence] 캐시에서 검색 중...');
+        const results = [];
+        const cacheDir = path.resolve(__dirname, '../../output');
+        
+        try {
+            const files = fs.readdirSync(cacheDir).filter(f => f.startsWith('confluence-'));
+            
+            for (const file of files) {
+                const filePath = path.join(cacheDir, file);
+                const stat = fs.statSync(filePath);
+                
+                if (stat.isFile()) {
+                    const raw = fs.readFileSync(filePath, 'utf8');
+                    const text = raw.toLowerCase();
+                    
+                    if (text.includes(keyword.toLowerCase())) {
+                        let title = file;
+                        let content = text.substring(0, 500);
+                        
+                        if (file.endsWith('.json')) {
+                            try {
+                                const data = JSON.parse(raw);
+                                if (data.title) title = data.title;
+                                if (data.results && data.results[0]) {
+                                    content = JSON.stringify(data.results[0]).substring(0, 500);
+                                }
+                            } catch (e) {}
+                        }
+                        
+                        results.push({
+                            platform: 'confluence',
+                            id: file,
+                            title: `Confluence Cache: ${title}`,
+                            content: content,
+                            url: `${this.baseUrl}`,
+                            author: '',
+                            date: stat.mtime.toISOString(),
+                            score: 0.5,
+                            keyword: keyword,
+                            source: 'cache'
+                        });
+                    }
+                }
+            }
+        } catch (e) {
+            // 디렉토리 없음
+        }
+        
+        console.log(`[Confluence] 캐시에서 ${results.length}개 결과 발견`);
+        return results;
+    }
+
+    /**
+     * 상세 내용 조회
+     */
+    async getDetail(id) {
+        // 1순위: CDP 쿠키로 API 호출
+        try {
+            const cdpCookie = await this.getCookiesFromCDP();
+            if (cdpCookie) {
+                const headers = this.getHeaders(cdpCookie);
+                const response = await axios.get(
+                    `${this.baseUrl}${this.config.contentEndpoint}/${id}`,
+                    {
+                        params: { expand: 'body.storage,version,history' },
+                        headers,
+                        timeout: this.config.timeout,
+                        httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
+                    }
+                );
+                return response.data;
+            }
+        } catch (error) {
+            console.error('[Confluence] CDP 상세 조회 오류:', error.message);
+        }
+
+        // 2순위: 세션 파일
+        if (this.session && this.session.cookie) {
+            try {
+                const headers = this.getHeaders(this.session.cookie);
+                const response = await axios.get(
+                    `${this.baseUrl}${this.config.contentEndpoint}/${id}`,
+                    {
+                        params: { expand: 'body.storage,version,history' },
+                        headers,
+                        timeout: this.config.timeout,
+                        httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
+                    }
+                );
+                return response.data;
+            } catch (error) {
+                console.error('[Confluence] 세션 상세 조회 오류:', error.message);
+            }
+        }
+
+        // 3순위: CDP로 페이지 직접 열기
+        try {
+            const { chromium } = require('playwright');
+            const browser = await chromium.connectOverCDP(`http://127.0.0.1:${this.cdpPort}`);
+            const contexts = browser.contexts();
+            if (contexts.length === 0) { browser.close(); return null; }
+            
+            const page = await contexts[0].newPage();
+            const detailUrl = `${this.baseUrl}${this.config.contentEndpoint}/${id}`;
+            await page.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: this.config.timeout });
+            await page.waitForTimeout(3000);
+            
+            const bodyText = await page.evaluate(() => document.body.innerText.trim());
+            browser.close();
+            
+            return { id: id, content: bodyText, url: detailUrl };
+        } catch (error) {
+            console.error('[Confluence] CDP 상세 페이지 오류:', error.message);
+            return null;
+        }
+    }
+}
+
+module.exports = ConfluenceAdapter;

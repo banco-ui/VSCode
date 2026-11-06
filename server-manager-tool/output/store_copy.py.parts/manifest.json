@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/output/store_copy.py",
+  "originalSize": 25987,
+  "sha256": "ecac5879e8dd6a3c44c94829c277c21b639fe5fc9cd35619917189f2bbf5c49c",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/output/store_copy.py\""
+}

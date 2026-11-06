@@ -1,0 +1,13 @@
+{
+  "originalPath": "output/axhub-github-push-article.html",
+  "originalSize": 61603,
+  "sha256": "687e7b7ae5377f8633c4fe2e82c4b8048382fc85eaed385f20abf046b236d58a",
+  "partSize": 25000,
+  "partCount": 3,
+  "parts": [
+    "part-00001",
+    "part-00002",
+    "part-00003"
+  ],
+  "restore": "node scripts/restore-split.js \"output/axhub-github-push-article.html\""
+}

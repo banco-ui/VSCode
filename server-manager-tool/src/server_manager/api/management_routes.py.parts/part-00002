@@ -1,0 +1,242 @@
+ovider_type)
+    except ValueError:
+        prov_type = ProviderType.UNKNOWN
+
+    domain_request = OperationRequest(
+        operation_id=request.operation_id,
+        operation_type=op_type,
+        target_canonical_id=request.target_canonical_id,
+        provider_type=prov_type,
+        reason=request.reason,
+    )
+
+    try:
+        preview = svc.preview(domain_request)
+    except Exception as e:
+        logger.error("Operation preview failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "Operation preview failed",
+                "details": {},
+            },
+        )
+
+    resolved = (
+        preview.resolved_target is not None
+        and preview.resolved_target.resolved
+    )
+    resolved_id = None
+    if resolved and preview.resolved_target is not None:
+        resolved_id = preview.resolved_target.canonical_id
+
+    return OperationPreviewResponse(
+        operation_id=preview.request.operation_id,
+        operation_type=preview.request.operation_type.value,
+        target_canonical_id=preview.request.target_canonical_id,
+        resolved=resolved,
+        resolved_target_canonical_id=resolved_id,
+        capability_decision=preview.capability_decision.value,
+        expected_effect=preview.expected_effect,
+        safety_result=preview.safety_result.value,
+        safety_reason=(
+            preview.safety_reason.value if preview.safety_reason else None
+        ),
+        authorization_level=preview.authorization_level.value,
+        execution_allowed=preview.execution_allowed,
+        previewed_at=preview.previewed_at,
+    )
+
+
+# ── Recovery Preview ──────────────────────────────────────────────────
+
+@router.post("/recovery/preview", response_model=RecoveryPreviewResponse)
+def preview_recovery(
+    request: RecoveryPreviewRequest,
+    ctx: ManagementContext = Depends(get_management_context),
+) -> RecoveryPreviewResponse:
+    """Preview a recovery action without mutation or execution.
+
+    Generates a dry-run preview of a recovery action.
+    No provider API calls, no mutations, no execution.
+    """
+    svc = ctx.recovery_service
+    if svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No recovery service available.",
+                "details": {},
+            },
+        )
+
+    fr = ctx.fault_result
+    if fr is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "No fault detection result available.",
+                "details": {},
+            },
+        )
+
+    from ..recovery.models import RecoveryActionType
+
+    fault = None
+    for f in fr.faults:
+        if f.fault_id == request.fault_id:
+            fault = f
+            break
+
+    if fault is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "NOT_FOUND",
+                "message": f"Fault '{request.fault_id}' not found",
+                "details": {},
+            },
+        )
+
+    try:
+        action_type = RecoveryActionType(request.action_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_ACTION_TYPE",
+                "message": f"Invalid recovery action type: {request.action_type}",
+                "details": {},
+            },
+        )
+
+    target_entity_id = request.target_entity_id or fault.entity_id
+
+    candidate = svc.propose_candidate(
+        fault=fault,
+        action_type=action_type,
+        target_entity_id=target_entity_id,
+    )
+
+    if candidate is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "NOT_ACTIONABLE",
+                "message": (
+                    f"Fault '{request.fault_id}' is not actionable "
+                    f"with action type '{request.action_type}'"
+                ),
+                "details": {},
+            },
+        )
+
+    try:
+        preview = svc.preview(candidate)
+    except Exception as e:
+        logger.error("Recovery preview failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "Recovery preview failed",
+                "details": {},
+            },
+        )
+
+    return RecoveryPreviewResponse(
+        candidate_id=candidate.candidate_id,
+        action_id=preview.action.action_id,
+        action_type=preview.action.action_type.value,
+        target_entity_id=preview.action.target_entity_id,
+        fault_id=preview.action.fault_id,
+        expected_effect=preview.expected_effect,
+        safety_result=preview.safety_result.value,
+        safety_reason=(
+            preview.safety_reason.value if preview.safety_reason else None
+        ),
+        supported=preview.supported,
+        previewed_at=preview.previewed_at,
+    )
+
+
+# ── Discovery Run (Phase 24) ───────────────────────────────────────────
+
+@router.post("/discovery/run", response_model=DiscoveryRunResponse)
+def run_discovery(
+    ctx: ManagementContext = Depends(get_management_context),
+) -> DiscoveryRunResponse:
+    """Trigger a discovery run and refresh the ManagementContext.
+
+    Discovery is a READ-ONLY exploration operation:
+        - Collects provider data via existing ProviderAdapter
+        - Normalizes via existing ProviderNormalizer
+        - Refreshes inventory, health, graph, monitoring, faults, alerts
+
+    This endpoint does NOT:
+        - Create, modify, or delete provider resources
+        - Execute START/STOP/RESTART/REDEPLOY/SCALE
+        - Invoke recovery or operation executors
+        - Create or modify credentials or kubeconfig
+
+    Concurrency:
+        Returns 409 if a discovery run is already in progress.
+
+    Safety:
+        The discovery_status reflects the actual DiscoveryResult status
+        (SUCCESS / PARTIAL / FAILED / SKIPPED). It is never fabricated.
+    """
+    try:
+        result = ctx.run_discovery()
+    except DiscoveryAlreadyRunningError:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DISCOVERY_ALREADY_RUNNING",
+                "message": "A discovery run is already in progress.",
+                "details": {},
+            },
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": str(e),
+                "details": {},
+            },
+        )
+    except Exception as e:
+        logger.error("Discovery run failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INTERNAL_ERROR",
+                "message": "Discovery run failed",
+                "details": {},
+            },
+        )
+
+    return DiscoveryRunResponse(
+        discovery_status=result.discovery_status.value,
+        provider_type=result.provider_type.value,
+        provider_id=result.provider_id,
+        snapshot_id=result.snapshot_id,
+        collected_at=result.collected_at,
+        identified_platform_type=result.identified_platform_type.value,
+        entity_count=result.entity_count,
+        capabilities_attempted=[
+            c.value for c in result.capabilities_attempted
+        ],
+        capabilities_succeeded=[
+            c.value for c in result.capabilities_succeeded
+        ],
+        capabilities_failed=[
+            c.value for c in result.capabilities_failed
+        ],
+        errors=list(result.errors),
+        warnings=list(result.warnings),
+    )

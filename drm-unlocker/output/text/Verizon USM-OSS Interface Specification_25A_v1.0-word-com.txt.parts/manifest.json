@@ -1,0 +1,28 @@
+{
+  "originalPath": "drm-unlocker/output/text/Verizon USM-OSS Interface Specification_25A_v1.0-word-com.txt",
+  "originalSize": 430879,
+  "sha256": "2fbc476c31e811976c87793c7f6af42a24dda779a85f4df2bd7cf71f9f45f335",
+  "partSize": 25000,
+  "partCount": 18,
+  "parts": [
+    "part-00001",
+    "part-00002",
+    "part-00003",
+    "part-00004",
+    "part-00005",
+    "part-00006",
+    "part-00007",
+    "part-00008",
+    "part-00009",
+    "part-00010",
+    "part-00011",
+    "part-00012",
+    "part-00013",
+    "part-00014",
+    "part-00015",
+    "part-00016",
+    "part-00017",
+    "part-00018"
+  ],
+  "restore": "node scripts/restore-split.js \"drm-unlocker/output/text/Verizon USM-OSS Interface Specification_25A_v1.0-word-com.txt\""
+}

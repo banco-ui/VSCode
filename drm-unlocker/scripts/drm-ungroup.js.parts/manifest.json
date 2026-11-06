@@ -1,0 +1,12 @@
+{
+  "originalPath": "drm-unlocker/scripts/drm-ungroup.js",
+  "originalSize": 31807,
+  "sha256": "f8549884b8074332365fc4f331e855d37603d1cbaa851fbb57bf97cb099b7ff1",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"drm-unlocker/scripts/drm-ungroup.js\""
+}

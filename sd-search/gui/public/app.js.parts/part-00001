@@ -1,0 +1,441 @@
+/**
+ * SDSearch GUI - Frontend JavaScript
+ */
+
+// ===== 상태 =====
+let currentTab = 'unified';
+let lastResults = [];
+let extractedData = null;
+
+// ===== DOM 요소 =====
+const $ = (id) => document.getElementById(id);
+
+// ===== 탭 전환 =====
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        currentTab = tab.dataset.tab;
+        $(`tab-${currentTab}`).classList.add('active');
+        
+        // 탭 전환 시 결과 초기화
+        clearResults();
+        $('results-summary').innerHTML = '<span style="color:#666;">검색어를 입력하고 검색 버튼을 누르세요.</span>';
+        lastResults = [];
+        extractedData = null;
+        $('btn-extract-download').style.display = 'none';
+        $('btn-extract-copy').style.display = 'none';
+    });
+});
+
+// ===== 검색 실행 =====
+function getSearchParams(tabName) {
+    const keyword = $(`search-input-${tabName}`).value.trim();
+    const maxResults = parseInt($(`opt-max-${tabName}`).value);
+    const categorySelect = $(`opt-category-${tabName}`);
+    const category = categorySelect ? categorySelect.value : null;
+    return { keyword, maxResults, category };
+}
+
+async function executeSearch(tabName, platform) {
+    const { keyword, maxResults, category } = getSearchParams(tabName);
+    
+    if (!keyword) {
+        alert('검색어를 입력하세요.');
+        return;
+    }
+
+    showLoading('검색 중...');
+    clearResults();
+
+    try {
+        let response;
+        if (platform) {
+            response = await fetch(`/api/search/${platform}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keyword, maxResults, cacheOnly: false, category })
+            });
+        } else {
+            response = await fetch('/api/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keyword, maxResults, cacheOnly: false })
+            });
+        }
+
+        const data = await response.json();
+        
+        if (data.success) {
+            const results = data.results?.results || data.results || [];
+            const logs = data.results?.logs || data.logs || [];
+            lastResults = results;
+            displayResults(results, keyword);
+            displayLogs(logs);
+        } else {
+            showError(data.error || '검색 실패');
+        }
+    } catch (error) {
+        showError(error.message);
+    } finally {
+        hideLoading();
+    }
+}
+
+// ===== 결과 표시 =====
+function displayResults(results, keyword) {
+    const summaryEl = $('results-summary');
+    const tableEl = $('results-table');
+    
+    if (!results || results.length === 0) {
+        summaryEl.innerHTML = `<span>📭 "${escapeHtml(keyword)}" 검색 결과가 없습니다.</span>`;
+        tableEl.innerHTML = '<div class="no-results">검색 결과가 없습니다.</div>';
+        return;
+    }
+
+    // 통계
+    const stats = {};
+    results.forEach(r => {
+        stats[r.platform] = (stats[r.platform] || 0) + 1;
+    });
+    
+    let statsHtml = `📊 총 <strong>${results.length}</strong>개 결과 | `;
+    statsHtml += Object.entries(stats).map(([k, v]) => 
+        `<span class="stat-badge stat-${k}">${k}(${v}건)</span>`
+    ).join(' ');
+    summaryEl.innerHTML = statsHtml;
+
+    // 결과 아이템
+    tableEl.innerHTML = results.map((r, idx) => {
+        const platformClass = r.platform || '';
+        const title = escapeHtml(r.title || '(제목 없음)');
+        const content = escapeHtml((r.content || '').substring(0, 200));
+        const score = (r.score || 0).toFixed(2);
+        const url = r.url ? escapeHtml(r.url) : '';
+        const author = r.author ? `👤 ${escapeHtml(r.author)}` : '';
+        const date = r.date ? `📅 ${escapeHtml(r.date.substring(0, 10))}` : '';
+        const source = r.source === 'cache' ? '<span class="result-source-cache">📦 캐시</span>' : '🌐 실시간';
+        const category = r.category ? `<span class="result-category">🏷️ ${escapeHtml(r.category)}</span>` : '';
+        
+        // Mosaic 결과인 경우 추출 버튼 추가
+        let extractBtn = '';
+        if (r.platform === 'mosaic' && url && url.includes('/detail/')) {
+            extractBtn = `<button class="btn btn-small btn-extract-inline" onclick="event.stopPropagation(); extractFromUrl('${escapeHtml(url)}')">📥 추출</button>`;
+        }
+        
+        return `
+        <div class="result-item" onclick="showDetail('${r.platform}', '${escapeHtml(r.id || '')}')">
+            <div class="result-item-header">
+                <span class="result-platform ${platformClass}">${r.platform}</span>
+                <span class="result-title">${title}</span>
+                <span class="result-score">${score}</span>
+            </div>
+            <div class="result-content">${content}</div>
+            <div class="result-meta">
+                ${source}
+                ${category}
+                ${author}
+                ${date}
+                ${url ? `<a href="${url}" target="_blank" class="result-url" onclick="event.stopPropagation()">🔗 ${url.length > 80 ? url.substring(0, 80) + '...' : url}</a>` : ''}
+                ${extractBtn}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// ===== 게시글 추출 (Mosaic 결과에서 URL로 추출) =====
+async function extractFromUrl(url) {
+    if (!url) return;
+    
+    showLoading('게시글 내용 추출 중...');
+
+    try {
+        const response = await fetch('/api/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, cachedResults: lastResults })
+        });
+
+        const data = await response.json();
+        
+        if (data.success) {
+            const result = data.result;
+            extractedData = result;
+            displayLogs(data.logs || []);
+            displayExtractedPost(result);
+            
+            if (result) {
+                $('btn-extract-download').style.display = 'inline-block';
+                $('btn-extract-copy').style.display = 'inline-block';
+            }
+        } else {
+            showError(data.error || '추출 실패');
+            if (data.logs) displayLogs(data.logs);
+        }
+    } catch (error) {
+        showError(error.message);
+    } finally {
+        hideLoading();
+    }
+}
+
+function displayExtractedPost(result) {
+    const summaryEl = $('results-summary');
+    const tableEl = $('results-table');
+    
+    if (!result) {
+        summaryEl.innerHTML = '<span style="color:#e94560;">❌ 추출된 내용이 없습니다.</span>';
+        tableEl.innerHTML = '<div class="no-results">게시글을 찾을 수 없습니다.</div>';
+        return;
+    }
+
+    const title = result.title || '(제목 없음)';
+    const content = result.content || '내용 없음';
+    const author = result.author || 'N/A';
+    const date = result.date ? result.date.substring(0, 10) : 'N/A';
+    const url = result.url || '';
+    const wsName = result.workspaceName || result.workspaceId || '';
+    const viewCount = result.viewCount || 0;
+    const likeCount = result.likeCount || 0;
+    const commentCount = result.commentCount || 0;
+
+    summaryEl.innerHTML = `📥 추출 완료: <strong>${escapeHtml(title)}</strong> (${content.length}자)`;
+
+    tableEl.innerHTML = `
+        <div class="result-item" style="cursor:default;">
+            <div class="result-item-header">
+                <span class="result-platform mosaic">📥 추출</span>
+                <span class="result-title">${escapeHtml(title)}</span>
+                <span class="result-score">${content.length}자</span>
+            </div>
+            <div class="result-meta" style="flex-direction:column;align-items:flex-start;gap:4px;">
+                <div>
+                    🏢 ${escapeHtml(wsName)}
+                    👤 ${escapeHtml(author)}
+                    📅 ${escapeHtml(date)}
+                    ${viewCount > 0 ? `👁️ ${viewCount}` : ''}
+                    ${likeCount > 0 ? `❤️ ${likeCount}` : ''}
+                    ${commentCount > 0 ? `💬 ${commentCount}` : ''}
+                </div>
+                ${url ? `<a href="${escapeHtml(url)}" target="_blank" class="result-url">🔗 ${escapeHtml(url)}</a>` : ''}
+            </div>
+            <hr style="border-color:#333;margin:12px 0;">
+            <div style="white-space:pre-wrap;word-break:break-word;font-size:14px;color:#ccc;line-height:1.7;">${escapeHtml(content)}</div>
+        </div>`;
+}
+
+function formatExtractedData(data, format) {
+    const r = Array.isArray(data) ? data[0] : data;
+    if (!r) return '';
+
+    if (format === 'json') {
+        return JSON.stringify(r, null, 2);
+    } else if (format === 'txt') {
+        return `═══════════════════════════════════════════
+제목: ${r.title || '(제목 없음)'}
+═══════════════════════════════════════════
+Workspace: ${r.workspaceName || r.workspaceId || 'N/A'}
+작성자: ${r.author || 'N/A'}
+날짜: ${r.date ? r.date.substring(0, 10) : 'N/A'}
+URL: ${r.url || 'N/A'}
+조회수: ${r.viewCount || 0} | 좋아요: ${r.likeCount || 0} | 댓글: ${r.commentCount || 0}
+---
+${r.content || '내용 없음'}
+`;
+    } else if (format === 'md') {
+        return `# ${r.title || '(제목 없음)'}\n\n- **Workspace:** ${r.workspaceName || r.workspaceId || 'N/A'}\n- **작성자:** ${r.author || 'N/A'}\n- **날짜:** ${r.date ? r.date.substring(0, 10) : 'N/A'}\n- **URL:** ${r.url || 'N/A'}\n- **통계:** 👁️ ${r.viewCount || 0} | ❤️ ${r.likeCount || 0} | 💬 ${r.commentCount || 0}\n\n---\n\n${r.content || '내용 없음'}\n`;
+    }
+    return '';
+}
+
+// 파일 저장
+$('btn-extract-download').addEventListener('click', () => {
+    if (!extractedData) return;
+    
+    const format = $('opt-format-extract').value;
+    const content = formatExtractedData(extractedData, format);
+    const ext = format === 'json' ? 'json' : format === 'md' ? 'md' : 'txt';
+    const filename = `mosaic_post_${extractedData.id || 'extract'}_${new Date().toISOString().substring(0, 10)}.${ext}`;
+    
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+});
+
+// 클립보드 복사
+$('btn-extract-copy').addEventListener('click', async () => {
+    if (!extractedData) return;
+    
+    const format = $('opt-format-extract').value;
+    const content = formatExtractedData(extractedData, format);
+    
+    try {
+        await navigator.clipboard.writeText(content);
+        alert('✅ 클립보드에 복사되었습니다!');
+    } catch (e) {
+        const textarea = document.createElement('textarea');
+        textarea.value = content;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        alert('✅ 클립보드에 복사되었습니다!');
+    }
+});
+
+// ===== 로그 표시 =====
+function displayLogs(logs) {
+    const logArea = $('log-area');
+    const logContent = $('log-content');
+    
+    if (logs && logs.length > 0) {
+        logContent.textContent = logs.join('\n');
+        logArea.style.display = 'block';
+    } else {
+        logArea.style.display = 'none';
+    }
+}
+
+function clearResults() {
+    $('results-summary').innerHTML = '';
+    $('results-table').innerHTML = '';
+    $('log-content').textContent = '';
+    $('log-area').style.display = 'none';
+}
+
+// ===== 상세 모달 =====
+async function showDetail(platform, id) {
+    if (!id || id === 'undefined') return;
+    
+    const modal = $('detail-modal');
+    const modalTitle = $('modal-title');
+    const modalBody = $('modal-body');
+    
+    modalTitle.textContent = `상세 내용 - ${platform}`;
+    modalBody.innerHTML = '<p style="color:#888;">불러오는 중...</p>';
+    modal.style.display = 'flex';
+
+    try {
+        const response = await fetch(`/api/detail/${platform}/${encodeURIComponent(id)}`);
+        const data = await response.json();
+        
+        if (data.success && data.result) {
+            const r = data.result;
+            let html = '';
+            html += `<p><strong>플랫폼:</strong> ${r.platform || platform}</p>`;
+            html += `<p><strong>제목:</strong> ${escapeHtml(r.title || 'N/A')}</p>`;
+            html += `<p><strong>작성자:</strong> ${escapeHtml(r.author || 'N/A')}</p>`;
+            html += `<p><strong>날짜:</strong> ${escapeHtml(r.date || 'N/A')}</p>`;
+            html += `<p><strong>URL:</strong> <a href="${r.url || '#'}" target="_blank" class="result-url">${escapeHtml(r.url || 'N/A')}</a></p>`;
+            html += `<hr style="border-color:#333;margin:12px 0;">`;
+            html += `<div>${escapeHtml((r.content || '').substring(0, 5000))}</div>`;
+            modalBody.innerHTML = html;
+        } else {
+            const localResult = lastResults.find(r => r.id === id && r.platform === platform);
+            if (localResult) {
+                const url = localResult.url || '';
+                const wsName = localResult.workspaceName ? `<p><strong>Workspace:</strong> ${escapeHtml(localResult.workspaceName)}</p>` : '';
+                const category = localResult.category ? `<p><strong>카테고리:</strong> ${escapeHtml(localResult.category)}</p>` : '';
+                const stats = (localResult.viewCount || localResult.likeCount || localResult.commentCount) ? 
+                    `<p><strong>통계:</strong> 👁️ ${localResult.viewCount||0} | ❤️ ${localResult.likeCount||0} | 💬 ${localResult.commentCount||0}${localResult.hasAttachment ? ' | 📎 첨부파일' : ''}</p>` : '';
+                modalBody.innerHTML = `
+                    <p><strong>플랫폼:</strong> ${platform}</p>
+                    ${category}
+                    ${wsName}
+                    <p><strong>제목:</strong> ${escapeHtml(localResult.title || '')}</p>
+                    <p><strong>작성자:</strong> ${escapeHtml(localResult.author || 'N/A')}</p>
+                    <p><strong>날짜:</strong> ${escapeHtml(localResult.date ? localResult.date.substring(0, 10) : 'N/A')}</p>
+                    ${stats}
+                    ${url ? `<p><strong>URL:</strong> <a href="${escapeHtml(url)}" target="_blank" class="result-url">${escapeHtml(url)}</a></p>` : ''}
+                    <p><strong>출처:</strong> ${localResult.source === 'cache' ? '📦 캐시' : '🌐 실시간'} | 점수: ${(localResult.score||0).toFixed(2)}</p>
+                    <hr style="border-color:#333;margin:12px 0;">
+                    <div style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(localResult.content || '내용 없음')}</div>`;
+            } else {
+                modalBody.innerHTML = '<p style="color:#888;">상세 내용을 불러올 수 없습니다.</p>';
+            }
+        }
+    } catch (error) {
+        modalBody.innerHTML = `<p style="color:#e94560;">오류: ${escapeHtml(error.message)}</p>`;
+    }
+}
+
+$('btn-modal-close').addEventListener('click', () => {
+    $('detail-modal').style.display = 'none';
+});
+$('detail-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'detail-modal') {
+        $('detail-modal').style.display = 'none';
+    }
+});
+
+// ===== 로그 토글 =====
+$('btn-toggle-log').addEventListener('click', () => {
+    const content = $('log-content');
+    const btn = $('btn-toggle-log');
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        btn.textContent = '접기';
+    } else {
+        content.style.display = 'none';
+        btn.textContent = '펼치기';
+    }
+});
+
+// ===== 캐시 삭제 =====
+$('btn-cache-clear').addEventListener('click', async () => {
+    if (!confirm('검색 캐시를 삭제하시겠습니까?')) return;
+    
+    try {
+        const response = await fetch('/api/cache/clear', { method: 'POST' });
+        const data = await response.json();
+        if (data.success) {
+            alert('✅ 캐시가 삭제되었습니다.');
+        } else {
+            alert('❌ 캐시 삭제 실패: ' + data.error);
+        }
+    } catch (error) {
+        alert('❌ 오류: ' + error.message);
+    }
+});
+
+// ===== 로딩 =====
+function showLoading(text = '처리 중...') {
+    $('loading-text').textContent = text;
+    $('loading-overlay').style.display = 'flex';
+}
+function hideLoading() {
+    $('loading-overlay').style.display = 'none';
+}
+function showError(msg) {
+    $('results-summary').innerHTML = `<span style="color:#e94560;">❌ ${escapeHtml(msg)}</span>`;
+}
+
+// ===== 유틸 =====
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text || '';
+    return div.innerHTML;
+}
+
+// ===== 이벤트 바인딩 =====
+$('btn-search-unified').addEventListener('click', () => executeSearch('unified', null));
+$('btn-search-mosaic').addEventListener('click', () => executeSearch('mosaic', 'mosaic'));
+$('btn-search-confluence').addEventListener('click', () => executeSearch('confluence', 'confluence'));
+$('btn-search-axhub').addEventListener('click', () => executeSearch('axhub', 'axhub'));
+
+// Enter 키 검색
+['unified', 'mosaic', 'confluence', 'axhub'].forEach(tab => {
+    $(`search-input-${tab}`).addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            const platform = tab === 'unified' ? null : tab;
+            executeSearch(tab, platform);
+        }
+    });
+});
+
+// 초기 메시지
+$('results-summary').innerHTML = '<span style="color:#666;">검색어를 입력하고 검색 버튼을 누르세요.</span>';

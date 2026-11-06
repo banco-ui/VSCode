@@ -1,0 +1,11 @@
+{
+  "originalPath": "sd-search/adapters/confluence-adapter.js",
+  "originalSize": 19181,
+  "sha256": "5f526f7e61532346bbb535f6a2108c62dff71167eddaecf24193fbc76dc7a93a",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"sd-search/adapters/confluence-adapter.js\""
+}

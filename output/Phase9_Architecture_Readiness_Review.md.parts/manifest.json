@@ -1,0 +1,11 @@
+{
+  "originalPath": "output/Phase9_Architecture_Readiness_Review.md",
+  "originalSize": 19816,
+  "sha256": "b68a6be560d57470ec87da5dfaecf6111eae460248162bcff3db16508287954d",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"output/Phase9_Architecture_Readiness_Review.md\""
+}

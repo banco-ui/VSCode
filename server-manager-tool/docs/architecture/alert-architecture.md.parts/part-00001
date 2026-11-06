@@ -1,0 +1,825 @@
+# Phase 8: Alert / Early Fault Detection — Architecture Design Review
+
+> **Status**: READY_FOR_IMPLEMENTATION
+>
+> **Date**: 2026-09-14
+>
+> **Schema**: v1.0 FROZEN — 이 설계는 Schema를 변경하지 않는다.
+>
+> **Code Changes**: NONE (Design Review Only)
+
+---
+
+## 1. Repository Inspection Summary
+
+### 현재 구현 현황
+
+| Phase | 내용 | 상태 |
+|---|---|---|
+| Phase 0 | Schema v1.0 (17개 영역, 12개 Enum) | FROZEN |
+| Phase 1 | Domain Models (Pydantic v2) | COMPLETE (29 TC) |
+| Phase 2 | Collectors (Redfish, SSH, VendorAdapters) | COMPLETE (25 TC) |
+| Phase 3 | Normalizers (Redfish, SSH, LegacyAdapter) | COMPLETE (25 TC) |
+| Phase 4 | Verifiers (Hardware, OS, Runtime) | COMPLETE (28 TC) |
+| Phase 5 | Orchestrator (pipeline, fault isolation, Run ID) | COMPLETE (37 TC) |
+| Phase 6 | Inventory Store (SQLite, append-only, P1 fixed) | COMPLETE (44 TC) |
+| Phase 7 | Dashboard Query (QueryService, SnapshotDiff) | COMPLETE (49 TC) |
+| **Total** | | **237/237 PASSED** |
+
+### 현재 Architecture
+
+```
+Collector (Redfish/SSH)
+    ↓
+Normalizer (RedfishNormalizer/SSHNormalizer)
+    ↓
+Verifier (HardwareVerifier/OSVerifier/RuntimeVerifier)
+    ↓
+Orchestrator (pipeline, fault isolation, run_id)
+    ↓
+InventoryStore (SQLite, append-only)
+    ↓
+DashboardQueryService (read-only query layer)
+    ↓
+Dashboard / CLI (future)
+```
+
+### 실제 확인한 핵심 모델/API
+
+#### Phase 4: VerificationResult (verifiers/base.py)
+
+```python
+class FieldResult(BaseModel):
+    field_path: str
+    status: VerificationStatus  # VERIFIED/SINGLE_SOURCE/DISCREPANCY/PARTIAL/UNAVAILABLE
+    sources: list[str]
+    values: dict[str, Any]
+    canonical_value: Optional[Any]
+    match: Optional[bool]
+    confidence: Confidence  # HIGH/MEDIUM/LOW/NONE
+    note: Optional[str]
+    discrepancies: list[str]
+
+class VerificationResult(BaseModel):
+    field_results: list[FieldResult]
+    summary: dict[str, Any]
+    verified_at: str
+
+    @property
+    def total_fields(self) -> int
+    @property
+    def discrepancy_count(self) -> int  # Phase 7에서 사용 확인
+    @property
+    def verified_count(self) -> int
+    @property
+    def single_source_count(self) -> int
+    @property
+    def partial_count(self) -> int
+    @property
+    def unavailable_count(self) -> int
+```
+
+#### Phase 5: OrchestrationResult (orchestrator/models.py)
+
+```python
+class OrchestrationStatus(str, Enum):
+    SUCCESS = "SUCCESS"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+class ErrorCategory(str, Enum):
+    CONNECTION_ERROR = "CONNECTION_ERROR"
+    AUTHENTICATION_ERROR = "AUTHENTICATION_ERROR"
+    TIMEOUT = "TIMEOUT"
+    PROTOCOL_ERROR = "PROTOCOL_ERROR"
+    UNSUPPORTED = "UNSUPPORTED"
+    PARSING_ERROR = "PARSING_ERROR"
+    NORMALIZATION_ERROR = "NORMALIZATION_ERROR"
+    VERIFICATION_ERROR = "VERIFICATION_ERROR"
+    UNKNOWN_ERROR = "UNKNOWN_ERROR"
+
+class SourceResult(BaseModel):
+    source: str  # "redfish", "ssh"
+    collection_success: bool
+    normalization_success: Optional[bool]
+    inventory: Optional[ServerInventory]
+    errors: list[str]
+    warnings: list[str]
+    duration_ms: int
+
+class OrchestrationResult(BaseModel):
+    run_id: str
+    server_id: str
+    status: OrchestrationStatus
+    source_results: list[SourceResult]
+    canonical_inventory: Optional[ServerInventory]
+    canonical_source: Optional[str]
+    verification: Optional[VerificationResult]
+    verification_success: bool
+    started_at: str
+    completed_at: Optional[str]
+    total_duration_ms: int
+    errors: list[str]
+    warnings: list[str]
+```
+
+#### Phase 6: InventoryStore (store/store.py)
+
+```python
+class InventoryStore:
+    # Registry
+    def register_server(self, entry: ServerRegistryEntry) -> None
+    def get_server(self, server_id: str) -> Optional[ServerRegistryEntry]
+    def list_servers(self) -> list[ServerRegistryEntry]
+    def update_server_lifecycle(self, server_id: str, state: ServerLifecycle) -> None
+    def update_server_metadata(self, server_id, ...) -> None
+
+    # Snapshots (append-only)
+    def save_snapshot(self, snapshot: InventorySnapshot) -> bool  # P1 fixed
+    def get_snapshot(self, snapshot_id: str) -> Optional[InventorySnapshot]
+    def get_current_snapshot(self, server_id: str) -> Optional[InventorySnapshot]
+    def list_snapshots(self, server_id: str, limit: int = 10) -> list[InventorySnapshot]
+
+    # Verification
+    def save_verification(self, record: VerificationRecord) -> bool
+    def list_verifications(self, server_id: str, limit: int = 10) -> list[VerificationRecord]
+
+    # Runs
+    def save_run(self, result: OrchestrationResult) -> bool
+    def get_run(self, run_id: str) -> Optional[dict]
+
+    # OrchestrationResult → Store
+    def save_orchestration_result(self, result: OrchestrationResult) -> bool
+
+    # Backup/Restore
+    def backup(self, backup_path) -> bool
+    def restore(self, backup_path) -> bool
+
+    # Legacy Migration
+    def migrate_legacy_json(self, ...) -> bool
+```
+
+#### Phase 6: Store Models (store/models.py)
+
+```python
+class ServerLifecycle(str, Enum):
+    ACTIVE = "ACTIVE"
+    MAINTENANCE = "MAINTENANCE"
+    UNREACHABLE = "UNREACHABLE"
+    DECOMMISSIONED = "DECOMMISSIONED"
+    PROVISIONING = "PROVISIONING"
+
+class ServerRegistryEntry(BaseModel):
+    server_id: str
+    display_name: str
+    hardware_identity: Optional[str]
+    vendor: Vendor
+    model: str
+    lifecycle_state: ServerLifecycle
+    endpoints: ManagementEndpoints
+    current_snapshot_id: Optional[str]
+    registered_at: str
+    last_collected_at: Optional[str]
+    last_collection_status: Optional[str]
+    notes: Optional[str]
+
+class InventorySnapshot(BaseModel):
+    snapshot_id: str
+    server_id: str
+    orchestration_run_id: str
+    collected_at: str
+    schema_version: str  # "1.0"
+    inventory: ServerInventory
+    canonical_source: Optional[str]
+    source_results_summary: dict[str, Any]
+
+class VerificationRecord(BaseModel):
+    verification_id: str
+    server_id: str
+    snapshot_id: str
+    run_id: str
+    verified_at: str
+    result: VerificationResult
+    summary: dict[str, Any]
+```
+
+#### Phase 7: DashboardQueryService (dashboard/query_service.py)
+
+```python
+class DashboardQueryService:
+    def get_server_list(self, filters=None) -> ServerListResult
+    def get_server_detail(self, server_id: str) -> Optional[ServerDetail]
+    def get_snapshot_history(self, server_id, limit=10) -> list[SnapshotSummary]
+    def get_snapshot_diff(self, snapshot_id_a, snapshot_id_b) -> Optional[SnapshotDiff]
+    def get_weekend_compute_candidates(self) -> list[ServerSummary]
+    def get_dashboard_summary(self) -> DashboardSummary
+```
+
+#### Phase 7: SnapshotDiff (dashboard/diff.py)
+
+```python
+def compute_snapshot_diff(
+    snapshot_a_id, snapshot_b_id,
+    inventory_a: ServerInventory, inventory_b: ServerInventory
+) -> SnapshotDiff
+
+class SnapshotDiff(BaseModel):
+    snapshot_a_id: str
+    snapshot_b_id: str
+    changed_fields: list[FieldDiff]  # field_path, old_value, new_value, change_type
+    added_fields: list[str]
+    removed_fields: list[str]
+```
+
+#### Schema v1.0: Health Model
+
+```python
+class Health(BaseModel):
+    system: HealthStatus    # OK/Warning/Critical/Unknown
+    cpu: HealthStatus
+    memory: HealthStatus
+    storage: HealthStatus
+    thermal: HealthStatus
+    network: HealthStatus
+    psu: HealthStatus
+    fan: HealthStatus
+    kernel_errors: Optional[str]
+    collected_at: Optional[str]
+```
+
+#### Schema v1.0: Enums
+
+```python
+class HealthStatus(str, Enum):
+    OK = "OK"
+    WARNING = "Warning"
+    CRITICAL = "Critical"
+    UNKNOWN = "Unknown"
+
+class ComputeEligibility(str, Enum):
+    PRODUCTION = "PRODUCTION"
+    EXCLUDED_USER_WORKLOAD = "EXCLUDED_USER_WORKLOAD"
+    MAINTENANCE = "MAINTENANCE"
+    BLOCKED = "BLOCKED"
+    IDLE = "IDLE"
+    CANDIDATE = "CANDIDATE"
+    COMPUTE_ELIGIBLE = "COMPUTE_ELIGIBLE"
+    COMPUTING = "COMPUTING"
+    DRAINING = "DRAINING"
+    UNKNOWN = "UNKNOWN"
+
+class ComputePotential(str, Enum):
+    VERY_HIGH = "VERY_HIGH"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+```
+
+---
+
+## 2. Alert Architecture
+
+### Recommended Architecture
+
+```
+Orchestrator
+     ↓
+InventoryStore (snapshot 저장 성공)
+     ↓
+AlertEngine (post-save, read-only access to Store)
+     ↓
+AlertStore (별도 테이블 또는 같은 DB 내 alerts 테이블)
+     ↓
+DashboardQueryService (alert 조회 API 확장)
+     ↓
+Dashboard / CLI (future)
+     ↓
+Notification Adapter (future, Phase 9+)
+```
+
+### 핵심 설계 결정
+
+1. **AlertEngine은 post-save에 실행**: InventoryStore에 snapshot이 저장된 후 실행
+2. **Fault isolation**: Alert 생성 실패가 Inventory 저장에 영향을 주지 않음
+3. **Read-only access**: AlertEngine은 Store에서 데이터를 읽기만 함
+4. **별도 AlertStore**: 같은 SQLite DB 내 별도 `alerts` 테이블 사용
+
+---
+
+## 3. Alert Domain Model
+
+### AlertRecord (현재 Alert 상태)
+
+```python
+class AlertStatus(str, Enum):
+    OPEN = "OPEN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    RESOLVED = "RESOLVED"
+
+class AlertSeverity(str, Enum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+class AlertType(str, Enum):
+    # Availability
+    SERVER_UNREACHABLE = "SERVER_UNREACHABLE"
+
+    # Hardware Health
+    PSU_FAILURE = "PSU_FAILURE"
+    THERMAL_ANOMALY = "THERMAL_ANOMALY"
+    STORAGE_WARNING = "STORAGE_WARNING"
+    FAN_FAILURE = "FAN_FAILURE"
+    CPU_DEGRADATION = "CPU_DEGRADATION"
+    MEMORY_DEGRADATION = "MEMORY_DEGRADATION"
+    NETWORK_DEGRADATION = "NETWORK_DEGRADATION"
+    SYSTEM_HEALTH_DEGRADATION = "SYSTEM_HEALTH_DEGRADATION"
+
+    # Verification
+    HARDWARE_DISCREPANCY = "HARDWARE_DISCREPANCY"
+
+    # Inventory Change
+    HARDWARE_CHANGE = "HARDWARE_CHANGE"
+    OS_CHANGE = "OS_CHANGE"
+    OS_REINSTALL = "OS_REINSTALL"
+
+    # Compute
+    COMPUTE_ELIGIBILITY_CHANGE = "COMPUTE_ELIGIBILITY_CHANGE"
+
+    # Recovery
+    HEALTH_RECOVERED = "HEALTH_RECOVERED"
+
+
+class AlertRecord(BaseModel):
+    """현재 Alert 상태 (mutable, updatable)."""
+    alert_id: str                          # UUID
+    server_id: str
+    alert_type: AlertType
+    severity: AlertSeverity
+    status: AlertStatus                    # OPEN/ACKNOWLEDGED/RESOLVED
+    title: str
+    message: str
+    fingerprint: str                       # dedup key (see §7)
+    first_seen_at: str                     # ISO 8601 UTC
+    last_seen_at: str                      # ISO 8601 UTC
+    last_updated_at: str                   # ISO 8601 UTC
+    resolved_at: Optional[str]             # RESOLVED 시점
+    source_snapshot_id: str                # Alert를 발생시킨 snapshot
+    source_run_id: str                     # run_id (idempotency)
+    field_path: Optional[str]              # 관련 필드 경로 (있을 경우)
+    previous_value: Optional[Any]          # 이전 canonical 값
+    current_value: Optional[Any]           # 현재 canonical 값
+    metadata: dict[str, Any]               # 추가 정보 (credential 제외)
+
+    model_config = {"extra": "forbid"}
+```
+
+### AlertEvent (상태 변화 history, append-only)
+
+```python
+class AlertEvent(BaseModel):
+    """Alert 상태 변화 이력 (append-only)."""
+    event_id: str                          # UUID
+    alert_id: str                          # AlertRecord 참조
+    event_type: str                        # CREATED/UPDATED/ESCALATED/ACKNOWLEDGED/RESOLVED/REOPENED
+    event_at: str                          # ISO 8601 UTC
+    old_status: Optional[AlertStatus]
+    new_status: AlertStatus
+    old_severity: Optional[AlertSeverity]
+    new_severity: AlertSeverity
+    snapshot_id: str                       # 이벤트를 발생시킨 snapshot
+    run_id: str
+    note: Optional[str]
+
+    model_config = {"extra": "forbid"}
+```
+
+### AlertRecord vs AlertEvent 분리 이유
+
+| 측면 | AlertRecord | AlertEvent |
+|------|-------------|------------|
+| 목적 | 현재 상태 조회 (빠름) | 전체 이력 추적 (audit) |
+| Mutability | mutable (UPDATE) | append-only (INSERT) |
+| 쿼리 패턴 | "현재 OPEN alert는?" | "이 alert의 변화 이력은?" |
+| 저장 | 1 row per alert | N rows per alert |
+
+**권장**: AlertRecord와 AlertEvent를 분리한다. AlertRecord는 빠른 현재 상태 조회용, AlertEvent는 audit trail용.
+
+---
+
+## 4. Alert Types
+
+### A. Availability
+
+| AlertType | 조건 | Severity |
+|-----------|------|----------|
+| SERVER_UNREACHABLE | lifecycle_state == UNREACHABLE 또는 OrchestrationResult.status == FAILED | CRITICAL |
+
+### B. Hardware Health
+
+| AlertType | 조건 | Severity |
+|-----------|------|----------|
+| PSU_FAILURE | health.psu != OK | CRITICAL (if Critical) / WARNING (if Warning) |
+| THERMAL_ANOMALY | health.thermal != OK | CRITICAL / WARNING |
+| STORAGE_WARNING | health.storage != OK | CRITICAL / WARNING |
+| FAN_FAILURE | health.fan != OK | CRITICAL / WARNING |
+| CPU_DEGRADATION | health.cpu != OK | CRITICAL / WARNING |
+| MEMORY_DEGRADATION | health.memory != OK | CRITICAL / WARNING |
+| NETWORK_DEGRADATION | health.network != OK | CRITICAL / WARNING |
+| SYSTEM_HEALTH_DEGRADATION | health.system != OK | CRITICAL / WARNING |
+
+### C. Verification
+
+| AlertType | 조건 | Severity |
+|-----------|------|----------|
+| HARDWARE_DISCREPANCY | VerificationResult.discrepancy_count > 0 | WARNING |
+
+### D. Inventory Change
+
+| AlertType | 조건 | Severity |
+|-----------|------|----------|
+| HARDWARE_CHANGE | CPU/Memory/Storage/Network/GPU 변경 감지 | WARNING |
+| OS_CHANGE | OS distribution/kernel/hostname 변경 | WARNING |
+| OS_REINSTALL | 동일 hardware_identity + OS 변경 | INFO |
+
+### E. Compute
+
+| AlertType | 조건 | Severity |
+|-----------|------|----------|
+| COMPUTE_ELIGIBILITY_CHANGE | eligibility canonical 값 변경 | INFO (개선) / WARNING (악화) |
+
+### F. Recovery
+
+| AlertType | 조건 | Severity |
+|-----------|------|----------|
+| HEALTH_RECOVERED | 이전 health != OK → 현재 health == OK | INFO |
+
+---
+
+## 5. Detection Rules
+
+### Rule Engine Architecture
+
+```python
+class AlertEngine:
+    def process_snapshot(
+        self,
+        server_id: str,
+        current_snapshot: InventorySnapshot,
+        previous_snapshot: Optional[InventorySnapshot],
+        verification: Optional[VerificationRecord],
+        orchestration_result: Optional[OrchestrationResult],
+    ) -> list[AlertRecord]:
+        """
+        Snapshot 저장 후 호출.
+        이전 snapshot과 비교하여 alert를 생성/갱신/해결한다.
+
+        Returns: 생성/갱신된 alert 목록
+        """
+```
+
+### Detection Rules (상세)
+
+#### Rule 1: Server Unreachable
+
+```python
+# 조건: lifecycle == UNREACHABLE
+#       또는 orchestration_result.status == FAILED
+#       또는 모든 source_result 실패
+if entry.lifecycle_state == ServerLifecycle.UNREACHABLE:
+    → SERVER_UNREACHABLE (CRITICAL)
+
+if orch_result and orch_result.status == OrchestrationStatus.FAILED:
+    → SERVER_UNREACHABLE (CRITICAL)
+```
+
+#### Rule 2: Health Degradation
+
+```python
+# 각 health field에 대해:
+# previous = OK, current = Warning/Critical → 새 Alert OPEN
+# previous = Warning, current = Critical → 기존 Alert escalation
+# previous = Warning, current = Warning → 기존 Alert update (last_seen_at만 갱신)
+# previous != OK, current = OK → 기존 Alert RESOLVED + HEALTH_RECOVERED 생성
+```
+
+#### Rule 3: Hardware Discrepancy
+
+```python
+# 조건: VerificationResult에 DISCREPANCY status field_result 존재
+# Alert Engine은 직접 계산하지 않고 Verifier 결과를 사용
+if verification and verification.result.discrepancy_count > 0:
+    → HARDWARE_DISCREPANCY (WARNING)
+    # field_path, previous_value, current_value를 VerificationResult에서 추출
+```
+
+#### Rule 4: Inventory Change
+
+```python
+# Phase 7의 compute_snapshot_diff()를 활용
+diff = compute_snapshot_diff(prev, curr)
+
+# CPU/Memory/GPU/Storage/Network 필드 변경 감지
+for change in diff.changed_fields:
+    if change.field_path.startswith("hardware."):
+        → HARDWARE_CHANGE (WARNING)
+
+# OS 변경 감지
+for change in diff.changed_fields:
+    if change.field_path.startswith("os."):
+        # 동일 hardware_identity인지 확인
+        if same_hardware_identity:
+            → OS_REINSTALL (INFO)
+        else:
+            → OS_CHANGE (WARNING)
+```
+
+#### Rule 5: Compute Eligibility Change
+
+```python
+# Snapshot diff에서 compute.eligibility 변경 감지
+for change in diff.changed_fields:
+    if change.field_path == "compute.eligibility":
+        old = ComputeEligibility(change.old_value)
+        new = ComputeEligibility(change.new_value)
+
+        # 악화 방향 (candidate → excluded/blocked)
+        if new in {EXCLUDED_USER_WORKLOAD, BLOCKED, PRODUCTION, MAINTENANCE}:
+            → COMPUTE_ELIGIBILITY_CHANGE (WARNING)
+        # 개선 방향 (excluded → candidate/eligible)
+        else:
+            → COMPUTE_ELIGIBILITY_CHANGE (INFO)
+```
+
+---
+
+## 6. Severity
+
+### Severity 매핑
+
+```python
+def _health_to_severity(health: HealthStatus) -> AlertSeverity:
+    if health == HealthStatus.CRITICAL:
+        return AlertSeverity.CRITICAL
+    elif health == HealthStatus.WARNING:
+        return AlertSeverity.WARNING
+    elif health == HealthStatus.UNKNOWN:
+        return AlertSeverity.WARNING  # UNKNOWN은 WARNING으로 취급
+    return AlertSeverity.INFO
+```
+
+### Severity Escalation
+
+- Warning → Critical: 기존 Alert의 severity를 CRITICAL으로 upgrade (같은 AlertRecord)
+- Critical → Warning: severity를 WARNING으로 downgrade (같은 AlertRecord)
+- Critical/Warning → OK: Alert를 RESOLVED로 변경 + HEALTH_RECOVERED 이벤트
+
+---
+
+## 7. Fingerprint / Deduplication
+
+### Fingerprint 구성
+
+```
+fingerprint = sha256(
+    server_id + ":" + alert_type + ":" + field_path
+)
+```
+
+예시:
+```
+fingerprint = sha256("R750-001:PSU_FAILURE:health.psu")
+fingerprint = sha256("R750-001:HARDWARE_DISCREPANCY:cpu.total_cores")
+fingerprint = sha256("R750-001:OS_CHANGE:os.distribution")
+```
+
+### Deduplication Logic
+
+```python
+def process_alert(new_alert_candidate):
+    # 1. fingerprint로 기존 OPEN alert 검색
+    existing = store.find_open_alert(fingerprint)
+
+    if existing is None:
+        # 2a. 새 Alert 생성
+        create_alert(new_alert_candidate)
+        create_event(CREATED)
+
+    elif existing.status == AlertStatus.OPEN:
+        # 2b. 기존 Alert 갱신
+        if new_severity > existing.severity:
+            # escalation
+            update_alert(existing, severity=new_severity)
+            create_event(ESCALATED)
+        elif new_severity < existing.severity:
+            # de-escalation
+            update_alert(existing, severity=new_severity)
+            create_event(UPDATED)
+        else:
+            # 동일 condition, last_seen_at만 갱신
+            update_alert(existing, last_seen_at=now)
+            # event 생성하지 않음 (duplicate suppression)
+
+    elif existing.status == AlertStatus.RESOLVED:
+        # 2c. Re-open
+        update_alert(existing, status=OPEN)
+        create_event(REOPENED)
+```
+
+### Q5 답변: Warning → Critical escalation
+
+같은 Alert로 처리한다. 같은 fingerprint를 가지며, severity만 upgrade된다.
+AlertEvent에 ESCALATED 이벤트가 기록된다.
+
+---
+
+## 8. Lifecycle
+
+### Alert Lifecycle States
+
+```
+                    ┌──────────┐
+         create     │   OPEN   │
+              ─────→│          │
+                    └────┬─────┘
+                         │
+              ┌──────────┼──────────┐
+              │          │          │
+              ▼          ▼          ▼
+     ┌────────────┐ ┌────────┐ ┌───────────┐
+     │ACKNOWLEDGED│ │ESCALATE│ │  RESOLVED  │
+     │            │ │(same   │ │ (recovery)│
+     └─────┬──────┘ │ alert) │ └─────┬─────┘
+           │        └────────┘       │
+           │                         │
+           └────────┬────────────────┘
+                    │
+                    ▼
+              ┌──────────┐
+              │ REOPENED  │
+              │ (→ OPEN)  │
+              └──────────┘
+```
+
+### Lifecycle Transitions
+
+| From | To | Trigger | Event Type |
+|------|-----|---------|------------|
+| (none) | OPEN | Alert condition detected | CREATED |
+| OPEN | ACKNOWLEDGED | User/manual acknowledge | ACKNOWLEDGED |
+| OPEN | OPEN (escalated) | Severity increased | ESCALATED |
+| OPEN | RESOLVED | Condition recovered | RESOLVED |
+| ACKNOWLEDGED | RESOLVED | Condition recovered | RESOLVED |
+| RESOLVED | OPEN | Condition re-occurred | REOPENED |
+
+---
+
+## 9. Recovery Detection
+
+### Recovery 판단 방법
+
+```python
+# 이전 snapshot: health.psu == WARNING
+# 현재 snapshot: health.psu == OK
+# → Recovery detected
+
+# AlertRecord.status를 RESOLVED로 변경
+# resolved_at = current_snapshot.collected_at
+# AlertEvent(RE SOLVED) 생성
+
+# 추가로 HEALTH_RECOVERED (INFO) alert 생성
+# 이것은 별도 alert (fingerprint에 "HEALTH_RECOVERED" 포함)
+# 즉시 RESOLVED 상태로 생성 (정보 기록용)
+```
+
+### Q6 답변: Recovery 판단
+
+이전 snapshot과 현재 snapshot의 health field를 비교:
+- previous health != OK → current health == OK: Recovery
+- AlertEngine이 직접 health를 계산하지 않고, canonical health 값을 비교만 수행
+
+---
+
+## 10. Storage
+
+### Q1 답변: InventoryStore에 통합 vs 별도 AlertStore
+
+**권장: 같은 SQLite DB 내 별도 `alerts` 테이블 (Integrated)**
+
+이유:
+1. 수십 대 규모에서 별도 DB 파일은 관리 overhead
+2. 같은 DB 내에서 transaction consistency 확보 용이
+3. Backup이 단일 파일로 간단
+4. 향후 수백 대로 확장 시 별도 DB로 분리 가능
+
+```sql
+CREATE TABLE IF NOT EXISTS alerts (
+    alert_id TEXT PRIMARY KEY,
+    server_id TEXT NOT NULL,
+    alert_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    last_updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    source_snapshot_id TEXT,
+    source_run_id TEXT,
+    field_path TEXT,
+    previous_value TEXT,
+    current_value TEXT,
+    metadata_json TEXT,
+    FOREIGN KEY (server_id) REFERENCES server_registry(server_id)
+);
+
+CREATE TABLE IF NOT EXISTS alert_events (
+    event_id TEXT PRIMARY KEY,
+    alert_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    event_at TEXT NOT NULL,
+    old_status TEXT,
+    new_status TEXT NOT NULL,
+    old_severity TEXT,
+    new_severity TEXT NOT NULL,
+    snapshot_id TEXT,
+    run_id TEXT,
+    note TEXT,
+    FOREIGN KEY (alert_id) REFERENCES alerts(alert_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_server_id ON alerts(server_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_fingerprint ON alerts(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
+CREATE INDEX IF NOT EXISTS idx_alert_events_alert_id ON alert_events(alert_id);
+```
+
+### Q2 답변: AlertRecord와 AlertEvent 분리
+
+**권장: 분리한다.**
+- AlertRecord: 현재 상태 (mutable, 빠른 조회용)
+- AlertEvent: 상태 변화 이력 (append-only, audit trail)
+
+---
+
+## 11. Idempotency
+
+### Q16 답변: Alert idempotency
+
+```python
+# Idempotency key: server_id + snapshot_id + fingerprint
+# 동일한 snapshot을 재처리해도 alert가 중복 생성되지 않음
+
+def process_snapshot(self, server_id, snapshot, ...):
+    # 이미 처리된 snapshot인지 확인
+    existing_events = store.find_alert_events(
+        snapshot_id=snapshot.snapshot_id
+    )
+    if existing_events:
+        logger.info(f"Snapshot already processed for alerts: {snapshot.snapshot_id}")
+        return []  # skip
+```
+
+또는 AlertEvent의 `snapshot_id` + `alert_id` 조합으로 UNIQUE constraint를 추가:
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_events_unique
+ON alert_events(alert_id, snapshot_id);
+```
+
+---
+
+## 12. Fault Isolation
+
+### Q10, Q11 답변: Alert Engine 연결 지점 및 Fault Isolation
+
+```python
+# Orchestrator → Store → AlertEngine
+# AlertEngine은 Store 저장 "성공 후" 실행
+
+def save_orchestration_result(self, result):
+    # 1. Snapshot 저장 (기존)
+    success = self._save_snapshot(result)
+    # 2. Verification 저장 (기존)
+    self._save_verification(result)
+    # 3. Run 저장 (기존)
+    self._save_run(result)
+
+    # 4. Alert 처리 (신규, fault isolated)
+    try:
+        alert_engine.process_orchestration_result(result, self)
+    except Exception as e:
+        logger.error(f"Alert processing failed: {e}")
+        # Alert 실패가 orchestration 성공에 영향을 주지 않음
+
+    return success
+```
+
+**핵심**: Alert 생성 실패는 log에 기록되지만, `save_orchestration_result`의 반환값에 영향을 주지 않는다.
+
+---
+
+## 13. Ed

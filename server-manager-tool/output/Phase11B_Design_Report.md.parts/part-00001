@@ -1,0 +1,773 @@
+# Phase 11B — Alert Domain Design & Readiness Review
+
+**Review Date:** 2026-09-21  
+**Repository:** Server Manager  
+**Review Type:** READ-ONLY Detailed Design  
+
+---
+
+## 1. Review Scope
+
+Phase 11A 에서 도출된 4 개 핵심 설계 항목을 상세 설계한다:
+
+1. **Alert Lifecycle State Transition**
+2. **Alert Fingerprint Algorithm**
+3. **Rule Evaluation Thresholds**
+4. **AlertStore SQLite Schema**
+
+**주의:** 본 단계에서는 Alert Engine 을 구현하지 않는다.
+
+---
+
+## 2. Baseline
+
+### Repository State
+- **Branch:** main
+- **HEAD:** ec6c5e481d5c72a2c96258467c50fefdf341cd78
+- **Working Tree:** clean (output 파일만 추가됨)
+- **Source 변경:** 없음 (Phase 11A 와 동일)
+
+### Test Baseline
+- **Full Suite:** 277 passed / 1 failed (test_is_due_past — 기존 flaky test)
+
+---
+
+## 3. Phase 11A 결정사항 확인
+
+### Architectural Constraints (FACT)
+
+```
+Alert = 별도 domain entity
+Inventory Schema v1.0 = 보호
+AlertStore = 별도 SQLite DB (~/.server-manager/alerts.db)
+Scheduler Integration = post-collection hook
+Dependency direction = 기존 구조 유지
+```
+
+### Architecture Risks (11A)
+
+| ID | Severity | Area | Summary |
+|----|----------|------|---------|
+| A001 | HIGH | Deduplication | 복잡할 경우 Alert 누락/중복 |
+| A002 | MEDIUM | Concurrency | SQLite lock contention 증가 |
+| A003 | MEDIUM | Performance | Rule evaluation overhead |
+
+---
+
+## 4. 현재 관련 Source 조사
+
+### Scheduler Models (FACT)
+
+**ScheduleExecution Status** (scheduler/models.py line 147):
+```python
+status: str = "PENDING"  # PENDING, RUNNING, SUCCESS, FAILED, SKIPPED, CLAIMED, RECOVERED
+```
+
+**ScheduleExecution Fields**:
+```python
+execution_id: str
+schedule_id: str
+server_id: str
+run_id: Optional[str]
+status: str
+claimed_at: Optional[str]
+started_at: Optional[str]
+completed_at: Optional[str]
+error_message: Optional[str]
+recovery_id: Optional[str]  # Phase 10D
+recovery_count: int = 0     # Phase 10D
+```
+
+### SchedulerStore Pattern (FACT)
+
+**DB Path**: `SCHEDULER_DB_PATH` (env var)  
+**Lock Retry**: `DEFAULT_LOCK_RETRY_COUNT = 3`  
+
+---
+
+## PART A — Alert Lifecycle State Transition
+
+---
+
+## 6. State 정의
+
+### Proposed States
+
+| State | 의미 | Persist |
+|-------|------|---------|
+| **OPEN** | 조건이 감지되었고 아직 해결되지 않음 | YES |
+| **ACKNOWLEDGED** | 운영자가 인지했지만 문제는 아직 해결되지 않음 | YES |
+| **RESOLVED** | 조건이 더 이상 발생하지 않음 | YES |
+
+### DETECTED State 검토
+
+**DESIGN DECISION: DETECTED 상태 사용 안 함**
+
+```
+N=3 연속 감지 시 바로 OPEN 으로 생성.
+DETECTED 는 별도 상태로 저장하지 않음.
+```
+
+**Rationale:**
+- State machine 단순
+- Threshold logic 으로 충분
+- Scheduler execution status 와 유사
+
+---
+
+## 7. State Transition Matrix
+
+### Complete Transition Table
+
+| Current | Event | Next | Actor | Condition |
+|---------|-------|------|-------|-----------|
+| — | create | OPEN | system | N=3 consecutive detections |
+| OPEN | acknowledge | ACKNOWLEDGED | user | — |
+| OPEN | condition_clear | RESOLVED | system | M=5 consecutive OK |
+| ACKNOWLEDGED | condition_clear | RESOLVED | system | M=5 consecutive OK |
+| ACKNOWLEDGED | condition_persist | ACKNOWLEDGED | system | condition still present |
+| RESOLVED | condition_reappeared | OPEN | system | new detection (N=3) |
+
+### Transition Semantics
+
+**OPEN → ACKNOWLEDGED:**
+- **Actor:** user (manual)
+- **Trigger:** API call `POST /api/v1/alerts/{id}/acknowledge`
+- **Side effect:** `acknowledged_at`, `acknowledged_by` 기록
+
+**OPEN → RESOLVED:**
+- **Actor:** system (automatic)
+- **Trigger:** M=5 consecutive OK observations
+- **Side effect:** `resolved_at`, `resolution_note = "condition_cleared"`
+
+**ACKNOWLEDGED → RESOLVED:**
+- **Actor:** system (automatic)
+- **Trigger:** M=5 consecutive OK observations
+- **Side effect:** `resolved_at`, `resolution_note = "condition_cleared"`
+
+**RESOLVED → OPEN:**
+- **Actor:** system (automatic)
+- **Trigger:** 동일 fingerprint 가 N=3 연속 감지
+- **Side effect:** **새 Alert 생성** (기존 Alert 재사용 안 함)
+
+---
+
+## 8. Reopen vs New Alert
+
+### Scenario
+
+```
+Problem A (fingerprint=X)
+  ↓
+OPEN (alert_id=1)
+  ↓
+RESOLVED (after M=5 OK)
+  ↓
+Problem A 다시 발생 (fingerprint=X)
+```
+
+### DESIGN DECISION: 새 Alert 생성
+
+```
+RESOLVED 된 Alert 는 재사용하지 않음.
+동일 fingerprint 가 다시 발생하면 새 Alert 생성.
+Linkage 는 fingerprint 로 추적 가능.
+
+---
+
+## PART B — Alert Fingerprint
+
+---
+
+## 10. Fingerprint Purpose
+
+**Goal:**
+> 동일한 장애가 반복 collection 될 때 동일 Alert 로 식별 (deduplication)
+
+**Example:**
+```
+Collection #1: Storage Controller 1 FAILED
+Collection #2: Storage Controller 1 FAILED
+Collection #3: Storage Controller 1 FAILED
+→ 1 active Alert (not 3)
+```
+
+---
+
+## 11. Fingerprint Input 정의
+
+### Required Fields (DESIGN)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `server_id` | str | YES | 서버 식별자 |
+| `alert_type` | str | YES | Alert 유형 |
+| `resource_type` | str | YES | 리소스 유형 |
+| `resource_id` | str | NO | 리소스 식별자 (optional) |
+| `condition` | str | YES | 조건 표현 |
+
+### Alert Types (DESIGN)
+
+```python
+HEALTH_CRITICAL      # HealthStatus == CRITICAL
+HEALTH_WARNING       # HealthStatus == WARNING (persistent)
+VERIFICATION_DISCREPANCY  # Field discrepancy detected
+COLLECTION_FAILURE   # Consecutive collection failures
+SCHEDULER_FAILURE    # Repeated scheduler execution failures
+```
+
+### Resource Types (DESIGN)
+
+```python
+system               # 전체 서버
+storage_controller   # 스토리지 컨트롤러
+physical_disk        # 물리 디스크
+virtual_disk         # 가상 디스크
+network_interface    # 네트워크 인터페이스
+memory               # 메모리
+cpu                  # CPU
+service              # OS 서비스
+```
+
+---
+
+## 12. Fingerprint Canonical String
+
+### Option A: Canonical JSON (RECOMMENDED)
+
+```python
+import json
+import hashlib
+
+def create_fingerprint(
+    server_id: str,
+    alert_type: str,
+    resource_type: str,
+    resource_id: Optional[str],
+    condition: str,
+) -> str:
+    # Build canonical input
+    data = {
+        "server_id": server_id,
+        "alert_type": alert_type,
+        "resource_type": resource_type,
+        "resource_id": resource_id or "",
+        "condition": condition,
+    }
+    
+    # Canonical JSON (sorted keys, no extra whitespace)
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    
+    # Hash
+    return hashlib.sha256(canonical.encode()).hexdigest()
+```
+
+**Pros:**
+- Stable (sorted keys)
+- Extensible (field 추가 용이)
+- Readable (JSON)
+
+
+---
+
+## PART C — Rule Evaluation Threshold
+
+---
+
+## 16. N=3 Definition
+
+**DESIGN:**
+> 동일 condition 이 3 회 연속 collection 에서 발생하면 OPEN
+
+```
+Collection #1: condition detected → count=1
+Collection #2: condition persists → count=2
+Collection #3: condition persists → count=3 → OPEN
+```
+
+**Consecutive (연속):**
+```
+FAIL → FAIL → FAIL → OPEN
+FAIL → OK → FAIL → OK → count=0 (reset)
+```
+
+**Rationale:**
+- Transient failure 제외
+- 지속적 문제만 Alert
+
+---
+
+## 17. M=5 Definition
+
+**DESIGN:**
+> OPEN 상태에서 정상 상태가 5 회 연속 관찰되면 RESOLVED
+
+```
+OPEN (condition present)
+Collection #1: OK → count=1
+Collection #2: OK → count=2
+Collection #3: OK → count=3
+Collection #4: OK → count=4
+Collection #5: OK → count=5 → RESOLVED
+```
+
+**Consecutive (연속):**
+```
+OK → OK → OK → OK → OK → RESOLVED
+OK → OK → FAIL → OK → OK → count=0 (reset)
+```
+
+**Rationale:**
+- 안정적 해결 확인
+- flapping 방지
+
+---
+
+## 18. Threshold Scope
+
+**DESIGN: Universal Threshold (단순)**
+
+```
+N=3 (all alert types)
+M=5 (all alert types)
+```
+
+**Rationale:**
+- Phase 11 구현 단순화
+- 설정 복잡성 제거
+- 기본값으로 시작, 필요시 future enhancement
+
+---
+
+## 19. Transient Failure
+
+**Scenario:**
+```
+Collection #1: FAILED
+Collection #2: OK
+Collection #3: FAILED
+Collection #4: OK
+```
+
+**Result:** N=3 연속 실패 아님 → Alert 생성 안 함
+
+**Rationale:**
+
+---
+
+## PART D — AlertStore SQLite Schema
+
+---
+
+## 21. AlertStore Schema (DESIGN)
+
+### Table: alerts
+
+```sql
+CREATE TABLE alerts (
+    -- Identity
+    alert_id              TEXT PRIMARY KEY,
+    fingerprint           TEXT NOT NULL,
+    fingerprint_version   INTEGER NOT NULL DEFAULT 1,
+    
+    -- Server reference
+    server_id             TEXT NOT NULL,
+    
+    -- Alert classification
+    alert_type            TEXT NOT NULL,
+    resource_type         TEXT NOT NULL,
+    resource_id           TEXT,
+    condition             TEXT NOT NULL,
+    
+    -- Severity
+    severity              TEXT NOT NULL,  -- INFO, WARNING, CRITICAL
+    
+    -- Lifecycle
+    status                TEXT NOT NULL,  -- OPEN, ACKNOWLEDGED, RESOLVED
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    acknowledged_at       TEXT,
+    acknowledged_by       TEXT,
+    acknowledge_note      TEXT,
+    resolved_at           TEXT,
+    resolution_note       TEXT,
+    
+    -- Threshold tracking
+    consecutive_failure_count  INTEGER NOT NULL DEFAULT 0,
+    consecutive_ok_count       INTEGER NOT NULL DEFAULT 0,
+    
+    -- References
+    first_snapshot_id     TEXT,  -- First detection snapshot
+    last_snapshot_id      TEXT,  -- Most recent detection snapshot
+    
+    -- Metadata
+    recovery_count        INTEGER NOT NULL DEFAULT 0,
+    metadata_json         TEXT NOT NULL DEFAULT '{}'
+);
+```
+
+### Indexes
+
+```sql
+-- Fingerprint lookup (deduplication)
+CREATE INDEX idx_alerts_fingerprint ON alerts(fingerprint);
+
+-- Status filtering (active alerts)
+CREATE INDEX idx_alerts_status ON alerts(status);
+
+-- Server filtering
+CREATE INDEX idx_alerts_server_id ON alerts(server_id);
+
+-- Severity filtering
+CREATE INDEX idx_alerts_severity ON alerts(severity);
+
+-- Composite: active alerts by server
+CREATE INDEX idx_alerts_status_server ON alerts(status, server_id);
+
+-- Created timestamp (sorting, pagination)
+CREATE INDEX idx_alerts_created_at ON alerts(created_at DESC);
+```
+
+---
+
+## 22. Index Strategy
+
+### Query Patterns
+
+| Query | Index |
+|-------|-------|
+| Get alert by fingerprint | `idx_alerts_fingerprint` |
+| Get active alerts | `idx_alerts_status` |
+| Get alerts by server | `idx_alerts_server_id` |
+| Get critical alerts | `idx_alerts_severity` |
+| Get active alerts for server | `idx_alerts_status_server` |
+| Get recent alerts | `idx_alerts_created_at` |
+
+---
+
+## 23. Final Design Summary
+
+### Alert Lifecycle
+
+```
+— (N=3) → OPEN → ACKNOWLEDGED → RESOLVED (M=5)
+              ↓                      ↑
+              └──────────────────────┘ (condition_clear)
+```
+
+**Key decisions:**
+- DETECTED 상태 사용 안 함 (N=3 바로 OPEN)
+- RESOLVED → OPEN 금지 (새 Alert 생성)
+- ACKNOWLEDGED 는 persistent state
+
+### Fingerprint
+
+```python
+fingerprint = SHA-256(
+    canonical JSON({
+        "server_id": server_id,
+        "alert_type": alert_type,
+        "resource_type": resource_type,
+        "resource_id": resource_id or "",
+        "condition": condition,
+    })
+)
+```
+
+**Key decisions:**
+- Canonical JSON (sorted keys)
+- SHA-256 (64 hex chars)
+- Version field 포함 (future-proof)
+
+### Thresholds
+
+```
+N=3: consecutive failures → OPEN
+M=5: consecutive OK → RESOLVED
+```
+
+**Key decisions:**
+- Universal (all alert types)
+- Consecutive (not cumulative)
+- Persisted in DB
+
+### AlertStore Schema
+
+```sql
+alerts (
+    alert_id, fingerprint, fingerprint_version,
+    server_id, alert_type, resource_type, resource_id, condition,
+    severity, status,
+    created_at, updated_at,
+    acknowledged_at, acknowledged_by, acknowledge_note,
+    resolved_at, resolution_note,
+    consecutive_failure_count, consecutive_ok_count,
+    first_snapshot_id, last_snapshot_id,
+    recovery_count, metadata_json
+)
+```
+
+**Key decisions:**
+- Fingerprint index (deduplication)
+- Status index (active alerts query)
+- Threshold count fields (restart-safe)
+
+---
+
+## 24. Readiness Gate
+
+| Gate | Result | Notes |
+|------|--------|-------|
+| A. Lifecycle State Machine | ✅ PASS | 3 states |
+| B. State Transition Matrix | ✅ PASS | Complete |
+| C. Reopen vs New Alert | ✅ PASS | New Alert |
+| D. Acknowledge Semantics | ✅ PASS | Persistent |
+| E. Fingerprint Input | ✅ PASS | 5 fields |
+| F. Canonical String | ✅ PASS | Canonical JSON |
+| G. Hash Algorithm | ✅ PASS | SHA-256 |
+| H. Fingerprint Versioning | ✅ PASS | Version field |
+| I. Edge Cases | ✅ PASS | All handled |
+| J. N=3 Definition | ✅ PASS | Consecutive |
+| K. M=5 Definition | ✅ PASS | Consecutive OK |
+| L. Threshold Scope | ✅ PASS | Universal |
+| M. Transient Failure | ✅ PASS | Not alerted |
+| N. Threshold Persistence | ✅ PASS | DB stored |
+| O. AlertStore Schema | ✅ PASS | Complete |
+| P. Index Strategy | ✅ PASS | All patterns |
+
+---
+
+## 25. Overall Design Gate
+
+### **Result: READY**
+
+모든 4 개 핵심 설계 항목이 명확히 정의됨.
+
+---
+
+## 26. Implementation Readiness
+
+### Phase 11C 구현 시작 조건
+
+- [x] Lifecycle state machine 정의
+- [x] Fingerprint algorithm 정의
+- [x] Threshold semantics 정의
+- [x] AlertStore schema 정의
+
+**Next Phase:** Phase 11C — Alert Store / Persistence
+
+---
+
+## 27. Safety Verification
+
+- **Production server access:** NO
+- **External TBMS access:** NO
+- **Credentials exposed:** NO
+- **Schema v1.0 modified:** NO
+- **Production source modified:** NO
+- **Test source modified:** NO
+- **DB schema modified:** NO
+- **Commit created:** NO
+
+---
+
+**Report Location:** `output/Phase11B_Design_Report.md`  
+**Review Completed:** 2026-09-21  
+**Reviewer:** Cline SR (READ-ONLY verification)
+- Transient failure 는 Alert 보다 log 로 기록
+- Scheduler execution failure 도 동일 처리
+
+---
+
+## 20. Alert Resolution Semantics
+
+### Threshold Persistence
+
+**DESIGN: Alert 상태에 포함**
+
+```python
+class Alert(BaseModel):
+    status: AlertStatus  # OPEN, ACKNOWLEDGED, RESOLVED
+    consecutive_failure_count: int = 0  # N threshold tracking
+    consecutive_ok_count: int = 0       # M threshold tracking
+```
+
+**Rationale:**
+- Scheduler restart 이후에도 threshold 유지
+- Alert Engine restart 이후에도 연속성 보장
+
+### Restart Behavior
+
+**DESIGN: Count 유지 (DB 에 저장)**
+
+```sql
+UPDATE alerts
+SET consecutive_ok_count = 5
+WHERE alert_id = ?;
+```
+
+**Rationale:**
+- Restart 후에도 resolution 진행 중인지 확인
+- 데이터 손실 방지
+**Cons:**
+- JSON serialization overhead (미미)
+
+**DESIGN DECISION: Option A (Canonical JSON)**
+
+---
+
+## 13. Hash Algorithm
+
+### Algorithm Selection
+
+| Algorithm | Hash Length | Security | Performance | Recommendation |
+|-----------|-------------|----------|-------------|----------------|
+| SHA-256 | 64 hex | High | Good | ✅ RECOMMENDED |
+| SHA-1 | 40 hex | Weak | Good | ⚠️ Not recommended |
+| MD5 | 32 hex | Broken | Fast | ❌ Avoid |
+
+**DESIGN DECISION: SHA-256**
+
+**Rationale:**
+- Security 목적이 아니지만, collision resistance 중요
+- Python standard library (`hashlib`) 에서 지원
+- 64 hex characters = DB index 에 적합
+
+### Output Representation
+
+```python
+fingerprint: str  # 64-character hex string
+```
+
+---
+
+## 14. Fingerprint Versioning
+
+**DESIGN:**
+```python
+fingerprint_version: int = 1  # Default version
+```
+
+**Rationale:**
+- 향후 algorithm 변경 시 호환성 유지
+- DB migration 없이 field 추가만 으로 대응
+
+**Version Migration:**
+```sql
+ALTER TABLE alerts ADD COLUMN fingerprint_version INTEGER DEFAULT 1;
+```
+
+---
+
+## 15. Fingerprint Edge Cases
+
+| Case | Handling |
+|------|----------|
+| **A: resource_id 없음** | `resource_id = ""` (empty string) |
+| **B: hostname 변경** | server_id 는 불변 (UUID/serial) 이므로 영향 없음 |
+| **C: OS reinstall** | server_id 변경되면 새 Alert (의도된 동작) |
+| **D: hardware identity 유지** | 동일 server_id, 동일 fingerprint |
+| **E: 동일 server 에서 동일 alert_type 이 여러 resource** | resource_id 가 다르면 fingerprint 다름 |
+| **F: condition text 약간 변경** | fingerprint 다름 (새 Alert) — 의도된 동작 |
+| **G: resource ordering 변경** | resource_id 단위 Alert 이므로 영향 없음 |
+| **H: None / missing field** | `None → ""` (empty string) |
+| **I: case sensitivity** | case-sensitive (의도된 동작) |
+| **J: whitespace** | trim 하지 않음 (의도된 동작) |
+```
+
+**Rationale:**
+- lifecycle 명확 (RESOLVED 는 terminal state)
+- audit trail 깔끔 (각 incident 별 독립 Alert)
+- Scheduler execution status 와 유사 (FAILED 는 terminal, 새 execution 생성)
+
+---
+
+## 9. Acknowledge Semantics
+
+### ACKNOWLEDGED 는 실제 lifecycle 상태
+
+**DESIGN:**
+```
+ACKNOWLEDGED = persistent state (DB 에 저장)
+```
+
+### Acknowledge Questions
+
+| Question | Answer |
+|----------|--------|
+| acknowledge 후 severity 변경 가능? | YES (escalation 가능) |
+| acknowledge 후 동일 fingerprint event 발생? | ACKNOWLEDGED 상태 유지 (update last_seen_at) |
+| acknowledge 가 자동으로 사라지는가? | NO (manual resolve 필요) |
+| resolved 후 acknowledge 가능한가? | NO (RESOLVED 는 terminal) |
+
+### Acknowledge Fields
+
+```python
+acknowledged_at: Optional[str]
+acknowledged_by: Optional[str]  # user ID or "system"
+acknowledge_note: Optional[str]
+```
+**Backoff**: `DEFAULT_LOCK_RETRY_BACKOFF = 0.1s`  
+**Pattern**: Singleton, SQLite, atomic claim
+
+### Existing Enums (FACT)
+
+**HealthStatus** (models/enums.py):
+```python
+OK = "OK"
+WARNING = "Warning"
+CRITICAL = "Critical"
+UNKNOWN = "Unknown"
+```
+
+**VerificationStatus** (models/enums.py):
+```python
+VERIFIED = "VERIFIED"
+SINGLE_SOURCE = "SINGLE_SOURCE"
+DISCREPANCY = "DISCREPANCY"
+PARTIAL = "PARTIAL"
+UNAVAILABLE = "UNAVAILABLE"
+```
+
+**OrchestrationStatus** (orchestrator/models.py):
+```python
+SUCCESS = "SUCCESS"
+PARTIAL = "PARTIAL"
+FAILED = "FAILED"
+SKIPPED = "SKIPPED"
+```
+
+---
+
+## 5. 설계 원칙
+
+### 5.1 Inventory 와 Alert 분리
+
+```
+Inventory = 현재 서버의 canonical 상태
+Alert     = 이상 감지 사건 (lifecycle 있음)
+```
+
+**FACT:** ServerInventory Schema v1.0 은 17 area 로 FROZEN.
+
+**DESIGN:** Alert 은 별도 domain entity 로 구현.
+
+### 5.2 Alert 가 Inventory 를 소유하지 않는다
+
+**DESIGN:**
+```
+Alert → InventorySnapshot (reference by snapshot_id)
+      → ServerRegistryEntry (reference by server_id)
+```
+
+Circular dependency 발생하지 않음.
+
+### 5.3 Scheduler 가 Alert domain 을 소유하지 않는다
+
+**DESIGN:**
+```
+Scheduler → execution (orchestration)
+Alert Engine → evaluation (state assessment)
+```
+
+Scheduler 는 Alert domain 의존하지 않음.

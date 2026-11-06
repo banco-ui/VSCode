@@ -1,0 +1,11 @@
+{
+  "originalPath": "sd-search/gui/public/app.js",
+  "originalSize": 18101,
+  "sha256": "f0cc80084f1cc28fb139ca4e7ff526a51700d132decce28f298c70076785cb76",
+  "partSize": 25000,
+  "partCount": 1,
+  "parts": [
+    "part-00001"
+  ],
+  "restore": "node scripts/restore-split.js \"sd-search/gui/public/app.js\""
+}

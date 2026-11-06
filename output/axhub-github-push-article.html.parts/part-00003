@@ -1,0 +1,111 @@
+�� 기능 구현"
+
+# 4. 원격 저장소로 푸시
+git push origin main
+</code></span></span></pre>
+
+<hr>
+<h3><span style="font-size:12px;"><span style="font-family:NanumGothic;">5. <code>.gitignore</code> 작성 및 관리 방법 ⚠️ <em>필수</em></span></span></h3>
+
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code>.gitignore</code> 파일은 빌드 결과물, 가상환경, 개인 설정 파일, 비밀키 등을 Git 추적 대상에서 제외할 때 사용합니다.</span></span></p>
+
+<blockquote>
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">🚨 <strong>보안 주의</strong>: 개인 토큰 번호, 비밀키, 불필요한 더미 데이터 등을 무심코 커밋/푸시하면 <strong>보안 사고</strong> 발생 및 저장소 용량 증대의 원인이 됩니다. Git 작업 전 반드시 <code>.gitignore</code>를 등록해야 합니다.</span></span></p>
+</blockquote>
+
+<h4><span style="font-size:12px;"><span style="font-family:NanumGothic;">5.1 주요 작성 예시</span></span></h4>
+
+<pre data-params=""><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code># 가상 환경 및 패키지
+.venv/
+node_modules/
+
+# 빌드 결과물 및 임시 파일
+dist/
+build/
+*.log
+
+# 개인 설정 및 환경변수
+.env
+.vscode/
+</code></span></span></pre>
+
+<h4><span style="font-size:12px;"><span style="font-family:NanumGothic;">5.2 이미 추적 중인 파일 제거하기 (PowerShell / 터미널)</span></span></h4>
+
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code>.gitignore</code> 등록 전 이미 커밋된 파일은 아래 명령어로 캐시를 삭제해 주어야 추적이 중단됩니다.</span></span></p>
+
+<pre data-params=""><span style="font-size:12px;"><span style="font-family:NanumGothic;"><code># Git 인덱스에서만 삭제 (실제 로컬 파일은 유지됨)
+git rm -r --cached .
+git add .
+git commit -m "fix: ignore 캐시 삭제 및 .gitignore 적용"
+git push origin main
+</code></span></span></pre>
+
+<hr>
+<h3><span style="font-size:12px;"><span style="font-family:NanumGothic;">6. AI 활용 프롬프트 ("AI에게 이렇게 말하면 해줍니다")</span></span></h3>
+
+<p><span style="font-size:12px;"><span style="font-family:NanumGothic;">AI 코딩 도구(Claude Code, GitHub Copilot, Cursor 등)에 다음과 같이 간단히 요청하면 커밋, 푸시, 정리를 자동으로 수행해 줍니다.</span></span></p>
+
+<h3><span style="font-size:12px;"><span style="font-family:NanumGothic;">⚡ 6.1 일상 작업 및 단순 푸시 요청 (단순/명령형)</span></span></h3>
+
+<ul data-tight="undefined">
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>간단한 커밋 &amp; 푸시 요청</strong></span></span></p>
+
+	<blockquote>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><em>"지금까지 수정한 내용 적절한 커밋 메시지 작성해서 바로 push해줘."</em></span></span></p>
+	</blockquote>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>불필요한 파일 정리 후 푸시</strong></span></span></p>
+
+	<blockquote>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><em>"프로젝트에 임시 파일이나 빌드 결과물 정리해주고, .gitignore 점검한 다음에 깔끔하게 커밋해서 푸시해줘."</em></span></span></p>
+	</blockquote>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>커밋 메시지 자동 작성</strong></span></span></p>
+
+	<blockquote>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><em>"내가 만든 변경 사항(git diff) 보고 Conventional Commit 규칙(feat, fix, docs 등)에 맞게 커밋 메시지 한 줄로 써줘."</em></span></span></p>
+	</blockquote>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>새 브랜치 생성 및 푸시</strong></span></span></p>
+
+	<blockquote>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><em>"feat/login-page 브랜치 새로 생성해서 그리로 전환한 다음, 변경사항 올리고 원격 저장소에 push해줘."</em></span></span></p>
+	</blockquote>
+	</li>
+</ul>
+
+<h4><span style="font-size:12px;"><span style="font-family:NanumGothic;">💡 6.2 환경 설정 및 고급 자동화 프롬프트</span></span></h4>
+
+<ul data-tight="undefined">
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>상황 1: 프로젝트 맞춤형 </strong><code>.gitignore</code><strong> 생성</strong></span></span></p>
+
+	<blockquote>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><em>"내가 지금 [Python FastAPI + React] 프로젝트를 만들고 있어. OS는 Windows랑 Mac을 같이 써. 이 환경에 맞는 표준 .gitignore 파일 내용을 주석과 함께 작성해 줘."</em></span></span></p>
+	</blockquote>
+	</li>
+	<li>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><strong>상황 2: </strong><code>.env</code><strong>나 빌드 폴더가 계속 추적될 때</strong></span></span></p>
+
+	<blockquote>
+	<p><span style="font-size:12px;"><span style="font-family:NanumGothic;"><em>"내가 .gitignore에 .env를 추가했는데도 git status를 치면 계속 추적되고 있어. 원인이 무엇인지 알려주고, 내 로컬 파일은 지우지 않으면서 Git 추적에서만 제외하는 명령어를 순서대로 알려줘."</em></span></span></p>
+	</blockquote>
+	</li>
+</ul>
+
+<p style="margin-left: 40px;"></p>
+
+<p style="margin-left: 40px;"></p>
+
+<p style="margin-left: 40px;"><span style="font-size:12px;"><span style="font-family:NanumGothic;">처음에는 Git hub가 뭔지 몰라 헤맸는데요. 한번 해보고 나니 동료들과 자료를 공유하기에도 내 산출물을 올리기에도 매우 유용하니 한번 활용해보세요 !</span></span></p>
+</div></div></div><div data-container="" class=""><div data-container="" class="contant_like_btn" style="text-align: center;"><button data-button="" class="like-btn" type="button"><img data-image="" src="/img/AGL_Board_WG.like_icon_b.png?RJko8br_NqsJeNl+gfpK7w"><span data-expression="" class="ThemeGrid_MarginGutter">20</span></button></div></div></div></div><div data-container="" id="b6-b3-TransBlock" style="margin-top: 60px;"><div data-block="Common.TranslateFab" class="OSBlockWidget" id="b6-b3-$b5"><div data-advancedhtml="" class="axhub-ai-floatmenu__overlay" id="b6-b3-b5-Overlay"></div><div data-container="" class="axhub-ai-floatmenu" id="b6-b3-b5-Stage1"><div data-container="" class="axhub-ai-floatmenu__row"><div data-container="" class="axhub-ai-floatmenu__icon-wrapper" id="b6-b3-b5-Stage1_Primary"><button data-button="" class="axhub-ai-floatmenu__btn axhub-ai-floatmenu__btn--primary" type="button"><img data-image="" class="axhub-ai-floatmenu__icon--close" src="/img/AGL_Board_WG.xmarksolidl.png?pjXgjagRu3+fkRXn2cSavg"></button></div></div></div><div data-container="" class="axhub-stage4" id="b6-b3-b5-Stage4"><div data-container="" class="axhub-stage4__row"><div data-container="" class="axhub-stage4__icon-wrapper" id="b6-b3-b5-axhubStage4Create"><button data-button="" class="axhub-stage4__btn axhub-stage4__btn--create" type="button"></button></div><div data-container="" class="axhub-stage4__icon-wrapper" id="b6-b3-b5-axhubStage4Summary"><button data-button="" class="axhub-stage4__btn axhub-stage4__btn--summary" type="button"></button></div><div data-container="" class="axhub-stage4__icon-wrapper" id="b6-b3-b5-axhubStage4Translate"><button data-button="" class="axhub-stage4__btn axhub-stage4__btn--translate" type="button"></button></div></div></div></div></div></div><div class="screen-bottom" id="b6-b3-b1-DetailView_Bottom"></div></div></div><div data-container="" class="notice_commet_list"><div data-container="" class="notice-comment-title"><div data-container="" class="comment_counts"><span class="comment_counts_text">댓글</span><span data-expression="" class="comment_counts_num ThemeGrid_MarginGutter"> 0</span></div><div data-radio-group="" class="radio-group comment_list_type" role="radiogroup" aria-activedescendant="b6-b3-RadioButton1" id="b6-b3-OrderRadio"><div><div data-radio-button="" id="b6-b3-RadioButton1"><input type="radio" id="b6-b3-RadioButton1-input" class="radio-button" name="b6-b3-OrderRadio" value="DATE" checked=""><label for="b6-b3-RadioButton1-input">최신순</label></div><div data-radio-button="" id="b6-b3-RadioButton2"><input type="radio" id="b6-b3-RadioButton2-input" class="radio-button" name="b6-b3-OrderRadio" value="RECOMMEND"><label for="b6-b3-RadioButton2-input">좋아요순</label></div></div></div></div><div data-container="" class="comment_list_line"><div data-container="" class="comment_write_box no_write_box"><div data-container="" class="notice-comment-write"><div data-container="" class="comment_write_user_info"><div data-block="Content.UserAvatar" class="OSBlockWidget" id="b6-b3-$b9"><div data-container="" class="avatar  border-radius-rounded background-primary user-thumbnail-empty" aria-label="사용자 이니셜,배" role="img"><span data-expression="" class="OSFillParent">배</span></div></div></div><span><textarea data-textarea="" class="notice-comment-form" rows="4" placeholder="댓글을 입력하세요." maxlength="5000" id="b6-b3-TextArea_V_CommentText"></textarea></span></div><div data-container="" class="comment_btn_box"><button data-button="" class="btn notice-comment-btn" type="button">등록</button></div></div></div></div><div data-container="" class="d-flex"><div data-container="" class="list_select"><div data-container="" class="ThemeGrid_Width6"><a data-link="" href="#"><span data-expression="">[이전글] AX를 통해 회사의 조직을 functionalize한다...</span></a></div><div data-container="" class="ThemeGrid_Width6" style="text-align: right;"><a data-link="" href="#"><span data-expression="">[다음글] 한총 프록시 等 셋팅 방법 및 사내 Cline 설치 가이드</span></a></div></div><div data-container="" class="width_50 d-flex justify-content-flex-end flex-align-center" id="b6-b3-BtnList2"><button data-button="" class="btn nomal_btn ThemeGrid_MarginGutter" type="button">목록으로</button></div></div><div data-block="Common.UserInfoPopup" class="OSBlockWidget" id="b6-b3-$b10"></div><div data-block="AppGen_Component.OnChangeLocale" class="OSBlockWidget" id="b6-b3-$b11"></div></div></div></div><div class="content-bottom" role="contentinfo" id="b1-Footer"><div data-block="LayoutTopMenu.LayoutTopMenu_Footer" class="OSBlockWidget" id="$b7"><div data-container="" class="ax_hub_footter"><div data-container=""><span class="bottom-copyright">© Samsung</span></div><div data-block="B_AC_SE.AC_TermsUseLink" class="OSBlockWidget" id="b7-$b1"><a data-link="" href="#">이용약관</a></div><div data-block="B_AC_SE.AC_PolicyLink" class="OSBlockWidget" id="b7-$b2"><a data-link="" class="margin-right-20" href="#">개인정보처리방침</a></div><div data-container=""><a data-link="" class="margin-right-20" href="#">Contact us</a></div></div><div data-container="" class="bottom-confidential" style="display: none;">confidential</div><div data-container=""></div></div></div></div></div></div></div></div></div></div></div></div></div></div>
+        <noscript><span>JavaScript is required</span></noscript>
+
+        <script type="text/javascript" src="scripts/AX_Hub_Landing_V4.index.js?QdDrMwC2B6T_q8cHcFaMDQ"></script>
+
+    
+</body></html>

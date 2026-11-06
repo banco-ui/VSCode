@@ -1,0 +1,548 @@
+# Phase 9 — Server Manager Architecture Readiness Review
+
+## 1. BASELINE
+
+| 항목 | 값 |
+|------|-----|
+| Branch | `main` |
+| HEAD | `3e193e6` (Auto commit: 2026-09-16 09:45:14) |
+| Working tree | Clean (no uncommitted changes) |
+| Tests | **200 passed** (173 기존 + 27 API) |
+
+---
+
+## 2. CURRENT ARCHITECTURE
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    External Systems                         │
+│                    (TBMS, etc.)                             │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ HTTP API
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Server Manager REST API (Phase 8)              │
+│              /api/v1/...                                    │
+│              - POST /collect                                │
+│              - GET /inventory/{server_id}                   │
+│              - GET /inventory/{server_id}/history           │
+│              - GET /inventory/{server_id}/diff              │
+│              - GET /api/v1/compute/candidates               │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────────────┐
+│ Orchestrator  │ │ InventoryStore│ │ DashboardQueryService │
+│               │ │               │ │                       │
+│ Collect       │ │ Snapshots     │ │ Queries               │
+│ Normalize     │ │ History       │ │ Summaries             │
+│ Verify        │ │ Registry      │ │ Diff                  │
+└───────┬───────┘ └───────┬───────┘ └───────────┬───────────┘
+        │                 │                     │
+        ▼                 ▼                     ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    Domain Models (Schema v1.0)               │
+│                    ServerInventory (17 sections)             │
+└──────────────────────────────────────────────────────────────┘
+        │                 │                     │
+        ▼                 ▼                     ▼
+┌───────────────┐ ┌───────────────┐ ┌───────────────────────┐
+│ Collectors    │ │ Verifiers     │ │ Normalizers           │
+│ - Redfish     │ │ - Hardware    │ │ - Redfish             │
+│ - SSH         │ │ - OS          │ │ - SSH                 │
+│ - Legacy      │ │ - Runtime     │ │ - Legacy              │
+└───────────────┘ └───────────────┘ └───────────────────────┘
+```
+
+---
+
+## 3. SCHEMA REVIEW
+
+### Schema v1.0 Status
+
+| 항목 | 상태 |
+|------|------|
+| 17 sections | ✅ COMPLETE |
+| Pydantic v2 | ✅ COMPLETE |
+| canonical + verification | ✅ COMPLETE |
+| `_meta` alias | ✅ COMPLETE |
+| `collected_at` | ✅ COMPLETE |
+| `compute.capabilities` | ✅ COMPLETE |
+| `compute.potential` | ✅ COMPLETE |
+| `compute.eligibility` | ✅ COMPLETE |
+| `ServerLifecycle` | ✅ COMPLETE |
+| `Storage` (Phase 7.6) | ✅ COMPLETE |
+| `extra: forbid` | ✅ COMPLETE |
+
+### Implementation Consistency
+
+**MATCH** — Schema 문서와 실제 Pydantic models 일치.
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| SC-001 | INFORMATIONAL | KEEP | `compute.eligibility` 와 `compute.capabilities` 가 독립적으로 유지됨. Hardware capability ≠ operational eligibility. |
+
+---
+
+## 4. CORE PIPELINE REVIEW
+
+### Collector
+
+| 책임 | 상태 |
+|------|------|
+| Raw data collection | ✅ Redfish, SSH |
+| No normalization | ✅ Normalizer 분리 |
+| No verification | ✅ Verifier 분리 |
+| No persistence | ✅ InventoryStore 분리 |
+| Failure isolation | ✅ SourceResult per source |
+| Credential handling | ✅ Environment only |
+
+### Normalizer
+
+| 책임 | 상태 |
+|------|------|
+| Raw → Normalized | ✅ RedfishNormalizer, SSHNormalizer |
+| Schema v1.0 compliance | ✅ ServerInventory 생성 |
+| Vendor abstraction | ✅ DellAdapter, HPEAdapter |
+| Storage normalization | ✅ Phase 7.6 완료 |
+
+### Verifier
+
+| 책임 | 상태 |
+|------|------|
+| Multi-source comparison | ✅ FieldComparator |
+| Missing vs Conflict | ✅ 구분됨 |
+| Single-source semantics | ✅ SKIPPED 처리 |
+| No persistence | ✅ VerificationResult only |
+
+### Orchestrator
+
+| 책임 | 상태 |
+|------|------|
+| Pipeline execution | ✅ Collect → Normalize → Verify |
+| Canonical selection | ✅ Priority-based (Redfish > SSH) |
+| SourceResult tracking | ✅ Per-source status |
+| OrchestrationResult | ✅ SUCCESS/PARTIAL/FAILED |
+| No direct persistence | ✅ Caller responsible |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| CP-001 | INFORMATIONAL | KEEP | Pipeline 책임 분리 명확. Orchestrator 가 persistence 를 가지지 않음. |
+
+---
+
+## 5. INVENTORY STORE REVIEW
+
+### Architecture
+
+| 원칙 | 상태 |
+|------|------|
+| Registry ≠ Inventory | ✅ `server_registry` ≠ `inventory_snapshots` |
+| Append-only snapshots | ✅ `INSERT OR IGNORE` |
+| Current pointer | ✅ `server_registry.current_snapshot_id` |
+| Atomic transaction | ✅ SQLite transaction |
+| run_id idempotency | ✅ `snap-{run_id}` deduplication |
+| Verification history | ✅ `verifications` table |
+| Endpoint registry | ✅ `endpoints` table (separate) |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| IS-001 | MEDIUM | FIX LATER | `check_same_thread=False` 가 test fixture 에만 적용됨. Production 은 기본값. 향후 concurrent collection 시 고려 필요. |
+| IS-002 | INFORMATIONAL | KEEP | Hardware identity (`serial_number`, `service_tag`) 와 OS reinstall 구분 가능. |
+
+---
+
+## 6. DASHBOARD / QUERY REVIEW
+
+### DashboardQueryService
+
+| 책임 | 상태 |
+|------|------|
+| Read-only queries | ✅ No mutation |
+| No direct SQLite | ✅ Via InventoryStore |
+| ServerSummary | ✅ List views |
+| ServerDetail | ✅ Detail views |
+| SnapshotSummary | ✅ History views |
+| FieldDiff | ✅ `compute_snapshot_diff()` |
+| Weekend compute candidates | ✅ `get_weekend_compute_candidates()` |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| DQ-001 | INFORMATIONAL | KEEP | Query layer 가 domain logic 을 포함하지 않음. All filtering based on canonical data. |
+
+---
+
+## 7. REST API REVIEW
+
+### Endpoints (Phase 8)
+
+| Method | Path | Contract | Implementation | Status |
+|--------|------|----------|----------------|--------|
+| POST | `/api/v1/collect` | ✅ | ✅ | MATCH |
+| GET | `/api/v1/inventory/{server_id}` | ✅ | ✅ | MATCH |
+| GET | `/api/v1/inventory/{server_id}/history` | ✅ | ✅ | MATCH |
+| GET | `/api/v1/inventory/{server_id}/diff` | ✅ | ✅ | MATCH |
+| GET | `/api/v1/compute/candidates` | ✅ | ✅ | MATCH |
+
+### Dependency Flow
+
+```
+FastAPI routes
+    ↓
+dependencies (get_store, get_orchestrator, get_dashboard_query_service)
+    ↓
+InventoryStore / Orchestrator / DashboardQueryService
+```
+
+✅ **No direct infrastructure leakage**
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| RA-001 | INFORMATIONAL | KEEP | Routes 가 business logic 을 포함하지 않음. Delegation only. |
+| RA-002 | MEDIUM | FIX LATER | Error Contract 의 `error.details` 가 항상 empty dict. 향후 구체적인 context 추가 가능. |
+
+---
+
+## 8. API CONTRACT DRIFT
+
+### tbms-integration-api-contract.md vs Implementation
+
+| Endpoint | Contract | Implementation | Status |
+|----------|----------|----------------|--------|
+| POST /collect | `server_id`, `sources[]` | ✅ | MATCH |
+| POST /collect response | `run_id`, `status`, `source_results[]`, `verification` | ✅ | MATCH |
+| GET /inventory | `inventory`, `_meta`, `verification` | ✅ | MATCH |
+| GET /history | `snapshots[]`, `total`, `limit` | ✅ | MATCH |
+| GET /diff | `from`, `to`, `diffs[]` | ✅ | MATCH |
+| GET /candidates | `candidates[]`, `total` | ✅ | MATCH |
+| Error format | `{error: {code, message, details}}` | ✅ | MATCH |
+| HTTP 404 | Server not found | ✅ | MATCH |
+| HTTP 422 | Validation error | ✅ | MATCH |
+| HTTP 503 | Internal error | ✅ | MATCH |
+| Credential safety | No credential in request/response | ✅ | MATCH |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| AC-001 | INFORMATIONAL | KEEP | API Contract 와 Implementation 이 일치함. Phase 7.7 → Phase 8 구현 integrity 유지. |
+
+---
+
+## 9. TEST ARCHITECTURE
+
+### Test Count
+
+| Category | Count |
+|----------|-------|
+| Domain models | 20+ |
+| Collectors | 10+ |
+| Normalizers | 20+ |
+| Verifiers | 10+ |
+| Orchestrator | 10+ |
+| InventoryStore | 20+ |
+| Dashboard | 20+ |
+| API | 27 |
+| **Total** | **200** |
+
+### Layer Coverage
+
+| Layer | Test Present |
+|-------|--------------|
+| Collector | ✅ |
+| Normalizer | ✅ |
+| Verifier | ✅ |
+| Orchestrator | ✅ |
+| InventoryStore | ✅ |
+| Dashboard | ✅ |
+| API | ✅ |
+| Security (credential safety) | ✅ |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| TA-001 | LOW | FIX LATER | API test 의 `test_app_has_routes` 가 OpenAPI routes 만 확인. 실제 API endpoints 확인은 integration tests 에서 수행. |
+| TA-002 | INFORMATIONAL | KEEP | SQLite test fixture 가 `check_same_thread=False` 사용. Production 과 분리됨. |
+
+---
+
+## 10. DEPENDENCY DIRECTION
+
+### Import Graph
+
+```
+api/
+  ↓
+store/  orchestrator/  dashboard/
+  ↓         ↓              ↓
+models/  collectors/   normalizers/  verifiers/
+  ↓
+Pydantic v2
+```
+
+### Reverse Dependencies (Prohibited)
+
+| Pattern | Status |
+|---------|--------|
+| domain → api | ❌ NOT PRESENT |
+| domain → sqlite | ❌ NOT PRESENT |
+| domain → FastAPI | ❌ NOT PRESENT |
+| collector → API | ❌ NOT PRESENT |
+| collector → Dashboard | ❌ NOT PRESENT |
+| Dashboard → Collector | ❌ NOT PRESENT |
+
+### Circular Dependencies
+
+| Cycle | Status |
+|-------|--------|
+| api ↔ store | ❌ NOT PRESENT |
+| orchestrator ↔ collector | ❌ NOT PRESENT |
+| store ↔ orchestrator | ❌ NOT PRESENT |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| DD-001 | INFORMATIONAL | KEEP | Dependency direction 이 clean. Layered architecture 유지. |
+
+---
+
+## 11. SECURITY BOUNDARY
+
+### Credential Handling
+
+| 위치 | 상태 |
+|------|------|
+| API request | ✅ No credential fields |
+| API response | ✅ No credential exposure |
+| Collector object | ✅ `_password` private only |
+| Logs | ✅ No credential output |
+| Exceptions | ✅ No credential in message |
+| Test fixtures | ✅ No real credentials |
+| InventoryStore | ✅ Endpoint registry only (no secrets) |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| SB-001 | INFORMATIONAL | KEEP | Credential safety 가 모든 layer 에서 유지됨. |
+| SB-002 | LOW | FIX LATER | `error.details` 가 credential leakage 가능성은 낮지만, 향후 구체적인 error context 추가 시 주의 필요. |
+
+---
+
+## 12. EXTERNAL INTEGRATION BOUNDARY
+
+### TBMS Boundary
+
+| 항목 | 상태 |
+|------|------|
+| Server Manager API 독립성 | ✅ TBMS-specific data model 없음 |
+| API Contract | ✅ Generic server inventory interface |
+| TBMS adapter location | ✅ Phase 8+ (not implemented) |
+| External system failure isolation | ✅ HTTP boundary only |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| EI-001 | INFORMATIONAL | KEEP | Server Manager 가 TBMS 에 종속되지 않음. Generic API design. |
+| EI-002 | MEDIUM | FIX LATER | TBMS adapter 구현 시 authentication boundary 명확히 할 위치 필요 (Phase 8+). |
+
+---
+
+## 13. FUTURE EXTENSION REVIEW
+
+### Extension Point Analysis
+
+| Feature | Current Extension Point | Affected Layer | Architecture Fit | Risk | Recommended Phase |
+|---------|------------------------|----------------|------------------|------|-------------------|
+| Scheduler | `Orchestrator.run()` | Orchestrator | ✅ Natural | LOW | Phase 10 |
+| Alert / Early Fault Detection | `VerificationResult`, `monitoring snapshot` | Verifier, Dashboard | ✅ Natural | LOW | Phase 11 |
+| External TBMS Adapter | `POST /api/v1/collect` | API | ✅ Natural | LOW | Phase 10 |
+| Switch Domain | Separate `SwitchInventory` | models/ | ⚠️ Schema extension | MEDIUM | Phase 12 |
+| Network Topology | Separate `TopologyService` | dashboard/ | ✅ Natural | LOW | Phase 12 |
+| WRCP | Separate mutation workflow | New module | ⚠️ Mutation boundary | MEDIUM | Phase 13 |
+| CaaS Recovery | Separate mutation workflow | New module | ⚠️ Mutation boundary | MEDIUM | Phase 13 |
+| Weekend Compute | `ComputeEligibility` | models/, dashboard/ | ✅ Natural | LOW | Phase 10 |
+| Web UI | `DashboardQueryService` | dashboard/ | ✅ Natural | LOW | Phase 11 |
+| CLI | `Orchestrator`, `InventoryStore` | New module | ✅ Natural | LOW | Phase 11 |
+| Authentication/Authorization | API middleware | api/ | ✅ Natural | LOW | Phase 10 |
+
+### Findings
+
+| ID | Severity | Decision | Evidence |
+|----|----------|----------|----------|
+| FE-001 | MEDIUM | FIX LATER | Switch Domain 은 `ServerInventory` schema 확장이 아닌 별도 domain model 이 필요. |
+| FE-002 | MEDIUM | FIX LATER | WRCP/CaaS Recovery 는 mutation workflow 로, read-only collection 과 명확히 분리 필요. |
+
+---
+
+## 14. ARCHITECTURE FINDINGS
+
+### Summary
+
+| Severity | Count |
+|----------|-------|
+| CRITICAL | 0 |
+| HIGH | 0 |
+| MEDIUM | 4 |
+| LOW | 2 |
+| INFORMATIONAL | 10 |
+
+### Detailed Findings
+
+#### MEDIUM
+
+| ID | Title | Decision | Reason |
+|----|-------|----------|--------|
+| IS-001 | SQLite concurrent access readiness | FIX LATER | Test fixture only `check_same_thread=False`. Production 은 기본값. 향후 concurrent collection 시 고려 필요. |
+| RA-002 | Error details context | FIX LATER | `error.details` 가 항상 empty. 향후 구체적인 context 추가 가능. |
+| EI-002 | TBMS adapter authentication boundary | FIX LATER | Authentication mechanism 이 Phase 7.7 에서 OPEN DECISION 으로 남음. |
+| FE-001 | Switch Domain schema boundary | FIX LATER | Switch inventory 는 `ServerInventory` 와 별도 domain model 이 필요. |
+
+#### LOW
+
+| ID | Title | Decision | Reason |
+|----|-------|----------|--------|
+| TA-001 | API route test coverage | FIX LATER | `test_app_has_routes` 가 OpenAPI routes 만 확인. |
+| SB-002 | Error details credential safety | FIX LATER | `error.details` 에 credential leakage 가능성 주의. |
+
+#### INFORMATIONAL
+
+| ID | Title | Decision | Reason |
+|----|-------|----------|--------|
+| SC-001 | Compute eligibility vs capabilities | KEEP | 독립적 의미 유지. |
+| CP-001 | Pipeline responsibility separation | KEEP | 명확한 책임 분리. |
+| IS-002 | Hardware identity vs OS reinstall | KEEP | 구분 가능. |
+| DQ-001 | Query layer domain logic | KEEP | Domain logic 없음. |
+| RA-001 | Routes business logic | Keep | Delegation only. |
+| AC-001 | API Contract integrity | KEEP | Contract 와 implementation 일치. |
+| DD-001 | Dependency direction | KEEP | Clean layered architecture. |
+| SB-001 | Credential safety | KEEP | All layers safe. |
+| EI-001 | TBMS independence | KEEP | Generic API design. |
+| TA-002 | SQLite test fixture | KEEP | Production 과 분리. |
+
+---
+
+## 15. ARCHITECTURE GATE
+
+| 영역 | 판정 | 근거 |
+|------|------|------|
+| **Core Pipeline** | PASS | Collector → Normalizer → Verifier → Orchestrator 책임 분리 명확. Failure isolation 유지. |
+| **Persistence** | PASS WITH CONDITIONS | Append-only snapshots, idempotency, current pointer 모두 구현됨. 단, concurrent access 는 향후 고려 필요 (IS-001). |
+| **API Boundary** | PASS | No infrastructure leakage. Contract 일치. Error semantics 구현됨. |
+| **Security Boundary** | PASS | Credential 노출 없음. Test isolation 유지. |
+| **Extensibility** | PASS WITH CONDITIONS | Scheduler, Alert, Weekend Compute 는 natural extension point 존재. 단, Switch/WRCP/CaaS 는 별도 domain model 필요 (FE-001, FE-002). |
+
+### Overall
+
+**READY_WITH_CONDITIONS**
+
+#### 근거
+
+1. **Core architecture 는 즉시 사용 가능**:
+   - 200 tests passed
+   - Schema v1.0 frozen
+   - API Contract 와 implementation 일치
+   - Security boundary 유지
+
+2. **조건부 항목**:
+   - Switch Domain 은 별도 schema 필요 (Phase 12)
+   - WRCP/CaaS Recovery 는 mutation workflow 분리 필요 (Phase 13)
+   - TBMS adapter authentication 은 Phase 10 에서 결정
+   - Concurrent collection 은 SQLite configuration 검토 필요 (IS-001)
+
+3. **차단 사항 없음**:
+   - CRITICAL/HIGH finding 없음
+   - 다음 Phase (Scheduler, Alert) 즉시 착수 가능
+
+---
+
+## 16. RECOMMENDED NEXT ACTIONS
+
+### NEXT ACTION 1
+
+**Title**: Scheduler Implementation (Phase 10)
+
+**Reason**: Orchestrator 가 이미 collection pipeline 을 제공. Scheduler 는 이를 호출하는 wrapper 만 구현하면 됨.
+
+**Affected files**:
+- `src/server_manager/scheduler/` (new)
+- `src/server_manager/orchestrator/orchestrator.py` (unchanged)
+
+**Risk**: LOW
+
+**Prerequisite**: None
+
+---
+
+### NEXT ACTION 2
+
+**Title**: Authentication/Authorization Middleware (Phase 10)
+
+**Reason**: API Contract 에서 OPEN DECISION 으로 남음. TBMS adapter 구현 전 필요.
+
+**Affected files**:
+- `src/server_manager/api/app.py`
+- `src/server_manager/api/middleware.py` (new)
+
+**Risk**: LOW
+
+**Prerequisite**: None
+
+---
+
+### NEXT ACTION 3
+
+**Title**: Alert Engine Architecture (Phase 11)
+
+**Reason**: VerificationResult, monitoring snapshot 이 이미 존재. Rule evaluation engine 추가만 필요.
+
+**Affected files**:
+- `src/server_manager/alert/` (new)
+- `src/server_manager/dashboard/query_service.py` (unchanged)
+
+**Risk**: LOW
+
+**Prerequisite**: None
+
+---
+
+## 17. SAFETY CHECK
+
+| 항목 | 상태 |
+|------|------|
+| Production code changed | NO |
+| Test code changed | NO |
+| Schema changed | NO |
+| API changed | NO |
+| Documentation changed | NO (new report only) |
+| Dependencies changed | NO |
+| Real server accessed | NO |
+| SSH accessed | NO |
+| Redfish accessed | NO |
+| TBMS accessed | NO |
+| TBMS mutated | NO |
+| Credentials exposed | NO |
+
+---
+
+## 18. STATUS
+
+**COMPLETE**
+
+---
+
+# END OF PHASE 9

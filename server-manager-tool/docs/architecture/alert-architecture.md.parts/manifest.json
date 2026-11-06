@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/docs/architecture/alert-architecture.md",
+  "originalSize": 37734,
+  "sha256": "7fc27a55a829d7fce90b7afa424a5c6ab610b157ffd09a043a8480d466293640",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/docs/architecture/alert-architecture.md\""
+}

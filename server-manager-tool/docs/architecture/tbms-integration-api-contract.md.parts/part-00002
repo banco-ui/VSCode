@@ -1,0 +1,70 @@
+I spec 자동 생성
+
+### Phase 8+ — Later
+
+- TBMS adapter 구현
+- Scheduled collection (cron-based)
+- CLI tool
+- Idempotency-Key 구현 (if decided)
+- Pagination (if decided)
+- Response size limits
+- Rate limiting
+
+---
+
+## 19. Open Decisions
+
+| 항목 | 상태 | Phase |
+|------|------|-------|
+| Authentication mechanism | OPEN | Phase 8 |
+| TLS termination strategy | OPEN | Phase 8 |
+| Idempotency-Key header | OPEN | Phase 8 |
+| Pagination strategy (cursor vs offset) | OPEN | Phase 8+ |
+| API response size limits | OPEN | Phase 8+ |
+| Rate limiting | OPEN | Phase 8+ |
+| `verification_performed` field in OrchestrationResult | OPEN | Phase 8 |
+| Batch collection (multiple servers in one request) | OPEN | Phase 9+ |
+| Async collection (202 + polling) | OPEN | Phase 9+ |
+| WebSocket for real-time updates | OPEN | Phase 9+ |
+
+---
+
+## 20. Acceptance Criteria
+
+```
+[x] API version explicitly defined (v1)
+[x] 5 endpoints defined with request/response
+[x] Error contract defined (6 status codes)
+[x] Authentication/security boundary defined
+[x] Idempotency semantics defined
+[x] Partial failure semantics defined
+[x] Verification semantics defined
+[x] Data exposure boundary defined
+[x] TBMS mapping defined
+[x] Phase 8 boundary defined
+[x] Schema v1.0 unchanged
+[x] No production code changed
+[x] 173 baseline tests still pass
+```
+
+---
+
+## 21. Contract Validation Checklist
+
+- [x] Endpoint 이름 중복 없음
+- [x] Request/response field naming 일관성 (snake_case)
+- [x] Enum 명칭 일관성 (Schema v1.0 기준)
+- [x] HTTP status 일관성
+- [x] `server_id` 정의 일관성
+- [x] `run_id` 정의 일관성 (`run-{hex}`)
+- [x] `snapshot_id` 정의 일관성 (`snap-{run_id}`)
+- [x] Timestamp format 일관성 (ISO 8601 UTC)
+- [x] Error format 일관성
+- [x] Schema v1.0과 충돌 없음
+- [x] InventoryStore API와 충돌 없음
+- [x] DashboardQueryService API와 충돌 없음
+- [x] Orchestrator API와 충돌 없음
+
+---
+
+# END OF PHASE 7.7

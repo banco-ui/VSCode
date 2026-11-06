@@ -1,0 +1,471 @@
+/**
+ * SDSearch GUI Server
+ * Express 기반 웹 GUI 서버
+ */
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const Searcher = require('../core/searcher');
+const MosaicAdapter = require('../adapters/mosaic-adapter');
+const ConfluenceAdapter = require('../adapters/confluence-adapter');
+const AxhubAdapter = require('../adapters/axhub-adapter');
+const { ensureCDP } = require('../core/cdp-launcher');
+
+// 설정 로드
+const configPath = path.resolve(__dirname, '../config/search-config.json');
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+const searcher = new Searcher(config);
+const adapters = {
+    mosaic: new MosaicAdapter(config.mosaic),
+    confluence: new ConfluenceAdapter(config.confluence),
+    axhub: new AxhubAdapter(config.axhub)
+};
+
+// CDP 자동 실행 (비동기, 서버 시작과 병렬)
+const cdpPort = config.mosaic.cdpPort || 9222;
+ensureCDP(cdpPort).then((ready) => {
+    if (ready) {
+        console.log(`[Server] CDP 자동 실행 완료 (포트 ${cdpPort})`);
+    } else {
+        console.warn(`[Server] CDP 자동 실행 실패. Chrome을 수동으로 실행하세요: chrome --remote-debugging-port=${cdpPort}`);
+    }
+}).catch((e) => {
+    console.warn(`[Server] CDP 런처 오류: ${e.message}`);
+});
+
+const app = express();
+const PORT = 3120;
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// CORS
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    next();
+});
+
+// ==================== API ====================
+
+/**
+ * 통합 검색 API
+ * POST /api/search
+ * { keyword, platforms?, maxResults?, cacheOnly? }
+ */
+app.post('/api/search', async (req, res) => {
+    try {
+        const { keyword, platforms, maxResults, cacheOnly, format } = req.body;
+        const results = await performSearch(keyword, platforms, maxResults, cacheOnly, format);
+        res.json({ success: true, results });
+    } catch (error) {
+        console.error('Search API error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * 플랫폼별 검색 API
+ * POST /api/search/:platform
+ * { keyword, maxResults?, cacheOnly? }
+ */
+app.post('/api/search/:platform', async (req, res) => {
+    try {
+        const { platform } = req.params;
+        const { keyword, maxResults, cacheOnly, category } = req.body;
+        
+        if (!adapters[platform]) {
+            return res.status(400).json({ success: false, error: `Unknown platform: ${platform}` });
+        }
+
+        const adapter = adapters[platform];
+        const cacheOnlyFlag = cacheOnly || false;
+        const max = maxResults || 20;
+        
+        // axios 로그 억제
+        const origConsole = console.log;
+        const logs = [];
+        const captureLog = (...args) => { logs.push(args.join(' ')); };
+        
+        console.log = captureLog;
+        let rawResults;
+        try {
+            const searchOptions = { cacheOnly: cacheOnlyFlag };
+            if (category && category !== 'all') searchOptions.category = category;
+            rawResults = await adapter.search(keyword, max, searchOptions);
+        } finally {
+            console.log = origConsole;
+        }
+        
+        // 랭킹 적용
+        const ranked = rankResults(rawResults, keyword);
+        
+        res.json({ success: true, results: ranked, logs });
+    } catch (error) {
+        console.error(`Platform search error:`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+
+});
+
+/**
+ * 상세 조회 API
+ * GET /api/detail/:platform/:id
+ */
+app.get('/api/detail/:platform/:id', async (req, res) => {
+    try {
+        const { platform, id } = req.params;
+        const { board } = req.query;
+        
+        const options = {};
+        if (board) options.board = board;
+        
+        const result = await searcher.getDetail(platform, id, options);
+        if (result) {
+            res.json({ success: true, result });
+        } else {
+            res.status(404).json({ success: false, error: 'Not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * 캐시 삭제 API
+ * POST /api/cache/clear
+ */
+app.post('/api/cache/clear', (req, res) => {
+    try {
+        const Cache = require('../core/cache');
+        const cache = new Cache(config.cache);
+        cache.clear();
+        res.json({ success: true, message: 'Cache cleared' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * 상태 확인 API
+ */
+app.get('/api/status', (req, res) => {
+    res.json({
+        success: true,
+        platforms: ['mosaic', 'confluence', 'axhub'],
+        version: '1.0.0'
+    });
+});
+
+/**
+ * 게시글 URL 추출 API
+ * POST /api/extract
+ * { url }
+ * URL에서 workspaceId, listId, postId를 추출하여 검색 API로 본문 내용 가져오기
+ */
+// 검색 결과 캐시 (게시글 추출용)
+let searchResultsCache = [];
+
+app.post('/api/extract', async (req, res) => {
+    try {
+        const { url, cachedResults } = req.body;
+        
+        if (!url) {
+            return res.status(400).json({ success: false, error: 'URL이 필요합니다.' });
+        }
+        
+        // 캐시된 검색 결과에서 URL 매칭 시도 (미가입 workspace용)
+        if (cachedResults && Array.isArray(cachedResults) && cachedResults.length > 0) {
+            const matched = cachedResults.find(r => {
+                const rUrl = r.url || '';
+                return rUrl === url || rUrl.includes(`/detail/${url.split('/detail/')[1] || ''}`);
+            });
+            if (matched) {
+                const adapter = adapters.mosaic;
+                return res.json({
+                    success: true,
+                    result: {
+                        id: matched.id,
+                        title: matched.title || '',
+                        content: matched.content || '',
+                        author: matched.author || '',
+                        date: matched.date || '',
+                        url: matched.url || url,
+                        workspaceId: url.match(/workspace\/(\d+)/)?.[1] || '',
+                        workspaceName: matched.workspaceName || '',
+                        viewCount: matched.viewCount || 0,
+                        likeCount: matched.likeCount || 0,
+                        commentCount: matched.commentCount || 0
+                    },
+                    logs: ['캐시된 검색 결과에서 매칭됨']
+                });
+            }
+        }
+
+
+        // URL에서 workspaceId, listId, postId 추출
+        // 예: https://mosaic.sec.samsung.net/collaboration/workspace/584541588/list/592839726/detail/1800053612
+        const match = url.match(/workspace\/(\d+)\/list\/(\d+)\/detail\/(\d+)/);
+        if (!match) {
+            return res.status(400).json({ success: false, error: '올바른 Mosaic 게시글 URL이 아닙니다.\n형식: .../workspace/{id}/list/{id}/detail/{id}' });
+        }
+
+        const [, workspaceId, listId, postId] = match;
+        const adapter = adapters.mosaic;
+        
+        // axios 로그 억제
+        const origConsole = console.log;
+        const logs = [];
+        const captureLog = (...args) => { logs.push(args.join(' ')); };
+        
+        console.log = captureLog;
+        
+        const cookieStr = await adapter.getCookiesFromCDP() || adapter.getSessionCookie();
+        if (!cookieStr) {
+            console.log = origConsole;
+            return res.status(401).json({ success: false, error: 'Mosaic 쿠키가 없습니다.' });
+        }
+
+        const axiosLib = require('axios');
+        const httpsAgent = new (require('https').Agent)({ rejectUnauthorized: false });
+        const headers = adapter.getHeaders(cookieStr);
+
+        // 방법 1: CDP로 페이지를 열어 workspace 닉네임 추출 및 API 가로채기
+        let wsNickname = null;
+        try {
+            // CDP 자동 실행 보장
+            await ensureCDP(adapter.cdpPort);
+
+            const { chromium } = require('playwright');
+            const browser = await chromium.connectOverCDP(`http://127.0.0.1:${adapter.cdpPort}`);
+            const contexts = browser.contexts();
+            if (contexts.length > 0) {
+                const pages = contexts[0].pages();
+                let page = pages.find(p => p.url().includes('mosaic'));
+                if (!page) page = await contexts[0].newPage();
+                
+                // 게시글 API 응답 가로채기
+                const apiCalls = [];
+                page.on('response', async (r) => {
+                    const u = r.url();
+                    if (u.includes('mosaic') && u.includes('/api/v1/') && (u.includes('detail') || u.includes('post'))) {
+                        try {
+                            const ct = r.headers()['content-type'] || '';
+                            if (ct.includes('json')) {
+                                const body = await r.json();
+                                apiCalls.push({ url: u, data: body });
+                            }
+                        } catch (e) {}
+                    }
+                });
+
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                await page.waitForTimeout(5000);
+                
+                // 1a: API 응답에서 게시글 내용 찾기 (가입한 workspace의 경우)
+                for (const call of apiCalls) {
+                    const d = call.data?.response?.data || call.data?.data || call.data?.response || call.data;
+                    if (d && (d.contents || d.content) && d.title) {
+                        browser.close();
+                        console.log = origConsole;
+                        return res.json({
+                            success: true,
+                            result: {
+                                id: postId,
+                                title: adapter.stripHtml(d.title || ''),
+                                content: adapter.stripHtml(d.contents || d.content || ''),
+                                author: d.create_user_name || d.createUserName || '',
+                                date: d.create_date || d.createDate || '',
+                                url: url,
+                                workspaceId: workspaceId,
+                                workspaceName: d.workspace_name || d.workspaceName || '',
+                                viewCount: d.view_count || 0,
+                                likeCount: d.like_count || 0,
+                                commentCount: d.comment_count || 0
+                            },
+                            logs
+                        });
+                    }
+                }
+                
+                // 1b: workspace 닉네임 추출 (body HTML에서 정규식으로)
+                wsNickname = await page.evaluate(() => {
+                    const html = document.body.innerHTML;
+                    // workspace/ 다음에 오는 닉네임 패턴 찾기 (숫자가 아닌 것)
+                    const matches = html.match(/\/collaboration\/workspace\/([a-zA-Z][a-zA-Z0-9_-]+)/g);
+                    if (matches) {
+                        for (const m of matches) {
+                            const nick = m.replace('/collaboration/workspace/', '');
+                            if (nick && !/^\d+$/.test(nick) && nick.length > 2) return nick;
+                        }
+                    }
+                    return null;
+                });
+
+                
+                browser.close();
+                if (wsNickname) {
+                    logs.push(`CDP에서 workspace 닉네임 추출: "${wsNickname}"`);
+                }
+            }
+        } catch (e) {
+            logs.push(`CDP 페이지 로드 실패: ${e.message}`);
+        }
+
+        // 방법 2: 통합검색에서 다양한 키워드로 검색하여 postId 매칭
+        // 미가입 workspace의 경우, 게시글 제목을 알 수 없으므로 여러 키워드로 시도
+        const searchKeywords = [];
+        if (wsNickname) searchKeywords.push(wsNickname);
+        searchKeywords.push(workspaceId);
+        
+        let found = false;
+        for (const kw of searchKeywords) {
+            if (found) break;
+            try {
+                // 여러 페이지 검색 (최대 500건)
+                for (let page = 0; page < 5 && !found; page++) {
+                    const searchResponse = await axiosLib.post(
+                        `${adapter.baseUrl}/api/v1/collaboration/search/itg-search`,
+                        {
+                            keyword: kw,
+                            serviceType: 'workspace',
+                            page: page,
+                            size: 100,
+                            order: 'REL',
+                            advancedSearchYn: false,
+                        },
+                        { headers, httpsAgent, timeout: 30000 }
+                    );
+                    const items = searchResponse.data?.response?.data || [];
+                    if (items.length === 0) break;
+                    if (page === 0) logs.push(`검색 API (키워드: "${kw}"): 총 ${searchResponse.data?.response?.total_count || 0}건`);
+                    
+                    // link_url에서 postId 매칭
+                    const matched = items.find(item => {
+                        const src = item._source || item;
+                        const linkUrl = src.link_url || '';
+                        return linkUrl.includes(`/detail/${postId}`) || 
+                               linkUrl.includes(`/workspace/${workspaceId}/`);
+                    });
+                    
+                    if (matched) {
+                        const src = matched._source || matched;
+                        // 정확히 postId가 매칭되는지 확인
+                        const linkUrl = src.link_url || '';
+                        if (linkUrl.includes(`/detail/${postId}`)) {
+                            console.log = origConsole;
+                            return res.json({
+                                success: true,
+                                result: {
+                                    id: postId,
+                                    title: adapter.stripHtml(src.title || ''),
+                                    content: adapter.stripHtml(src.contents || ''),
+                                    author: src.create_user_name || '',
+                                    date: src.create_date || '',
+                                    url: url,
+                                    workspaceId: workspaceId,
+                                    workspaceName: src.workspace_name || '',
+                                    viewCount: src.view_count || 0,
+                                    likeCount: src.like_count || 0,
+                                    commentCount: src.comment_count || 0
+                                },
+                                logs
+                            });
+                        }
+                    }
+                }
+            } catch (e) {
+                logs.push(`검색 API 실패 (키워드: "${kw}"): ${e.response ? e.response.status : e.message}`);
+            }
+        }
+        
+        logs.push('모든 검색 방법으로 postId 매칭 실패');
+
+        console.log = origConsole;
+        return res.status(404).json({ 
+            success: false, 
+            error: '게시글을 찾을 수 없습니다.\n\n미가입 workspace의 경우, Mosaic 검색 탭에서 해당 게시글을 먼저 검색한 후 URL을 입력하세요.\n검색 결과에 포함된 게시글만 내용 추출이 가능합니다.',
+            logs
+        });
+
+
+        
+    } catch (error) {
+        console.error('Extract API error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ==================== 헬퍼 ====================
+
+
+function rankResults(results, keyword) {
+    const kw = keyword.toLowerCase();
+    return results.map(r => {
+        let score = r.score || 0;
+        if (r.title && r.title.toLowerCase().includes(kw)) score += 1.0;
+        if (r.content && r.content.toLowerCase().includes(kw)) score += 0.5;
+        if (r.source !== 'cache') score += 0.3;
+        r.score = score;
+        return r;
+    }).sort((a, b) => b.score - a.score);
+}
+
+async function performSearch(keyword, platforms, maxResults, cacheOnly, format) {
+    const opts = {
+        platforms: platforms || ['mosaic', 'confluence', 'axhub'],
+        maxResults: maxResults || 20,
+        cacheOnly: cacheOnly || false,
+        format: format || 'json'
+    };
+    
+    const origConsole = console.log;
+    const logs = [];
+    console.log = (...args) => { logs.push(args.join(' ')); };
+    
+    try {
+        const searchPromises = opts.platforms.map(platform => {
+            const adapter = adapters[platform];
+            if (!adapter) return Promise.resolve([]);
+            return adapter.search(keyword, opts.maxResults, opts.cacheOnly).catch(err => {
+                logs.push(`❌ [${platform}] 오류: ${err.message}`);
+                return [];
+            });
+        });
+        
+        const searchResults = await Promise.all(searchPromises);
+        
+        let allResults = [];
+        searchResults.forEach((results, idx) => {
+            const platform = opts.platforms[idx];
+            results.forEach(r => {
+                r.platform = platform;
+                allResults.push(r);
+            });
+        });
+        
+        allResults = rankResults(allResults, keyword);
+        allResults = allResults.slice(0, opts.maxResults);
+        
+        return { results: allResults, logs };
+    } finally {
+        console.log = origConsole;
+    }
+}
+
+// ==================== 서버 시작 ====================
+const server = app.listen(PORT, () => {
+    console.log(`\n╔══════════════════════════════════════════════════════╗`);
+    console.log(`║  SDSearch GUI Server v1.0                             ║`);
+    console.log(`║  http://localhost:${PORT}                               ║`);
+    console.log(`╚══════════════════════════════════════════════════════╝\n`);
+});
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`[Server] 포트 ${PORT}가 이미 사용 중입니다. 기존 SDSearch 프로세스를 종료 후 재시도하세요.`);
+    } else {
+        console.error('[Server] 서버 시작 오류:', err.message);
+    }
+});

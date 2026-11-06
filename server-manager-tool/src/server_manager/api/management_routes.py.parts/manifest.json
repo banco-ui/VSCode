@@ -1,0 +1,12 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/api/management_routes.py",
+  "originalSize": 32995,
+  "sha256": "47311790985fc9c5514832ec5c3c64ec710c4fb15329be260cc18b21ee413326",
+  "partSize": 25000,
+  "partCount": 2,
+  "parts": [
+    "part-00001",
+    "part-00002"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/api/management_routes.py\""
+}

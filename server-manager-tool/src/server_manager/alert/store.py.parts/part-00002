@@ -1,0 +1,29 @@
+apshot_id = ?,
+                    updated_at = ?
+                WHERE alert_id = ?""",
+                (snapshot_id, datetime.now(timezone.utc).isoformat(), alert_id),
+            )
+            self._commit_if_standalone()
+            
+            if cursor.rowcount == 0:
+                raise AlertNotFoundError(f"Alert {alert_id} not found")
+            
+            cursor = self.conn.execute(
+                "SELECT consecutive_ok_count FROM alerts WHERE alert_id = ?",
+                (alert_id,),
+            )
+            row = cursor.fetchone()
+            return row["consecutive_ok_count"] if row else 1
+        
+        return self._retry_on_lock(_update)
+    
+    def reset_ok_count(self, alert_id: str) -> None:
+        """Reset OK count on failure observation."""
+        def _reset():
+            self.conn.execute(
+                "UPDATE alerts SET consecutive_ok_count = 0 WHERE alert_id = ?",
+                (alert_id,),
+            )
+            self._commit_if_standalone()
+        
+        self._retry_on_lock(_reset)

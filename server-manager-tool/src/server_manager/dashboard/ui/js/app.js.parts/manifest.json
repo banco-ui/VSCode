@@ -1,0 +1,13 @@
+{
+  "originalPath": "server-manager-tool/src/server_manager/dashboard/ui/js/app.js",
+  "originalSize": 57197,
+  "sha256": "d4a49c61a4705883a5e9f189a9b465e6fe6dddb16389c646173a27c14b81845f",
+  "partSize": 25000,
+  "partCount": 3,
+  "parts": [
+    "part-00001",
+    "part-00002",
+    "part-00003"
+  ],
+  "restore": "node scripts/restore-split.js \"server-manager-tool/src/server_manager/dashboard/ui/js/app.js\""
+}
