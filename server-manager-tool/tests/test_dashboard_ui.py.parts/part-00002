@@ -1,4 +1,4 @@
-ert item["canonical_id"]
+       assert item["canonical_id"]
 
 
 # ── 12. Responsive Layout & Accessibility ─────────────────────────
@@ -450,3 +450,139 @@ class TestEntityDetailObservationTable:
         assert "method: 'POST'" not in view
         assert "method: 'PUT'" not in view
         assert "method: 'DELETE'" not in view
+
+
+class TestEntityHealthCapacityEvidence:
+    """Entity health detail Capacity/Evidence cards must reference only
+    fields that exist on the HealthResult contract (health/models.py),
+    which is what GET /health/entities/{id} returns via model_dump():
+
+    - resource_statuses: list[{resource_type, total, used, available,
+      utilization, unit}] — all optional strings
+    - capacity_infos: list[{resource_type, capacity, allocatable, unit}]
+    - warnings / errors: top-level list[str]
+
+    Regression: the cards previously referenced health.capacity_info
+    (singular, nonexistent) and health.evidence (nonexistent), and
+    treated resource_statuses as a dict — nothing ever rendered.
+    """
+
+    def _health_detail_source(self):
+        src = _ui_source("js/app.js")
+        start = src.index("── Entity Health Detail — Capacity/Evidence helpers")
+        end = src.index("── Monitoring View", start)
+        return src[start:end]
+
+    # 1. Resource Status 정상 표시
+    def test_resource_status_table_uses_real_fields(self):
+        view = self._health_detail_source()
+        assert "it.resource_type" in view
+        assert "it.total" in view
+        assert "it.used" in view
+        assert "it.available" in view
+        assert "it.utilization" in view
+
+    # 2. Capacity Information 정상 표시
+    def test_capacity_uses_capacity_infos_list(self):
+        view = self._health_detail_source()
+        assert "health.capacity_infos" in view
+        assert "it.capacity" in view
+        assert "it.allocatable" in view
+
+    # 3-4. Evidence warnings/errors 표시
+    def test_evidence_warnings_and_errors_sections(self):
+        view = self._health_detail_source()
+        assert "health.warnings" in view
+        assert "health.errors" in view
+        assert "No warnings recorded." in view
+        assert "No errors recorded." in view
+
+    # 5. null 및 빈 배열 처리
+    def test_null_and_empty_handled_as_explicit_states(self):
+        view = self._health_detail_source()
+        assert "Array.isArray(rs)" in view
+        assert "Array.isArray(ci)" in view
+        assert "Array.isArray(items)" in view
+        assert "rs.length === 0" in view
+        assert "ci.length === 0" in view
+        assert "items.length === 0" in view
+
+    # 6. 필드 누락 처리 — missing values shown as '—', not zero/HEALTHY
+    def test_missing_values_use_val_helper(self):
+        view = self._health_detail_source()
+        assert "val(it.total)" in view
+        assert "val(it.capacity)" in view
+        assert "val(it.allocatable)" in view
+
+    # 7. 예상하지 못한 데이터 타입 처리
+    def test_unexpected_types_render_unknown(self):
+        view = self._health_detail_source()
+        assert "typeof it !== 'object'" in view
+        assert "UNKNOWN" in view
+
+    # 7b. 존재하지 않는 구버전 필드 참조 제거 확인
+    def test_no_nonexistent_health_fields(self):
+        view = self._health_detail_source()
+        # Regex: 'health.capacity_info' must not appear except as the
+        # real 'health.capacity_infos' list field.
+        assert re.search(r"health\.capacity_info\b", view) is None
+        assert re.search(r"health\.evidence\b", view) is None
+        assert "health.resource_statuses[key]" not in view
+        assert "v.status" not in view
+
+    # 8. HTML 특수문자 및 악성 문자열 escaping
+    def test_all_values_escaped(self):
+        view = self._health_detail_source()
+        assert "esc(resourceName(it))" in view
+        assert "esc(m)" in view
+        assert "esc(JSON.stringify(m))" in view
+
+    # 단위 변환 금지 — source values displayed as provided
+    def test_no_unit_conversion(self):
+        view = self._health_detail_source()
+        assert "* 1024" not in view
+        assert "toFixed" not in view
+
+    # 기존 Observation 테이블이 영향받지 않는지 확인
+    def test_observation_table_unaffected(self):
+        src = _ui_source("js/app.js")
+        start = src.index("_renderEntityDetail")
+        end = src.index("── Faults & Alerts View", start)
+        view = src[start:end]
+        assert "o.health_status" in view
+        assert "o.availability_status" in view
+        assert "o.observed_at" in view
+
+    def test_capacity_evidence_no_mutation_endpoints(self):
+        # The health detail view must remain read-only.
+        view = self._health_detail_source()
+        assert "method: 'POST'" not in view
+        assert "method: 'PUT'" not in view
+        assert "method: 'DELETE'" not in view
+
+
+class TestEntityHealthApiResponseContract:
+    """Lock the wire contract the Capacity/Evidence cards consume:
+    GET /health/entities/{id} returns HealthResult.model_dump() with
+    resource_statuses/capacity_infos/warnings/errors as lists and no
+    'evidence' key.
+    """
+
+    def test_entity_health_list_field_contract(self, client):
+        c, ctx = client
+        if ctx.health_report and ctx.health_report.results:
+            eid = ctx.health_report.results[0].entity_id
+            data = c.get(f"/api/v1/health/entities/{eid}").json()
+            assert isinstance(data["resource_statuses"], list)
+            assert isinstance(data["capacity_infos"], list)
+            assert isinstance(data["warnings"], list)
+            assert isinstance(data["errors"], list)
+            assert "evidence" not in data
+            for rs in data["resource_statuses"]:
+                assert "resource_type" in rs
+                for optional in ("total", "used", "available", "utilization", "unit"):
+                    assert rs.get(optional) is None or isinstance(rs.get(optional), str)
+            for ci in data["capacity_infos"]:
+                assert "resource_type" in ci
+                for optional in ("capacity", "allocatable", "unit"):
+                    assert ci.get(optional) is None or isinstance(ci.get(optional), str)

@@ -1,4 +1,47 @@
-ilRow('Execution Allowed', p.execution_allowed ? 'Yes' : 'No (Disabled)');
+<div class="table-container"><table><thead><tr><th>Canonical ID</th></tr></thead><tbody>';
+          graphSummary.node_ids.forEach(function (id) {
+            html += '<tr class="clickable-row" onclick="App._fillTarget(\'' + esc(id) + '\')"><td class="mono">' + esc(id) + '</td></tr>';
+          });
+          html += '</tbody></table></div></div>';
+        }
+        self._setContent(html);
+      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
+    },
+
+    _fillTarget: function (id) { var el = document.getElementById('op-target'); if (el) el.value = id; },
+
+    _submitOpPreview: function () {
+      var btn = document.getElementById('btn-op-preview');
+      btn.disabled = true; btn.textContent = 'Previewing\u2026';
+      var resultEl = document.getElementById('op-preview-result');
+      resultEl.innerHTML = showLoading('Generating preview\u2026');
+      var body = {
+        operation_id: document.getElementById('op-id').value,
+        operation_type: document.getElementById('op-type').value,
+        target_canonical_id: document.getElementById('op-target').value,
+        provider_type: document.getElementById('op-provider').value,
+        reason: document.getElementById('op-reason').value,
+      };
+      var self = this;
+      ApiClient.previewOperation(body).then(function (p) {
+        resultEl.innerHTML = self._renderOpPreviewResult(p);
+      }).catch(function (e) { resultEl.innerHTML = showError(e); })
+      .then(function () { btn.disabled = false; btn.textContent = 'Preview Operation'; });
+    },
+
+    _renderOpPreviewResult: function (p) {
+      var html = '<div class="preview-result"><div class="preview-warning">\u26A0 This is a PREVIEW only. No operation was executed.</div><div class="detail-grid">';
+      html += detailRow('Operation ID', val(p.operation_id));
+      html += detailRow('Operation Type', val(p.operation_type));
+      html += detailRow('Target', '<span class="mono">' + esc(p.target_canonical_id) + '</span>');
+      html += detailRow('Resolved', p.resolved ? '\u2713 Yes' : '\u2717 No');
+      if (p.resolved_target_canonical_id) html += detailRow('Resolved Target', '<span class="mono">' + esc(p.resolved_target_canonical_id) + '</span>');
+      html += detailRow('Capability Decision', badge(p.capability_decision));
+      html += detailRow('Expected Effect', val(p.expected_effect));
+      html += detailRow('Safety Result', badge(p.safety_result));
+      if (p.safety_reason) html += detailRow('Safety Reason', val(p.safety_reason));
+      html += detailRow('Authorization Level', val(p.authorization_level));
+      html += detailRow('Execution Allowed', p.execution_allowed ? 'Yes' : 'No (Disabled)');
       html += detailRow('Previewed At', fmtTime(p.previewed_at));
       html += '</div></div>';
       return html;

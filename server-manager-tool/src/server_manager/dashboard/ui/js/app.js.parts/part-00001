@@ -85,6 +85,66 @@
       '<button class="btn btn-secondary btn-sm mt-sm" type="button" onclick="App.retry()">Retry</button></div>';
   }
 
+  // ── Entity Health Detail — Capacity/Evidence helpers ─────────────
+  // Contract: GET /health/entities/{id} returns the HealthResult
+  // model (health/models.py):
+  //   resource_statuses: list of {resource_type, total, used,
+  //     available, utilization, unit} — all values optional strings.
+  //   capacity_infos:    list of {resource_type, capacity,
+  //     allocatable, unit} — all values optional strings.
+  //   warnings / errors: top-level list of strings.
+  // UNKNOWN policy: missing or non-string values are shown as '—',
+  // never as HEALTHY or zero. No unit conversion or inference is
+  // performed — source values are displayed as provided.
+  function resourceName(it) {
+    return (it && typeof it.resource_type === 'string' && it.resource_type) ? it.resource_type : 'UNKNOWN';
+  }
+  function entityResourceStatusCard(rs) {
+    var html = '<div class="card"><div class="card-title">Resource Statuses</div>';
+    if (!Array.isArray(rs)) { html += '<p class="muted">Resource status data unavailable.</p></div>'; return html; }
+    if (rs.length === 0) { html += '<p class="muted">No resource statuses recorded.</p></div>'; return html; }
+    html += '<div class="table-container"><table><thead><tr><th>Resource</th><th>Unit</th><th>Total</th><th>Used</th><th>Available</th><th>Utilization</th></tr></thead><tbody>';
+    rs.forEach(function (it) {
+      if (!it || typeof it !== 'object') { html += '<tr><td colspan="6">UNKNOWN</td></tr>'; return; }
+      html += '<tr><td>' + esc(resourceName(it)) + '</td><td>' + val(it.unit) + '</td>'
+        + '<td>' + val(it.total) + '</td><td>' + val(it.used) + '</td>'
+        + '<td>' + val(it.available) + '</td><td>' + val(it.utilization) + '</td></tr>';
+    });
+    html += '</tbody></table></div></div>';
+    return html;
+  }
+  function entityCapacityCard(ci) {
+    var html = '<div class="card"><div class="card-title">Capacity Information</div>';
+    if (!Array.isArray(ci)) { html += '<p class="muted">Capacity data unavailable.</p></div>'; return html; }
+    if (ci.length === 0) { html += '<p class="muted">No capacity information recorded.</p></div>'; return html; }
+    html += '<div class="table-container"><table><thead><tr><th>Resource</th><th>Capacity</th><th>Allocatable</th><th>Unit</th></tr></thead><tbody>';
+    ci.forEach(function (it) {
+      if (!it || typeof it !== 'object') { html += '<tr><td colspan="4">UNKNOWN</td></tr>'; return; }
+      html += '<tr><td>' + esc(resourceName(it)) + '</td><td>' + val(it.capacity) + '</td>'
+        + '<td>' + val(it.allocatable) + '</td><td>' + val(it.unit) + '</td></tr>';
+    });
+    html += '</tbody></table></div></div>';
+    return html;
+  }
+  function evidenceList(items, emptyMsg) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return '<p class="muted">' + esc(emptyMsg) + '</p>';
+    }
+    var html = '<ul>';
+    items.forEach(function (m) {
+      html += '<li>' + (typeof m === 'string' ? esc(m) : esc(JSON.stringify(m))) + '</li>';
+    });
+    html += '</ul>';
+    return html;
+  }
+  function entityEvidenceCard(warnings, errors) {
+    var html = '<div class="card"><div class="card-title">Evidence</div>';
+    html += '<div class="card-title">Warnings</div>' + evidenceList(warnings, 'No warnings recorded.');
+    html += '<div class="card-title">Errors</div>' + evidenceList(errors, 'No errors recorded.');
+    html += '</div>';
+    return html;
+  }
+
   // ── Readiness helpers (Overview readiness card) ─────────────────
   // UNKNOWN policy: never guess READY or NOT READY when the
   // `ready` field is missing or is not a boolean. Guidance text is
@@ -417,49 +477,3 @@
 
 
     _renderEntityDetail: function (canonicalId) {
-      this._setContent(showLoading('Loading entity details\u2026'));
-      var self = this;
-      this._fetchAll([
-        ApiClient.getEntity(canonicalId),
-        ApiClient.getEntityHealth(canonicalId),
-        ApiClient.getEntityFaults(canonicalId),
-        ApiClient.getGraphNode(canonicalId),
-      ]).then(function (results) {
-        var entity = results[0], health = results[1], faultsData = results[2], graphNode = results[3];
-        var html = '<h2 class="section-title">Entity Details</h2><p><a href="#inventory" class="muted">\u2190 Back to Inventory</a></p>';
-        if (!entity) { html += showError({ code: 'NOT_FOUND', message: 'Entity not found.', status: 404 }); }
-        else {
-          html += '<div class="card"><div class="card-title">Basic Information</div><div class="detail-grid">';
-          html += detailRow('Canonical ID', '<span class="mono">' + esc(entity.canonical_id) + '</span>');
-          html += detailRow('Entity Type', badge(entity._entity_type));
-          html += detailRow('Name', val(entity.name));
-          html += detailRow('Provider Type', val(entity.provider_type));
-          html += detailRow('Provider ID', val(entity.provider_id));
-          html += '</div></div>';
-          html += '<div class="card"><div class="card-title">Health</div>';
-          if (health) { html += '<div class="detail-grid">' + detailRow('Health Status', badge(health.health_status)) + detailRow('Availability', val(health.availability_status)) + '</div>'; }
-          else { html += '<p class="muted">No health data available.</p>'; }
-          html += '</div>';
-          html += '<div class="card"><div class="card-title">Provenance & Source Evidence</div>';
-          if (entity.provenance) {
-            var p = entity.provenance;
-            html += '<div class="detail-grid">' + detailRow('Source Type', val(p.source_type)) + detailRow('Provider ID', val(p.provider_id)) + detailRow('Discovered At', fmtTime(p.discovered_at)) + detailRow('Evidence Type', val(p.evidence_type)) + detailRow('Confidence', val(p.confidence)) + '</div>';
-          } else { html += '<p class="muted">No provenance information available.</p>'; }
-          html += '</div>';
-          if (faultsData && faultsData.total > 0) {
-            html += '<div class="card"><div class="card-title">Active Faults (' + faultsData.total + ')</div>';
-            html += '<div class="table-container"><table><thead><tr><th>Fault ID</th><th>Type</th><th>Severity</th><th>Status</th></tr></thead><tbody>';
-            faultsData.faults.forEach(function (f) {
-              html += '<tr class="clickable-row" onclick="location.hash=\'faults/fault/' + encodeURIComponent(f.fault_id) + '\'"><td class="mono">' + escTrunc(f.fault_id, 30) + '</td><td>' + val(f.fault_type) + '</td><td>' + badge(f.severity) + '</td><td>' + badge(f.status) + '</td></tr>';
-            });
-            html += '</tbody></table></div></div>';
-          }
-          if (graphNode) { html += '<div class="card"><p><a href="#topology/' + encodeURIComponent(canonicalId) + '">View in Topology \u2192</a></p></div>'; }
-        }
-        self._setContent(html);
-      }).catch(function (e) { self._setLoading(false); self._setContent(showError(e)); });
-    },
-
-    // ── Topology View ───────────────────────────────────────────
-    _renderTopology: function (canonicalId) {
-      var

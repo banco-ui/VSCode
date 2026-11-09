@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -572,4 +573,4 @@ class TestProvenanceDisplay:
         c, _ = client
         for item in c.get("/api/v1/inventory/entities").json()["items"]:
             assert "canonical_id" in item
-            ass
+     
